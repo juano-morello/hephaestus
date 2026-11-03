@@ -18,6 +18,14 @@
         "zod": "4.6.7",
       },
     },
+    "packages/ledger": {
+      "name": "@hephaestus/ledger",
+      "version": "0.0.0",
+      "dependencies": {
+        "@hephaestus/core": "workspace:*",
+        "zod": "4.6.7",
+      },
+    },
   },
   "packages": {
     "@babel/helper-string-parser": ["@babel/helper-string-parser@7.29.11", "", {}, "sha512-snZbO7MEDOof+hvNa97EjEY7qD7h2kwvQr5AJC3ZhQudKW5dnej6k3kP9NQV88hJwaS8vDqRLFo9rivLEhle2g=="],
@@ -53,6 +61,8 @@
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 
     "@hephaestus/core": ["@hephaestus/core@workspace:packages/core"],
+
+    "@hephaestus/ledger": ["@hephaestus/ledger@workspace:packages/ledger"],
 
     "@huggingface/jinja": ["@huggingface/jinja@0.5.11", "", {}, "sha512-YzEzwM5oQf4r0vs7ifWQ+yuVR1YkAHrjERQ+a8WRsStHHp4NRBg+NesjiFc+X2AFUpRvvrIeHDS1xFy9jY/IjQ=="],
 
