@@ -43,6 +43,16 @@ describe("ulid", () => {
     expect(() => ulid()).toThrow("ulid: random overflow");
   });
 
+  test("an overflow does not reset the generator", () => {
+    let t = 1_000;
+    const ulid = createUlid({ now: () => t, random: fixedRandom(0xff) });
+    const a = ulid();
+    expect(() => ulid()).toThrow("ulid: random overflow");
+    expect(() => ulid()).toThrow("ulid: random overflow");
+    t = 1_001;
+    expect(ulid() > a).toBe(true);
+  });
+
   test("rejects a timestamp outside 48 bits", () => {
     expect(() => createUlid({ now: () => 2 ** 48 })()).toThrow("ulid: time out of range");
   });
