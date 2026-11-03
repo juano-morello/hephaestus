@@ -379,6 +379,8 @@ Plan gates (pure code):
 UnitBrief = {
   schema: 1,
   task: Task,
+  criteria: Criterion[],        // the Brief criteria this task covers, with their text
+  decisions: string[],          // from the Brief; settled, the worker must not reopen them
   role: string,
   tier: "trivial" | "standard" | "complex",
   context: ContextPack,
