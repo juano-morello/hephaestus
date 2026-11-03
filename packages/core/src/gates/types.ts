@@ -1,4 +1,5 @@
 import type { Brief } from "../schemas/brief.ts";
+import type { ProjectGates } from "../schemas/gates.ts";
 import type { Workspace } from "../schemas/workspace.ts";
 
 export type Verdict = "pass" | "fail";
@@ -29,6 +30,7 @@ export type GateContext = {
   brief: Brief;
   workspace: Workspace;
   limits: PlanLimits;
+  projectGates: ProjectGates;
 };
 
 export function result(gate: string, evidence: string[], passReason: string, failReason: string) {

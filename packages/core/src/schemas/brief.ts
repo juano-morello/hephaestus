@@ -6,6 +6,11 @@ export const Criterion = z
     id: z.string().min(1),
     text: z.string().min(1),
     kind: z.enum(["behavior", "nonfunctional"]),
+    /** Omitted: checked by a test task. Set: checked by that gate instead. */
+    check: z
+      .object({ gate: z.string().min(1) })
+      .strict()
+      .optional(),
   })
   .strict();
 export type Criterion = z.infer<typeof Criterion>;

@@ -23,22 +23,42 @@ export function projectsExist(plan: Plan, ctx: GateContext): GateResult {
 }
 
 export function criteriaCovered(plan: Plan, ctx: GateContext): GateResult {
-  const known = new Set(ctx.brief.acceptance.map((c) => c.id));
-  const tested = new Set(plan.tasks.filter((t) => t.kind === "test").flatMap((t) => t.covers));
+  const criteria = new Map(ctx.brief.acceptance.map((c) => [c.id, c]));
+  const tests = plan.tasks.filter((t) => t.kind === "test");
   const evidence: string[] = [];
   for (const c of ctx.brief.acceptance) {
-    if (!tested.has(c.id)) evidence.push(`${c.id}: no test task covers it`);
+    if (!c.check) {
+      if (!tests.some((t) => t.covers.includes(c.id))) {
+        evidence.push(`${c.id}: no test task covers it`);
+      }
+      continue;
+    }
+    const gate = c.check.gate;
+    const covered = plan.tasks.some(
+      (t) => t.covers.includes(c.id) && ctx.projectGates[t.project]?.includes(gate),
+    );
+    if (!covered) {
+      evidence.push(
+        `${c.id}: checked by gate "${gate}" but no task in a project with that gate covers it`,
+      );
+    }
   }
   for (const t of plan.tasks) {
     for (const id of t.covers) {
-      if (!known.has(id)) evidence.push(`${t.id}: covers unknown criterion "${id}"`);
+      const c = criteria.get(id);
+      if (!c) evidence.push(`${t.id}: covers unknown criterion "${id}"`);
+      else if (c.check && t.kind === "test") {
+        evidence.push(
+          `${t.id}: test task covers ${id}, which is checked by gate "${c.check.gate}"`,
+        );
+      }
     }
   }
   return result(
     "criteria_covered",
     evidence,
-    "every criterion is covered by a test task",
-    "criteria are not covered by test tasks",
+    "every criterion is covered by its check",
+    "criteria are not covered by their checks",
   );
 }
 
