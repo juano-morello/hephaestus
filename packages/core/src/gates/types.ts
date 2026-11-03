@@ -1,15 +1,21 @@
+import { z } from "zod";
 import type { Brief } from "../schemas/brief.ts";
 import type { ProjectGates } from "../schemas/gates.ts";
 import type { Workspace } from "../schemas/workspace.ts";
 
-export type Verdict = "pass" | "fail";
+export const Verdict = z.enum(["pass", "fail"]);
+export type Verdict = z.infer<typeof Verdict>;
 
-export type GateResult = {
-  gate: string;
-  verdict: Verdict;
-  reason: string;
-  evidence: string[];
-};
+/** What every gate returns, and what the ledger records as gate.result. */
+export const GateResult = z
+  .object({
+    gate: z.string().min(1),
+    verdict: Verdict,
+    reason: z.string(),
+    evidence: z.array(z.string()),
+  })
+  .strict();
+export type GateResult = z.infer<typeof GateResult>;
 
 export type PlanLimits = {
   /** More tasks than this means the brief is too big: replan or split it. */

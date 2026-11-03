@@ -10,4 +10,5 @@ export * from "./schemas/brief.ts";
 export * from "./schemas/eval.ts";
 export * from "./schemas/gates.ts";
 export * from "./schemas/plan.ts";
+export * from "./schemas/return.ts";
 export * from "./schemas/workspace.ts";
