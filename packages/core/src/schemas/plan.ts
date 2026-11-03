@@ -1,0 +1,42 @@
+import { z } from "zod";
+
+export const TaskKind = z.enum(["test", "implement", "codegen", "docs", "migration"]);
+export type TaskKind = z.infer<typeof TaskKind>;
+
+export const Lane = z.enum(["contained", "wide", "irreversible"]);
+export type Lane = z.infer<typeof Lane>;
+
+export const Complexity = z.enum(["trivial", "standard", "complex"]);
+export type Complexity = z.infer<typeof Complexity>;
+
+export const Task = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    kind: TaskKind,
+    project: z.string().min(1),
+    lane: Lane,
+    complexity: Complexity,
+    complexity_reason: z.string().min(1),
+    scope: z.array(z.string().min(1)),
+    covers: z.array(z.string()),
+    produces: z.array(z.string().min(1)).optional(),
+    consumes: z.array(z.string().min(1)).optional(),
+    context_budget: z
+      .object({ tokens: z.number().int().positive(), reason: z.string().min(1) })
+      .strict()
+      .optional(),
+    spec: z.string().min(1),
+  })
+  .strict();
+export type Task = z.infer<typeof Task>;
+
+export const Plan = z
+  .object({
+    schema: z.literal(1),
+    brief_hash: z.string().min(1),
+    tasks: z.array(Task),
+    risks: z.array(z.string()),
+  })
+  .strict();
+export type Plan = z.infer<typeof Plan>;
