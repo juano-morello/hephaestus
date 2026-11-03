@@ -155,6 +155,22 @@ Interpretations made in code:
 10. **The run branch is reset to `baseRef` at run start.** Calling `runPlan` again for the same run id restarts it; resume (2.7) must reconcile instead.
 11. **`runPlan` checks `plan.brief_hash` against the Brief** and rejects a mismatch before writing any event.
 
+## OMP worker in a sandbox (v0 step 2.3)
+
+Built 2026-11-03: `packages/sandbox` (container and native modes, `proc` moved here) and `packages/workers` (`createOmpWorker`, five sandboxed tools, role prompts in `prompts/roles/`, live smoke in `scripts/worker-smoke.ts`).
+
+**SPEC section 12 open item, answered.** OMP 18.16.0 has no pluggable execution backend. Its built-in file tools (`read`, `write`, `edit`, `grep`, `glob`, ...) run inside the OMP process on the host and accept any path, including `~/.ssh`; `bash` is an in-process native shell; `PI_SHELL_PREFIX` is unquoted and `ClientBridge` covers only commands. So the worker turns every built-in off (`restrictToolNames`) and gives the model its own `read`, `write`, `edit`, `bash` and `submit_result`, which act inside the sandbox. OMP, credentials and model calls stay on the host. Settings are `Settings.isolated`, with no MCP, LSP, extensions, skills, rules, context files or model fallback, so nothing in the worktree can reconfigure the session. Proposed SPEC wording for sections 12 and 20 is pending your approval.
+
+**Container mode:** one container per attempt, only the project dir mounted at `/work`, `--network none`, your uid, CPU and memory limits, timeouts enforced inside the container. The image needs `sh`, `cat` and `timeout`. On macOS, Colima only mounts `$HOME`, so worktrees must live under it.
+
+**Native mode is weaker:** file paths are confined with realpath (symlinks can't escape), commands run in the project dir with only `PATH`, `LANG` and `HOME`, but commands themselves are not confined. Diff-scope (2.4) is the backstop; `sandbox-exec` or a dedicated user is still to do.
+
+**Model names:** routing keeps `provider/model` ids; the worker passes the part after `/` to OMP's fuzzy matching (`claude/sonnet` -> `sonnet`). `providerOf` in the engine uses the part before `/` for usage rows.
+
+**Live smoke (2026-11-03, sonnet, alpine container):** 2 units, both green on the first attempt, 139 s, 6.3k output tokens (86k cache reads). Nothing outside the project changed; the probe showed no `~/.ssh`, no host filesystem above `/work` and no network.
+
+**Finding: the worker never sees the acceptance criteria.** `UnitBrief` (SPEC section 8) carries the task (with `covers` ids only), constraints and the context pack, but not the criterion text and not the Brief's `decisions`. In the smoke run the test author was told to cover "AC1, AC2 and AC3" without their meaning, so it invented AC2 and AC3: the required "non-integer argument exits 1" case was never tested or implemented, and the weak inline gates passed it. Proposed fix: add `criteria: Criterion[]` (the ones the task covers) and `decisions: string[]` to UnitBrief and render them in the prompt. Needs a decision since it changes the SPEC section 8 schema.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
