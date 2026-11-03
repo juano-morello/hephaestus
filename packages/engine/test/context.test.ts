@@ -124,7 +124,7 @@ describe("buildContextPack", () => {
       task: task(["inventory/*.go"]),
       locked: ["inventory/stack_test.go"],
       constraints: [],
-      budgetTokens: 12,
+      budgetTokens: 14,
     });
     expect(pack.locked).toHaveLength(1);
     expect(pack.files.map((f) => f.path)).toEqual(["inventory/cap.go"]);
