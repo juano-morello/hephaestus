@@ -4,11 +4,11 @@ import { join } from "node:path";
 import type { Brief, GateResult, Plan, Task, Workspace } from "@hephaestus/core";
 import { briefHash } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
+import { runOk } from "@hephaestus/sandbox";
 import type { EngineConfig } from "../src/config.ts";
 import { attemptBranch, runBranch, runPlan } from "../src/engine.ts";
 import type { UnitGate, UnitGateContext } from "../src/gates.ts";
 import { createGit } from "../src/git.ts";
-import { runOk } from "../src/proc.ts";
 import type { SpawnInput, SpawnOutput, Worker } from "../src/worker.ts";
 import { initRepo, tempDir, writeFiles } from "./helpers.ts";
 

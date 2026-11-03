@@ -1,4 +1,4 @@
-import { runOk } from "./proc.ts";
+import { runOk } from "@hephaestus/sandbox";
 
 /** Engine commits carry their own identity, so they never depend on the repo's git config. */
 const IDENTITY = ["-c", "user.name=Hephaestus", "-c", "user.email=heph@localhost"];

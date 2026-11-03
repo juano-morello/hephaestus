@@ -2,7 +2,7 @@ import { afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { runOk } from "../src/proc.ts";
+import { runOk } from "@hephaestus/sandbox";
 
 /** A fresh temp dir per call, removed after each test. */
 export function tempDir(): () => string {

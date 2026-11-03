@@ -24,6 +24,7 @@
       "dependencies": {
         "@hephaestus/core": "workspace:*",
         "@hephaestus/ledger": "workspace:*",
+        "@hephaestus/sandbox": "workspace:*",
         "zod": "4.6.7",
       },
     },
@@ -34,6 +35,10 @@
         "@hephaestus/core": "workspace:*",
         "zod": "4.6.7",
       },
+    },
+    "packages/sandbox": {
+      "name": "@hephaestus/sandbox",
+      "version": "0.0.0",
     },
   },
   "packages": {
@@ -74,6 +79,8 @@
     "@hephaestus/engine": ["@hephaestus/engine@workspace:packages/engine"],
 
     "@hephaestus/ledger": ["@hephaestus/ledger@workspace:packages/ledger"],
+
+    "@hephaestus/sandbox": ["@hephaestus/sandbox@workspace:packages/sandbox"],
 
     "@huggingface/jinja": ["@huggingface/jinja@0.5.11", "", {}, "sha512-YzEzwM5oQf4r0vs7ifWQ+yuVR1YkAHrjERQ+a8WRsStHHp4NRBg+NesjiFc+X2AFUpRvvrIeHDS1xFy9jY/IjQ=="],
 
