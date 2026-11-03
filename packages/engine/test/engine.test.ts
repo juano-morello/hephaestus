@@ -202,6 +202,7 @@ describe("runPlan", () => {
       "node.started",
       "context.pack_built",
       "unit.attempt.started",
+      "gate.result",
       "unit.attempt.finished",
       "unit.accepted",
       "context.pack_built",
