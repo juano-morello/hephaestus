@@ -18,6 +18,15 @@
         "zod": "4.6.7",
       },
     },
+    "packages/engine": {
+      "name": "@hephaestus/engine",
+      "version": "0.0.0",
+      "dependencies": {
+        "@hephaestus/core": "workspace:*",
+        "@hephaestus/ledger": "workspace:*",
+        "zod": "4.6.7",
+      },
+    },
     "packages/ledger": {
       "name": "@hephaestus/ledger",
       "version": "0.0.0",
@@ -61,6 +70,8 @@
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 
     "@hephaestus/core": ["@hephaestus/core@workspace:packages/core"],
+
+    "@hephaestus/engine": ["@hephaestus/engine@workspace:packages/engine"],
 
     "@hephaestus/ledger": ["@hephaestus/ledger@workspace:packages/ledger"],
 

@@ -9,7 +9,7 @@
     "bun": ">=1.4.4"
   },
   "scripts": {
-    "typecheck": "tsc -b packages/core packages/ledger",
+    "typecheck": "tsc -b packages/core packages/ledger packages/engine",
     "lint": "biome ci .",
     "format": "biome check --write .",
     "test": "bun test"
