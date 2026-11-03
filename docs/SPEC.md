@@ -73,7 +73,7 @@ Gate evidence order: deterministic results, run trajectory, historical rollback 
 ```
 hephaestus
 ├── engine      graph runner, lanes, retries, scope enforcement
-├── gates       tests, diff-scope, lint, typecheck, req->test mapping, plan gates
+├── gates       tests, diff-scope, lint, typecheck, req->check mapping, plan gates
 ├── ledger      append-only events, projections, blob store
 ├── context     context pack builder + per-stack adapters
 ├── learning    retro, constraint store, proposal queue
@@ -320,10 +320,15 @@ Brief = {
   open_questions: string[],     // must be empty to plan
   source: "claude-code" | "codex" | "cli" | "omp"
 }
-Criterion = { id: string, text: string, kind: "behavior" | "nonfunctional" }
+Criterion = {
+  id: string,
+  text: string,
+  kind: "behavior" | "nonfunctional",
+  check?: { gate: string }     // omitted: checked by a test task; set: checked by that gate
+}
 ```
 
-Brief gate: acceptance non-empty, no open questions, every project exists. Failures return to the submitting agent so it asks the user.
+Brief gate: acceptance non-empty, no open questions, every project exists, every gate named by a `check` is configured in some project. Failures return to the submitting agent so it asks the user.
 
 ### Plan (planner -> engine)
 
@@ -351,7 +356,7 @@ Task = {
 
 Plan gates (pure code):
 
-- every Criterion covered by at least one `test` task
+- every Criterion covered: test-checked ones by at least one `test` task; gate-checked ones by a task in a project where that gate is configured, and never by a `test` task
 - every `consumes` resolves to a `produces`; graph is acyclic
 - every `implement` task has a matching `test` task that precedes it
 - parallel tasks in the same project have non-overlapping scopes
@@ -501,7 +506,7 @@ Learned routing from ledger and eval data is v2.
 ## 11. Gates
 
 - Written as code, run in the same sandbox as the worker.
-- Built-ins: tests, typecheck, lint, diff-scope (vs plan scope + locked paths), touched-vs-diff, coverage delta, requirement-to-test mapping, plan gates, brief gate, project-imports-headless (Godot).
+- Built-ins: tests, typecheck, lint, diff-scope (vs plan scope + locked paths), touched-vs-diff, coverage delta, requirement-to-check mapping, plan gates, brief gate, project-imports-headless (Godot).
 - Integration gate per workspace, run at merge on the full changeset (e.g. headless Go server + scripted bot client).
 - Custom gates as TS files in `.heph/gates/`.
 - Flaky gates are worse than none: gate flakiness is tracked in `gate_stats` and surfaced.
