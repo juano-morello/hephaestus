@@ -52,6 +52,25 @@ describe("evaluatePlannerOutput", () => {
     expect(result.plan?.brief_hash).toBe("stamped");
   });
 
+  test("reports an escalation with its reasons, not as a failure", () => {
+    const output = JSON.stringify({ schema: 1, escalate: ["AC2 cannot be checked"] });
+    const result = evaluatePlannerOutput(output, ctx, "hash");
+    expect(result).toMatchObject({ valid: false, failures: [], gates: [] });
+    expect(result.escalate).toEqual(["AC2 cannot be checked"]);
+    expect(result.plan).toBeUndefined();
+  });
+
+  test("buckets an escalation without reasons as schema", () => {
+    const result = evaluatePlannerOutput('{"schema":1,"escalate":[]}', ctx, "hash");
+    expect(result.failures).toEqual(["schema"]);
+    expect(result.escalate).toBeUndefined();
+  });
+
+  test("buckets a plan that also escalates as schema", () => {
+    const output = JSON.stringify({ ...valid, escalate: ["unsure"] });
+    expect(evaluatePlannerOutput(output, ctx, "hash").failures).toEqual(["schema"]);
+  });
+
   test("lists failed gates by name", () => {
     const broken = plan([task("T1", { covers: ["AC1"] })]);
     const result = evaluatePlannerOutput(JSON.stringify(broken), ctx, "hash");
