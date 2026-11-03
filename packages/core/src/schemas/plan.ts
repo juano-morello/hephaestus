@@ -38,5 +38,18 @@ export const Plan = z
     tasks: z.array(Task),
     risks: z.array(z.string()),
   })
-  .strict();
+  .strict()
+  .superRefine((plan, ctx) => {
+    const seen = new Set<string>();
+    plan.tasks.forEach((t, i) => {
+      if (seen.has(t.id)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["tasks", i, "id"],
+          message: `duplicate task id "${t.id}"`,
+        });
+      }
+      seen.add(t.id);
+    });
+  });
 export type Plan = z.infer<typeof Plan>;
