@@ -7,7 +7,16 @@ export type RunRow = {
   run_id: string;
   changeset_id: string;
   owner_node: string;
-  status: "created" | "planned" | "escalated" | "paused" | "running" | "finished" | "failed";
+  status:
+    | "created"
+    | "planned"
+    | "escalated"
+    | "paused"
+    | "running"
+    | "built"
+    | "staged"
+    | "finished"
+    | "failed";
   eval: boolean;
   brief_hash: string;
   created_at: string;

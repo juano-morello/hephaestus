@@ -188,7 +188,16 @@ export function applyEvent(db: Db, e: LedgerEvent): void {
       setUnitStatus(db, e, "needs_input");
       return;
     case "node.finished":
+      // The build node finishing cleanly means the changeset is ready to land.
+      if (e.graph_node === "build" && e.data.outcome === "ok") {
+        db.prepare(
+          `UPDATE runs SET status = 'built' WHERE run_id = ? AND status NOT IN ${TERMINAL}`,
+        ).run(e.run_id);
+      }
+      return;
     case "merge.staged":
+      setRunStatus(db, e, "staged");
+      return;
     case "merge.committed":
     case "merge.aborted":
     case "human.input":

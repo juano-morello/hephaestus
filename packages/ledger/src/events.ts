@@ -101,7 +101,15 @@ export const EVENT_TYPES = {
   "unit.accepted": def(Empty, UNIT),
   "unit.escalated": def(Reason, UNIT),
   "unit.needs_input": def(Reason, UNIT),
-  "merge.staged": def(Refs),
+  "merge.staged": def(
+    z
+      .object({
+        refs: z.record(z.string(), CommitSha),
+        /** Landing via pull requests: repo -> PR url. Absent for local fast-forward landings. */
+        prs: z.record(z.string(), z.url()).optional(),
+      })
+      .strict(),
+  ),
   "merge.committed": def(Refs),
   "merge.aborted": def(Reason),
   "human.input": def(

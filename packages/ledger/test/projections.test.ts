@@ -226,3 +226,46 @@ describe("projections", () => {
     reopened.close();
   });
 });
+
+describe("changeset statuses", () => {
+  test("a finished build is built, a staged merge is staged, and PR links are kept", () => {
+    const ledger = open(dir());
+    ledger.appendMany([
+      { ...samples["run.created"], ...run("R5") },
+      { ...samples["run.plan_ready"], ...run("R5") },
+      { ...samples["node.started"], ...run("R5") },
+      { ...samples["node.finished"], ...run("R5"), graph_node: "build", data: { outcome: "ok" } },
+    ]);
+    expect(ledger.run("R5")?.status).toBe("built");
+    const staged = ledger.append({
+      ...samples["merge.staged"],
+      ...run("R5"),
+      data: { refs: { server: "a1b2c3d" }, prs: { server: "https://github.com/o/server/pull/7" } },
+    });
+    expect(staged.data).toEqual({
+      refs: { server: "a1b2c3d" },
+      prs: { server: "https://github.com/o/server/pull/7" },
+    });
+    expect(ledger.run("R5")?.status).toBe("staged");
+    ledger.append({ ...samples["merge.committed"], ...run("R5") });
+    ledger.append({ ...samples["run.finished"], ...run("R5") });
+    expect(ledger.run("R5")?.status).toBe("finished");
+    ledger.close();
+  });
+
+  test("a failed node does not mark the run built", () => {
+    const ledger = open(dir());
+    ledger.appendMany([
+      { ...samples["run.created"], ...run("R6") },
+      { ...samples["node.started"], ...run("R6") },
+      {
+        ...samples["node.finished"],
+        ...run("R6"),
+        graph_node: "build",
+        data: { outcome: "failed" },
+      },
+    ]);
+    expect(ledger.run("R6")?.status).toBe("running");
+    ledger.close();
+  });
+});
