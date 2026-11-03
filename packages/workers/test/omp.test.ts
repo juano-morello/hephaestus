@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UnitBrief } from "@hephaestus/core";
 import type { SpawnInput } from "@hephaestus/engine";
+import type { CustomTool } from "@oh-my-pi/pi-coding-agent";
 import {
   createOmpWorker,
   defaultModelPattern,
@@ -116,8 +117,10 @@ function fakeSession(
   const make = async (opts: ReturnType<typeof sessionOptions>) => {
     const tools = new Map((opts.customTools ?? []).map((t) => [t.name, t]));
     const call = async (name: string, params: object) => {
-      const r = await tools.get(name)?.execute("id", params as never, undefined, {} as never);
-      return (r?.content[0] as { text: string }).text;
+      const tool = tools.get(name);
+      if (!tool) throw new Error(`no tool ${name}`);
+      const r = await (tool as CustomTool).execute("id", params as never, undefined, {} as never);
+      return (r.content[0] as { text: string }).text;
     };
     const session: OmpSession = {
       async prompt(text) {
