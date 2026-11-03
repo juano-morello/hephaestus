@@ -9,8 +9,10 @@ export type EngineConfig = {
   maxAttempts: number;
   budgetTokens: number;
   tools: string[];
-  /** Commands shown to the worker in the context pack, per project. */
+  /** Per project: shown to the worker in the context pack and run by the command gates. */
   commands: Record<string, ContextPack["project"]["commands"]>;
+  /** Per command gate run. Default 10 minutes. */
+  gateTimeoutMs?: number;
 };
 
 export const ROLE_BY_KIND: Record<TaskKind, string> = {
