@@ -2,7 +2,8 @@
 // and measure how often its first answer passes every plan gate.
 //
 //   bun run packages/core/scripts/plan-proto.ts --brief <file> --workspace <file> [--runs N]
-//     [--model opus] [--thinking high] [--prompt <file>] [--repo-maps <dir>] [--out <dir>]
+//     [--model opus] [--thinking high] [--prompt <file>] [--gates <file>] [--repo-maps <dir>]
+//     [--out <dir>]
 
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -18,6 +19,7 @@ import { DEFAULT_LIMITS, type GateContext } from "../src/gates/types.ts";
 import { deriveEdges, topoOrder } from "../src/graph/edges.ts";
 import { type Evaluation, evaluatePlannerOutput } from "../src/planner/evaluate.ts";
 import { Brief, briefHash } from "../src/schemas/brief.ts";
+import { ProjectGates } from "../src/schemas/gates.ts";
 import { Workspace } from "../src/schemas/workspace.ts";
 
 type Thinking = CreateAgentSessionOptions["thinkingLevel"];
@@ -30,6 +32,7 @@ const { values } = parseArgs({
     model: { type: "string", default: "opus" },
     thinking: { type: "string", default: "high" },
     prompt: { type: "string" },
+    gates: { type: "string" },
     "repo-maps": { type: "string" },
     out: { type: "string" },
   },
@@ -44,6 +47,7 @@ const ROOT = resolve(import.meta.dir, "..", "..", "..");
 const briefPath = resolve(values.brief);
 const workspacePath = resolve(values.workspace);
 const runs = Number.parseInt(values.runs, 10);
+const gatesPath = resolve(values.gates ?? join(dirname(workspacePath), "gates.yaml"));
 const repoMapsDir = resolve(values["repo-maps"] ?? join(dirname(workspacePath), "repo-maps"));
 const briefName = basename(briefPath, extname(briefPath));
 const outDir = join(
@@ -59,8 +63,10 @@ const loadData = async (path: string) => {
 
 const workspaceFile = await loadData(workspacePath);
 const workspace = Workspace.parse(workspaceFile.data);
+const gatesFile = await loadData(gatesPath);
+const projectGates = ProjectGates.parse(gatesFile.data);
 const brief = Brief.parse((await loadData(briefPath)).data);
-const briefCheck = briefGate(brief, workspace);
+const briefCheck = briefGate(brief, workspace, projectGates);
 if (briefCheck.verdict === "fail") {
   console.error(`brief gate failed: ${briefCheck.reason}`);
   for (const e of briefCheck.evidence) console.error(`  - ${e}`);
@@ -80,9 +86,10 @@ const prompt = template
   .replaceAll("{{brief_hash}}", hash)
   .replace("{{brief}}", JSON.stringify(brief, null, 2))
   .replace("{{workspace}}", workspaceFile.text.trim())
+  .replace("{{project_gates}}", gatesFile.text.trim())
   .replace("{{repo_maps}}", repoMaps.join("\n\n"));
 
-const ctx: GateContext = { brief, workspace, limits: DEFAULT_LIMITS };
+const ctx: GateContext = { brief, workspace, limits: DEFAULT_LIMITS, projectGates };
 
 type Usage = { input: number; output: number; cacheRead: number; totalTokens: number };
 type RunRecord = {

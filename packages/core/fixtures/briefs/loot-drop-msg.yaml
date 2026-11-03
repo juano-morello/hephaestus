@@ -18,8 +18,9 @@ constraints:
   - Zone tick stays allocation-free on kills with empty rolls.
 acceptance:
   - id: AC1
-    kind: behavior
-    text: The proto repo defines LootDrop and MSG_LOOT_DROP, and buf lint and buf breaking pass.
+    kind: nonfunctional
+    text: The proto change passes buf lint and buf breaking against main (additive only).
+    check: { gate: buf }
   - id: AC2
     kind: behavior
     text: Killing a mob whose roll is non-empty sends exactly one LootDrop with the rolled items to each session within 30 units.

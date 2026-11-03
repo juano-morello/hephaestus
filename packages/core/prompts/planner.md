@@ -54,8 +54,13 @@ Task = {
 
 1. **One project per task.** `project` must be a key of `projects` in the workspace. Work that
    spans projects is several tasks.
-2. **Every criterion is tested.** Each Criterion id in the Brief appears in `covers` of at
-   least one `test` task. Use only ids that exist in the Brief.
+2. **Every criterion is covered by its check.** Use only Criterion ids that exist in the Brief.
+   - A criterion **without** `check` is verified by tests: its id appears in `covers` of at
+     least one `test` task.
+   - A criterion **with** `check: { gate }` is verified by that gate, not by tests. Put its id
+     in `covers` of the task whose output the gate checks, in a project where that gate is
+     configured (see Project gates below). Never list it in a `test` task: a test cannot
+     stand in for a gate.
 3. **Edges are derived, never declared.** Ordering comes only from `produces` and `consumes`:
    task B runs after task A if and only if B consumes something A produces (directly or through
    a chain). Therefore:
@@ -124,8 +129,9 @@ implementation exists.
 ## Example (not one of your inputs)
 
 Brief: abilities get a per-ability cooldown (AC1: casting during cooldown is rejected; AC2: the
-cooldown ends after `cooldown_ms`), and a new `CooldownStarted` message tells the caster
-(AC3). Workspace has projects `proto` and `server`.
+cooldown ends after `cooldown_ms`), a new `CooldownStarted` message tells the caster (AC3), and
+the proto change passes buf (AC4, `check: { gate: "buf" }`). Workspace has projects `proto`
+(gates include `buf`) and `server`.
 
 ```json
 {
@@ -134,7 +140,7 @@ cooldown ends after `cooldown_ms`), and a new `CooldownStarted` message tells th
   "tasks": [
     { "id": "T1", "title": "Define CooldownStarted message", "kind": "codegen", "project": "proto",
       "lane": "wide", "complexity": "standard", "complexity_reason": "additive protocol message other projects build on",
-      "scope": ["messages/ability.proto", "messages/types.proto"], "covers": ["AC3"],
+      "scope": ["messages/ability.proto", "messages/types.proto"], "covers": ["AC4"],
       "produces": ["proto:CooldownStarted"], "spec": "Add message CooldownStarted { uint32 ability_id = 1; uint32 ms = 2; } and MsgType MSG_COOLDOWN_STARTED = 9. Additive only; buf breaking must pass." },
     { "id": "T2", "title": "Generate Go code for CooldownStarted", "kind": "codegen", "project": "server",
       "lane": "wide", "complexity": "standard", "complexity_reason": "consumes a contract from project proto",
@@ -156,11 +162,13 @@ cooldown ends after `cooldown_ms`), and a new `CooldownStarted` message tells th
 ```
 
 Note how T3 consumes the generated code it imports, T4 consumes `test:Cooldown` so it runs
-after the tests, and T3 and T4 never share a file.
+after the tests, T3 and T4 never share a file, and the gate-checked AC4 is covered by the proto
+task the `buf` gate checks, not by a test.
 
 ## Before you answer, check
 
-- Every Criterion id is in `covers` of some `test` task.
+- Every test-checked Criterion id is in `covers` of some `test` task; every gate-checked one is
+  in `covers` of a non-test task in a project with that gate.
 - Every `consumes` string matches exactly one `produces` string elsewhere; no cycles.
 - Every `implement` task consumes a `test:` artifact from a same-project test task with an
   overlapping `covers`.
@@ -179,6 +187,15 @@ after the tests, and T3 and T4 never share a file.
 
 ```yaml
 {{workspace}}
+```
+
+### Project gates
+
+Gate names configured per project. A `check: { gate }` criterion can only be covered in a
+project listed with that gate.
+
+```yaml
+{{project_gates}}
 ```
 
 ### Repo maps

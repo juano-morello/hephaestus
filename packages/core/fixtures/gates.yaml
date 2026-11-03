@@ -1,0 +1,7 @@
+# Gate names configured per project: SPEC section 11 built-ins plus each repo's .heph/gates/*.ts.
+# Stands in for resolved config (SPEC section 5) until config loading exists.
+# "buf" is a custom gate in the proto repo running `buf lint` and `buf breaking --against main`.
+proto: [lint, buf, diff_scope, touched_vs_diff]
+server: [tests, typecheck, lint, diff_scope, touched_vs_diff, coverage_delta]
+client: [tests, lint, project_imports_headless, diff_scope, touched_vs_diff]
+web: [tests, typecheck, lint, diff_scope, touched_vs_diff]

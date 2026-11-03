@@ -18,8 +18,9 @@ constraints:
   - Client logic must be testable headless with GUT; scene layout is out of the automated lanes.
 acceptance:
   - id: AC1
-    kind: behavior
-    text: The proto repo defines LootDrop and MSG_LOOT_DROP, and buf lint and buf breaking pass.
+    kind: nonfunctional
+    text: The proto change passes buf lint and buf breaking against main (additive only).
+    check: { gate: buf }
   - id: AC2
     kind: behavior
     text: Killing a mob with a non-empty roll sends one LootDrop to each session within 30 units and none beyond.
