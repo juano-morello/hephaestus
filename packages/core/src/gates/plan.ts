@@ -78,8 +78,9 @@ export function consumesResolve(plan: Plan): GateResult {
   );
 }
 
-export function testPrecedesImplement(plan: Plan): GateResult {
+export function testPrecedesImplement(plan: Plan, ctx: GateContext): GateResult {
   const { reach } = graph(plan);
+  const gated = new Set(ctx.brief.acceptance.filter((c) => c.check).map((c) => c.id));
   const tests = plan.tasks.filter((t) => t.kind === "test");
   const evidence: string[] = [];
 
@@ -88,18 +89,26 @@ export function testPrecedesImplement(plan: Plan): GateResult {
       evidence.push(`${impl.id}: implement task covers no criteria`);
       continue;
     }
+    // Gate-checked criteria cannot lock an implementation; only test-checked ones count.
+    const testable = impl.covers.filter((c) => !gated.has(c));
+    if (testable.length === 0) {
+      evidence.push(
+        `${impl.id}: implement task covers only gate-checked criteria (${impl.covers.join(", ")}); it needs a test-checked criterion`,
+      );
+      continue;
+    }
     const matching = tests.filter(
-      (t) => t.project === impl.project && t.covers.some((c) => impl.covers.includes(c)),
+      (t) => t.project === impl.project && t.covers.some((c) => testable.includes(c)),
     );
     if (matching.length === 0) {
       evidence.push(
-        `${impl.id}: no test task in project ${impl.project} covers ${impl.covers.join(", ")}`,
+        `${impl.id}: no test task in project ${impl.project} covers ${testable.join(", ")}`,
       );
       continue;
     }
     if (matching.some((t) => reach.get(t.id)?.has(impl.id))) continue;
     for (const t of matching) {
-      const shared = t.covers.filter((c) => impl.covers.includes(c)).join(", ");
+      const shared = t.covers.filter((c) => testable.includes(c)).join(", ");
       const hint = t.produces?.length
         ? `consume one of: ${t.produces.join(", ")}`
         : `${t.id} produces nothing to consume`;
@@ -222,7 +231,7 @@ export function runPlanGates(plan: Plan, ctx: GateContext): GateResult[] {
     projectsExist(plan, ctx),
     criteriaCovered(plan, ctx),
     consumesResolve(plan),
-    testPrecedesImplement(plan),
+    testPrecedesImplement(plan, ctx),
     parallelScopesDisjoint(plan),
     migrationIrreversible(plan),
     complexitySanity(plan, ctx),
