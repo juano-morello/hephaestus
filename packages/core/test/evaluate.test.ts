@@ -39,10 +39,17 @@ describe("evaluatePlannerOutput", () => {
     expect(result.error).toContain("schema:");
   });
 
-  test("flags a wrong brief_hash and still runs the gates", () => {
-    const result = evaluatePlannerOutput(JSON.stringify(valid), ctx, "other");
-    expect(result.failures).toEqual(["brief_hash"]);
-    expect(result.gates).toHaveLength(8);
+  test("stamps brief_hash itself, so the planner need not output it", () => {
+    const { brief_hash: _, ...withoutHash } = valid;
+    const result = evaluatePlannerOutput(JSON.stringify(withoutHash), ctx, "stamped");
+    expect(result).toMatchObject({ valid: true, failures: [] });
+    expect(result.plan?.brief_hash).toBe("stamped");
+  });
+
+  test("overrides a brief_hash the planner made up", () => {
+    const result = evaluatePlannerOutput(JSON.stringify(valid), ctx, "stamped");
+    expect(result.valid).toBe(true);
+    expect(result.plan?.brief_hash).toBe("stamped");
   });
 
   test("lists failed gates by name", () => {

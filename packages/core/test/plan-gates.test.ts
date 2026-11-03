@@ -179,7 +179,7 @@ describe("consumes_resolve", () => {
 
 describe("test_precedes_implement", () => {
   test("passes when a covering test task precedes the implement task", () => {
-    expect(testPrecedesImplement(goodPlan()).verdict).toBe("pass");
+    expect(testPrecedesImplement(goodPlan(), ctx()).verdict).toBe("pass");
   });
 
   test("passes when the test precedes transitively", () => {
@@ -188,12 +188,12 @@ describe("test_precedes_implement", () => {
       task("T2", { kind: "codegen", consumes: ["test:Cap"], produces: ["gen:x"] }),
       task("T3", { kind: "implement", covers: ["AC1"], consumes: ["gen:x"] }),
     ]);
-    expect(testPrecedesImplement(p).verdict).toBe("pass");
+    expect(testPrecedesImplement(p, ctx()).verdict).toBe("pass");
   });
 
   test("fails when no test task covers the implement task's criteria", () => {
     const p = plan([task("T1", { kind: "implement", covers: ["AC1"] })]);
-    const result = testPrecedesImplement(p);
+    const result = testPrecedesImplement(p, ctx());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(["T1: no test task in project server covers AC1"]);
   });
@@ -203,7 +203,7 @@ describe("test_precedes_implement", () => {
       task("T1", { kind: "test", covers: ["AC1"], produces: ["test:Cap"] }),
       task("T2", { kind: "implement", covers: ["AC1"] }),
     ]);
-    const result = testPrecedesImplement(p);
+    const result = testPrecedesImplement(p, ctx());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual([
       "T2: test T1 covers AC1 but does not precede it (consume one of: test:Cap)",
@@ -215,20 +215,35 @@ describe("test_precedes_implement", () => {
       task("T1", { kind: "test", project: "client", covers: ["AC1"], produces: ["test:Cap"] }),
       task("T2", { kind: "implement", covers: ["AC1"], consumes: ["test:Cap"] }),
     ]);
-    const result = testPrecedesImplement(p);
+    const result = testPrecedesImplement(p, ctx());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(["T2: no test task in project server covers AC1"]);
   });
 
   test("fails when an implement task covers nothing", () => {
-    const result = testPrecedesImplement(plan([task("T1", { kind: "implement", covers: [] })]));
+    const result = testPrecedesImplement(plan([task("T1", { kind: "implement", covers: [] })]), ctx());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(["T1: implement task covers no criteria"]);
   });
 
+  test("fails an implement task whose covers are only gate-checked criteria", () => {
+    const gated = brief({
+      acceptance: [
+        { id: "AC1", text: "a", kind: "behavior" },
+        { id: "AC2", text: "buf passes", kind: "nonfunctional", check: { gate: "buf" } },
+      ],
+    });
+    const p = plan([task("T1", { kind: "implement", covers: ["AC2"] })]);
+    const result = testPrecedesImplement(p, ctx({ brief: gated }));
+    expect(result.verdict).toBe("fail");
+    expect(result.evidence).toEqual([
+      "T1: implement task covers only gate-checked criteria (AC2); it needs a test-checked criterion",
+    ]);
+  });
+
   test("ignores non-implement tasks", () => {
     const p = plan([task("T1", { kind: "docs" }), task("T2", { kind: "codegen" })]);
-    expect(testPrecedesImplement(p).verdict).toBe("pass");
+    expect(testPrecedesImplement(p, ctx()).verdict).toBe("pass");
   });
 });
 
