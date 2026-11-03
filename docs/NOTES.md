@@ -135,6 +135,26 @@ Interpretations made in code (confirm or change):
 
 Not built here: intent/effect/confirm events (v0 step 7), sync ingest (v0 step 8), gate flakiness beyond counts, and where the per-node dir lives (daemon).
 
+## Engine (v0 step 2)
+
+Built 2026-11-03 in `packages/engine`: `runPlan()` runs an approved Plan one unit at a time in derived order, at most 3 attempts per unit, against pluggable `Worker` and `UnitGate` interfaces, on one git repo. Process spawning lives only in `src/proc.ts`. Tested end to end with a real temp repo and ledger; the OMP worker (2.3), built-in gates (2.4) and multi-repo set merge (2.5) are not built.
+
+**Spec conflict, needs a decision:** SPEC section 4 names the changeset branch `heph/<run>` and section 13 names attempt branches `heph/<run>/<unit>/a<attempt>`. Git cannot have both: a ref cannot be a branch and a directory of branches at once. The code keeps `heph/<run>` (user-facing) and uses `heph-attempt/<run>/<unit>/a<n>` for attempts, built in one place (`attemptBranch` in `src/engine.ts`). Alternatives: `heph/<run>/changeset` plus the section 13 names, or `heph/<run>--<unit>--a<n>`.
+
+Interpretations made in code:
+
+1. **The worker returns no diff.** SPEC section 3 lists `diff` in the spawn result; the engine commits the worktree and reads the diff from git instead, so the worker's view is never trusted.
+2. **Every attempt gets a commit**, even an empty one, so each attempt branch is a complete record.
+3. **Locked paths** are all files changed by accepted `test` tasks in the same project that precede the unit in the derived graph. A test task that also touched non-test files would lock those too; the diff-scope gate (2.4) is what keeps test tasks to test files.
+4. **Invalid worker output or an error exit counts as an attempt.** It is recorded as a failing synthetic gate `worker_output`, so it shows up in `gate_stats` and in the Return.
+5. **A gate that throws fails** with reason "gate crashed".
+6. **Interrupted or rate-limited attempts pause the run** (`run.paused` with `rate_limit` or `user`) instead of retrying, since resume is v0 step 7. They never count.
+7. **The Return's scope is the task scope**, not yet narrowed to the failing files.
+8. **No tier bump between attempts**; every attempt runs at the sanity-bumped tier (escalation routing is after v0).
+9. **`run.finished` means the build node finished.** The run branch holds the changeset; no `merge.*` events until the set merge (2.5).
+10. **The run branch is reset to `baseRef` at run start.** Calling `runPlan` again for the same run id restarts it; resume (2.7) must reconcile instead.
+11. **`runPlan` checks `plan.brief_hash` against the Brief** and rejects a mismatch before writing any event.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
