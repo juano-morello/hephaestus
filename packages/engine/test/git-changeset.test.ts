@@ -57,17 +57,13 @@ describe("git for changesets", () => {
     const other = join(dir(), "other");
     await runOk(["git", "clone", "-q", origin, other]);
     writeFiles(other, { "d.txt": "d\n" });
-    await runOk(
-      ["git", "-c", "user.name=O", "-c", "user.email=o@x", "commit", "-qam", "d", "--allow-empty"],
-      { cwd: other },
-    );
     await runOk(["git", "add", "-A"], { cwd: other });
-    await runOk(["git", "-c", "user.name=O", "-c", "user.email=o@x", "commit", "-qm", "d2"], {
+    await runOk(["git", "-c", "user.name=O", "-c", "user.email=o@x", "commit", "-qm", "d"], {
       cwd: other,
     });
     await runOk(["git", "push", "-q", "origin", "main"], { cwd: other });
     await git.fetch("origin", "main");
-    expect(await git.revParse("origin/main")).toBe(await git.remoteRef("origin", "main"));
+    expect(await git.remoteRef("origin", "main")).toBe(await git.revParse("origin/main"));
   });
 
   test("a detached worktree at a ref, and merge-base", async () => {
