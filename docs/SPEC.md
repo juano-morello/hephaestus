@@ -563,7 +563,7 @@ Every side effect writes an intent event, performs the effect, writes a confirma
 
 ### Idempotent effects
 
-- Branches/worktrees: deterministic names (`heph/<run>/<unit>/a<attempt>`), reused or reset to recorded base.
+- Branches/worktrees: deterministic names (`heph-attempt/<run>/<unit>/a<attempt>`), reused or reset to recorded base. Attempt branches live outside `heph/`: git cannot hold the changeset branch `heph/<run>` and branches under `heph/<run>/` at the same time.
 - Pushes: compare remote ref to expected SHA before pushing.
 - Merges: staging ref, then fast-forward; target already at expected SHA means done.
 - Codegen and gates: pure, re-run.

@@ -139,7 +139,7 @@ Not built here: intent/effect/confirm events (v0 step 7), sync ingest (v0 step 8
 
 Built 2026-11-03 in `packages/engine`: `runPlan()` runs an approved Plan one unit at a time in derived order, at most 3 attempts per unit, against pluggable `Worker` and `UnitGate` interfaces, on one git repo. Process spawning lives only in `src/proc.ts`. Tested end to end with a real temp repo and ledger; the OMP worker (2.3), built-in gates (2.4) and multi-repo set merge (2.5) are not built.
 
-**Spec conflict, needs a decision:** SPEC section 4 names the changeset branch `heph/<run>` and section 13 names attempt branches `heph/<run>/<unit>/a<attempt>`. Git cannot have both: a ref cannot be a branch and a directory of branches at once. The code keeps `heph/<run>` (user-facing) and uses `heph-attempt/<run>/<unit>/a<n>` for attempts, built in one place (`attemptBranch` in `src/engine.ts`). Alternatives: `heph/<run>/changeset` plus the section 13 names, or `heph/<run>--<unit>--a<n>`.
+**Spec conflict, decided 2026-11-03: keep `heph-attempt/`**, written into SPEC section 13. SPEC section 4 names the changeset branch `heph/<run>` and section 13 names attempt branches `heph/<run>/<unit>/a<attempt>`. Git cannot have both: a ref cannot be a branch and a directory of branches at once. The code keeps `heph/<run>` (user-facing) and uses `heph-attempt/<run>/<unit>/a<n>` for attempts, built in one place (`attemptBranch` in `src/engine.ts`). Alternatives: `heph/<run>/changeset` plus the section 13 names, or `heph/<run>--<unit>--a<n>`.
 
 Interpretations made in code:
 
