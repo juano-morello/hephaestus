@@ -1,0 +1,44 @@
+schema: 1
+source: cli
+goal: When a mob dies, the server rolls its loot and tells nearby players about the drop.
+context: >
+  Loot tables and Roll already exist on the server but nothing calls them on kill and there is no
+  message for it. This brief adds the protocol message and the server side only; the client will
+  ignore unknown message types until a later brief renders drops. Range matches the existing
+  visibility radius used for movement updates.
+decisions:
+  - New message LootDrop { uint64 drop_id; uint64 mob_id; Vec2 pos; repeated ItemStack items } in messages/loot.proto.
+  - New MsgType value MSG_LOOT_DROP = 5.
+  - Drops are broadcast to every session within 30 units of the mob at the moment of death.
+  - drop_id comes from a per-zone monotonically increasing counter.
+  - Empty rolls send nothing.
+constraints:
+  - Generated Go code is produced by make proto and never hand-edited.
+  - Proto changes must pass buf breaking against main (additive only).
+  - Zone tick stays allocation-free on kills with empty rolls.
+acceptance:
+  - id: AC1
+    kind: behavior
+    text: The proto repo defines LootDrop and MSG_LOOT_DROP, and buf lint and buf breaking pass.
+  - id: AC2
+    kind: behavior
+    text: Killing a mob whose roll is non-empty sends exactly one LootDrop with the rolled items to each session within 30 units.
+  - id: AC3
+    kind: behavior
+    text: Sessions farther than 30 units receive no LootDrop.
+  - id: AC4
+    kind: behavior
+    text: A kill with an empty roll sends no message.
+  - id: AC5
+    kind: behavior
+    text: Two drops in the same zone get strictly increasing drop_id values.
+out_of_scope:
+  - Client rendering of drops
+  - Picking up drops
+  - Drop expiry
+known_paths:
+  - project: proto
+    paths: [messages/]
+  - project: server
+    paths: [internal/combat/, internal/loot/, internal/zone/, internal/net/]
+open_questions: []

@@ -1,0 +1,46 @@
+schema: 1
+source: cli
+goal: Players see loot drops appear in the world when a nearby mob dies.
+context: >
+  Full-stack feature across the shared protocol, the Go server and the Godot client, starting from
+  the current state of all three repos (no loot message exists yet). The server rolls loot on
+  kill and broadcasts it; the client places a marker at the drop position and shows a short HUD
+  toast listing the items. Pickup is a later brief, so markers are purely visual for now.
+decisions:
+  - New message LootDrop { uint64 drop_id; uint64 mob_id; Vec2 pos; repeated ItemStack items } in messages/loot.proto, MsgType MSG_LOOT_DROP = 5.
+  - Server broadcasts to sessions within 30 units of the mob at death; empty rolls send nothing.
+  - Client handles MSG_LOOT_DROP via the Dispatcher, adds one marker per drop through Markers.add_marker, and calls Hud.show_toast for 3 seconds.
+  - Markers disappear after 60 seconds on the client; the server does not track expiry.
+  - Item names in the toast come from the client's existing item name lookup in InventoryModel.
+constraints:
+  - Generated code (server internal/pb, client scripts/net/pb) is produced by codegen only.
+  - Proto change is additive and passes buf breaking.
+  - Client logic must be testable headless with GUT; scene layout is out of the automated lanes.
+acceptance:
+  - id: AC1
+    kind: behavior
+    text: The proto repo defines LootDrop and MSG_LOOT_DROP, and buf lint and buf breaking pass.
+  - id: AC2
+    kind: behavior
+    text: Killing a mob with a non-empty roll sends one LootDrop to each session within 30 units and none beyond.
+  - id: AC3
+    kind: behavior
+    text: On receiving LootDrop the client adds exactly one marker at the drop position.
+  - id: AC4
+    kind: behavior
+    text: On receiving LootDrop the client shows a toast naming each item and count for 3 seconds.
+  - id: AC5
+    kind: behavior
+    text: A client marker is removed 60 seconds after it was added.
+out_of_scope:
+  - Picking up drops
+  - Drop sounds, particles and art
+  - Web project
+known_paths:
+  - project: proto
+    paths: [messages/]
+  - project: server
+    paths: [internal/combat/, internal/loot/, internal/zone/]
+  - project: client
+    paths: [scripts/net/, scripts/world/, scenes/ui/]
+open_questions: []

@@ -1,0 +1,41 @@
+schema: 1
+source: cli
+goal: Item stacks in a player inventory respect a maximum stack size defined per item type.
+context: >
+  Today Inventory.Add merges any amount into one slot, so players carry stacks of 10k potions.
+  Design wants a per-type cap. The item table is the only place item rules live, so the cap goes
+  there. Overflow should flow into new slots the way it does in most MMOs; when the bag is full
+  the caller (loot pickup, trade) needs to know how much did not fit so it can leave it on the
+  ground or cancel the trade.
+decisions:
+  - The cap is a new max_stack field on ItemDef, loaded from data/items.yaml.
+  - Non-stackable items behave as max_stack 1; the existing Stackable flag stays for now.
+  - Add fills existing partial stacks of the same type first, in slot order, then empty slots.
+  - Add returns the leftover count that did not fit instead of an error when the bag is full.
+constraints:
+  - No change to the persistence schema or the wire protocol.
+  - Inventory stays single-goroutine; no locks.
+acceptance:
+  - id: AC1
+    kind: behavior
+    text: Adding items below the cap merges into the existing partial stack of that type.
+  - id: AC2
+    kind: behavior
+    text: Adding past the cap fills the stack to max_stack and puts the remainder in new slots.
+  - id: AC3
+    kind: behavior
+    text: Non-stackable items never share a slot.
+  - id: AC4
+    kind: behavior
+    text: When no slot can take more, Add returns the exact leftover and the inventory is unchanged for that remainder.
+  - id: AC5
+    kind: behavior
+    text: Item table loading rejects max_stack of 0 and defaults a missing max_stack to 1.
+out_of_scope:
+  - Client UI for split stacks
+  - Protocol changes
+  - Migrating existing oversize stacks in saved characters
+known_paths:
+  - project: server
+    paths: [internal/inventory/, internal/items/, data/items.yaml]
+open_questions: []

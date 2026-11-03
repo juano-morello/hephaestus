@@ -1,0 +1,13 @@
+# Small MMORPG: Go server, Godot client, web, shared protocol (SPEC section 4 and 18).
+repos:
+  server: ./server
+  client: ./client
+  web: ./web
+  proto: ./proto
+projects:
+  proto: { repo: proto, path: ., stack: schema }
+  server: { repo: server, path: ., stack: go, depends_on: [proto] }
+  client: { repo: client, path: ., stack: godot, depends_on: [proto] }
+  web: { repo: web, path: ., stack: ts }
+integration:
+  gate: ./scripts/integration.sh
