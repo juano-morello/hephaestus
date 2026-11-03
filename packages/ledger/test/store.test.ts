@@ -21,6 +21,16 @@ describe("append", () => {
     ledger.close();
   });
 
+  test("ts always matches the time in the id, even if the clock goes backwards", () => {
+    let t = T0;
+    const ledger = openLedger(dir(), { nodeId: "devserver", now: () => t });
+    ledger.append(samples["human.input"]);
+    t = T0 - 5000;
+    const e = ledger.append(samples["human.input"]);
+    expect(Date.parse(e.ts)).toBe(decodeTime(e.id));
+    ledger.close();
+  });
+
   test("ids from one ledger strictly increase in append order", () => {
     const ledger = open();
     const ids = Array.from({ length: 20 }, () => ledger.append(samples["human.input"]).id);

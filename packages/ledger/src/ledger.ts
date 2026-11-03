@@ -2,10 +2,21 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type BlobStore, createBlobStore } from "./blobs.ts";
 import { type Db, openDb } from "./db.ts";
-import type { StoredEvent } from "./events.ts";
-import { type EventDraft, type EventType, type LedgerEvent, validateEvent } from "./events.ts";
+import {
+  type EventDraft,
+  type EventType,
+  type LedgerEvent,
+  type StoredEvent,
+  validateEvent,
+} from "./events.ts";
+import {
+  initProjections,
+  projectAppended,
+  queries,
+  rebuildProjections,
+} from "./projections/index.ts";
 import { insertEvent, migrateStore, type ReadFilter, readEvents } from "./store.ts";
-import { createUlid } from "./ulid.ts";
+import { createUlid, decodeTime } from "./ulid.ts";
 
 export type LedgerOptions = {
   nodeId: string;
@@ -20,8 +31,10 @@ export type Ledger = {
   /** All or nothing. */
   appendMany(drafts: EventDraft[]): LedgerEvent[];
   read(filter?: ReadFilter): StoredEvent[];
+  /** Drops every projection and replays all events. */
+  rebuildProjections(): void;
   close(): void;
-};
+} & ReturnType<typeof queries>;
 
 export class InvalidEventError extends Error {
   constructor(readonly issues: string[]) {
@@ -34,16 +47,20 @@ export function openLedger(dir: string, opts: LedgerOptions): Ledger {
   mkdirSync(dir, { recursive: true });
   const db: Db = openDb(join(dir, "ledger.db"));
   migrateStore(db);
+  initProjections(db);
   const blobs = createBlobStore(join(dir, "blobs"));
   const now = opts.now ?? Date.now;
-  const ulid = createUlid({ now, ...(opts.random ? { random: opts.random } : {}) });
+  // One clock reading per event, shared by the id and ts so they always agree.
+  let tick = 0;
+  const ulid = createUlid({ now: () => tick, ...(opts.random ? { random: opts.random } : {}) });
 
   const stamp = (draft: EventDraft): LedgerEvent => {
-    const t = now();
+    tick = now();
+    const id = ulid();
     const result = validateEvent({
       ...draft,
-      id: ulid(),
-      ts: new Date(t).toISOString(),
+      id,
+      ts: new Date(decodeTime(id)).toISOString(),
       schema: 1,
       node_id: opts.nodeId,
     });
@@ -55,14 +72,17 @@ export function openLedger(dir: string, opts: LedgerOptions): Ledger {
     return result.event;
   };
 
+  // Insert and project in one transaction: a projection error rolls the events back too.
   const appendMany = (drafts: EventDraft[]) =>
-    db.transaction(() =>
-      drafts.map((d) => {
+    db.transaction(() => {
+      const events = drafts.map((d) => {
         const e = stamp(d);
         insertEvent(db, e);
         return e;
-      }),
-    );
+      });
+      projectAppended(db);
+      return events;
+    });
 
   return {
     nodeId: opts.nodeId,
@@ -71,6 +91,8 @@ export function openLedger(dir: string, opts: LedgerOptions): Ledger {
       appendMany([draft as EventDraft])[0] as LedgerEvent<K>,
     appendMany,
     read: (filter) => readEvents(db, filter),
+    rebuildProjections: () => rebuildProjections(db),
+    ...queries(db),
     close: () => db.close(),
   };
 }

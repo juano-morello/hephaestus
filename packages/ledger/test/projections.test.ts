@@ -10,7 +10,7 @@ const dir = tempDir();
 let clock = Date.parse("2026-11-03T20:00:00.000Z");
 const open = (d: string) => openLedger(d, { nodeId: "devserver", now: () => (clock += 1000) });
 
-const run = (run_id: string, evalRun = false) => ({ run_id, changeset_id: `C-${run_id}` });
+const run = (run_id: string) => ({ run_id, changeset_id: `C-${run_id}` });
 const attempt = (run_id: string, unit_id: string, n: number) => ({
   ...run(run_id),
   project: "server",
