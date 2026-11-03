@@ -52,7 +52,7 @@ describe("renderUnitPrompt", () => {
       expect(text).toContain(part);
     }
     expect(text).not.toContain("## Feedback");
-    expect(text).not.toContain("—");
+    expect(text).not.toContain(String.fromCharCode(0x2014));
   });
 
   test("includes the previous attempt's failures when there is feedback", () => {
@@ -87,7 +87,7 @@ describe("role prompts", () => {
     test(`${role} loads and tells the worker how to finish`, async () => {
       const text = await loadRolePrompt(role);
       expect(text).toContain("submit_result");
-      expect(text).not.toContain("—");
+      expect(text).not.toContain(String.fromCharCode(0x2014));
     });
   }
 

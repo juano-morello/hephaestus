@@ -69,7 +69,7 @@ describe("tool handlers", () => {
     expect(await handlers.bash({ command: "echo out; echo err >&2; exit 3" })).toBe(
       "exit 3\nout\n[stderr]\nerr\n",
     );
-    expect(await handlers.bash({ command: "sleep 5", timeout_ms: 200 })).toStartWith(
+    expect(await handlers.bash({ command: "sleep 5; true", timeout_ms: 200 })).toStartWith(
       "exit 137 (timed out)",
     );
     const long = await handlers.bash({ command: "yes x | head -c 100000" });

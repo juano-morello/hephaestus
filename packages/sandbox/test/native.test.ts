@@ -41,7 +41,7 @@ describe("native sandbox", () => {
 
   test("a command past its timeout is killed", async () => {
     const { sb } = await native();
-    const r = await sb.exec("sleep 5", { timeoutMs: 200 });
+    const r = await sb.exec("sleep 5; true", { timeoutMs: 200 });
     expect(r.timedOut).toBe(true);
   });
 

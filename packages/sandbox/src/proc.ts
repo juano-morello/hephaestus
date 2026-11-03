@@ -20,16 +20,25 @@ export async function run(cmd: string[], opts: ProcOptions = {}): Promise<ProcRe
     stdin: opts.stdin === undefined ? "ignore" : new TextEncoder().encode(opts.stdin),
     stdout: "pipe",
     stderr: "pipe",
+    // Own process group, so a kill reaches grandchildren too (sh -c "a; b" forks).
+    detached: true,
   });
+  const killGroup = () => {
+    try {
+      process.kill(-proc.pid, "SIGKILL");
+    } catch {
+      proc.kill("SIGKILL");
+    }
+  };
   let timedOut = false;
   const timer =
     opts.timeoutMs === undefined
       ? undefined
       : setTimeout(() => {
           timedOut = true;
-          proc.kill("SIGKILL");
+          killGroup();
         }, opts.timeoutMs);
-  const onAbort = () => proc.kill("SIGKILL");
+  const onAbort = killGroup;
   opts.signal?.addEventListener("abort", onAbort, { once: true });
   try {
     const [stdout, stderr, code] = await Promise.all([

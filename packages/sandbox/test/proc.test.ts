@@ -25,7 +25,7 @@ describe("proc", () => {
 
   test("kills a command that runs past its timeout", async () => {
     const started = Date.now();
-    const r = await run(["sh", "-c", "sleep 5"], { timeoutMs: 200 });
+    const r = await run(["sh", "-c", "sleep 5; true"], { timeoutMs: 200 });
     expect(r.timedOut).toBe(true);
     expect(r.code).not.toBe(0);
     expect(Date.now() - started).toBeLessThan(3000);
@@ -34,7 +34,7 @@ describe("proc", () => {
   test("stops when the signal aborts", async () => {
     const ctrl = new AbortController();
     setTimeout(() => ctrl.abort(), 100);
-    const r = await run(["sh", "-c", "sleep 5"], { signal: ctrl.signal });
+    const r = await run(["sh", "-c", "sleep 5; true"], { signal: ctrl.signal });
     expect(r.code).not.toBe(0);
   });
 
