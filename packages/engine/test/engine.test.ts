@@ -588,10 +588,7 @@ describe("runPlan with the built-in gates", () => {
   test("command gates fail clearly when no gate sandbox is configured", async () => {
     const { go, ledger } = await setup();
     const { worker } = fakeWorker({ T1: [withTouched(check)] });
-    await go(worker, builtinGates(), shellPlan(), {
-      config: shellConfig,
-      maxAttemptsOverride: 1,
-    } as Partial<RunPlanOptions>);
+    await go(worker, builtinGates(), shellPlan(), { config: shellConfig });
     const tests = ledger
       .read({ types: ["gate.result"] })
       .find((s) => (s.event.data as { gate: string }).gate === "tests");

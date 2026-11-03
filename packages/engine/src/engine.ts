@@ -17,6 +17,7 @@ import {
   type Workspace,
 } from "@hephaestus/core";
 import type { EventDraft, Ledger } from "@hephaestus/ledger";
+import type { Sandbox } from "@hephaestus/sandbox";
 import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
 import { buildContextPack } from "./context.ts";
 import type { UnitGate } from "./gates.ts";
@@ -51,6 +52,8 @@ export type RunPlanOptions = {
   gates: UnitGate[];
   config: EngineConfig;
   worktreesDir: string;
+  /** Opens a sandbox over an attempt's project dir for the command gates; same spec as the worker's. */
+  gateSandbox?: (workdir: string, task: Task) => Promise<Sandbox>;
   eval?: boolean;
 };
 
@@ -304,31 +307,41 @@ async function runUnit(
       } else if (parsed.data.blocked) {
         outcome = "blocked";
       } else {
-        for (const gate of ctx.gates) {
-          let r: GateResult;
-          try {
-            r = await gate.run({
-              task: t,
-              attempt: n,
-              project: t.project,
-              projectPath,
-              workdir,
-              diff,
-              lockedPaths: locked,
-              worker: parsed.data,
-              commands: config.commands[t.project] ?? {},
-              timeoutMs: config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
-            });
-          } catch (e) {
-            r = {
-              gate: gate.name,
-              verdict: "fail",
-              reason: `gate crashed: ${e}`,
-              evidence: [String(e)],
-            };
+        // Gates run in a fresh sandbox over the attempt (SPEC section 11), opened only if needed.
+        const sandbox =
+          ctx.gateSandbox && ctx.gates.some((g) => g.needsSandbox)
+            ? await ctx.gateSandbox(workdir, t)
+            : undefined;
+        try {
+          for (const gate of ctx.gates) {
+            let r: GateResult;
+            try {
+              r = await gate.run({
+                task: t,
+                attempt: n,
+                project: t.project,
+                projectPath,
+                workdir,
+                diff,
+                lockedPaths: locked,
+                worker: parsed.data,
+                commands: config.commands[t.project] ?? {},
+                timeoutMs: config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
+                ...(sandbox ? { sandbox } : {}),
+              });
+            } catch (e) {
+              r = {
+                gate: gate.name,
+                verdict: "fail",
+                reason: `gate crashed: ${e}`,
+                evidence: [String(e)],
+              };
+            }
+            gateEvents.push({ ...at, actor: "gate", type: "gate.result", data: r });
+            if (r.verdict === "fail") failures.push(r);
           }
-          gateEvents.push({ ...at, actor: "gate", type: "gate.result", data: r });
-          if (r.verdict === "fail") failures.push(r);
+        } finally {
+          await sandbox?.dispose();
         }
         outcome = failures.length ? "red" : "green";
       }
