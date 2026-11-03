@@ -21,9 +21,11 @@ import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute }
 import { buildContextPack } from "./context.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit } from "./git.ts";
+import { projectRelative } from "./paths.ts";
 import type { SpawnOutput, Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
+const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
 
 /** The changeset branch (SPEC section 4). */
 export const runBranch = (run: string) => `heph/${run}`;
@@ -72,11 +74,6 @@ function singleRepo(workspace: Workspace, plan: Plan): string {
   if (repos.size !== 1) throw new Error("multi-repo changesets are v0 step 2.5");
   return [...repos][0] as string;
 }
-
-const toProjectPath = (projectPath: string, repoPath: string) => {
-  const prefix = projectPath === "." ? "" : `${projectPath.replace(/\/$/, "")}/`;
-  return repoPath.startsWith(prefix) ? repoPath.slice(prefix.length) : undefined;
-};
 
 /**
  * Runs an approved plan one unit at a time, in derived order. Each unit loops through
@@ -143,7 +140,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
       .filter(([u]) => byId.get(u)?.kind === "test" && byId.get(u)?.project === t.project)
       .filter(([u]) => reach.get(u)?.has(id))
       .flatMap(([, files]) => files)
-      .flatMap((f) => toProjectPath(projectPath, f) ?? [])
+      .flatMap((f) => projectRelative(projectPath, f) ?? [])
       .sort();
 
     const result = await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked);
@@ -319,6 +316,8 @@ async function runUnit(
               diff,
               lockedPaths: locked,
               worker: parsed.data,
+              commands: config.commands[t.project] ?? {},
+              timeoutMs: config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
             });
           } catch (e) {
             r = {
