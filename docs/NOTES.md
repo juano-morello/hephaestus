@@ -117,6 +117,24 @@ Open:
 
 Planner smoke on the three new plannable briefs (opus, high, `--runs 1` each): 3/3 valid on the first try, 0 false escalations. Plans had the expected shape: test then implement in one project for the single-project tasks; for the cross-project task, a client test and implement plus a server test task that locks the existing contract (and one optional docs task). The should-escalate task is the one already measured in the stress test.
 
+## Ledger (v0 step 1)
+
+Built 2026-11-03 in `packages/ledger` (`openLedger(dir, { nodeId })`): append-only SQLite events (WAL, UPDATE and DELETE blocked by triggers), a content-addressed blob store, and materialized projections (`runs`, `units`, `attempts`, `gate_stats`, `usage`) updated in the append transaction and rebuildable. `bun:sqlite` is used only in `src/db.ts`.
+
+Interpretations made in code (confirm or change):
+
+1. **`run.created` data** adds `brief_hash` and `eval: boolean` to `owner_node`. The eval flag is how "eval runs are flagged and excluded from real-run stats" is implemented: `gate_stats` skips eval runs, `usage` keeps them with `eval: true`.
+2. **`run.plan_ready` carries the Plan inline** in `data`, not in a blob, so the units projection can be built by a pure reducer without reading blobs. Plans are a few KB.
+3. **Attempt outcome** is `green | red | blocked | error`; interruption is its own event (`unit.attempt.interrupted`, reason `rate_limit | crash | handoff | user`) and never counts toward the 3 attempts.
+4. **Usage** records `input, output, cache_read, cache_write` separately (cached prompts report a tiny `input`).
+5. **Required envelope fields per type:** `unit.*` needs `unit_id`, attempt-scoped events also `attempt`, `node.*` needs `graph_node`. A `unit.returned` Return must match the envelope's unit and attempt.
+6. **Unknown types:** `append` rejects them; reads return them as `{ known: false }` with raw data, and projections skip them, so a ledger written by a newer node still opens.
+7. **Two orders:** `id` (ULID) is the global order used by reads; `seq` (rowid) is local arrival order, used as the projection cursor. They coincide until sync brings in events from other nodes.
+8. **Blob refs must exist locally** when an event is appended. Synced events will need a different rule (blobs may arrive after events).
+9. **`gate.result` data is the core `GateResult`**, strict: extra fields such as the complexity gate's `bumps` must go into `evidence` when logged.
+
+Not built here: intent/effect/confirm events (v0 step 7), sync ingest (v0 step 8), gate flakiness beyond counts, and where the per-node dir lives (daemon).
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
