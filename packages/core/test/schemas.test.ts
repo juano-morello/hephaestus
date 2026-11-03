@@ -50,6 +50,12 @@ describe("Plan", () => {
     expect(Plan.safeParse(plan([task("T1", { lane: "huge" as "wide" })])).success).toBe(false);
   });
 
+  test("rejects duplicate task ids", () => {
+    const result = Plan.safeParse(plan([task("T1"), task("T1")]));
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toBe('duplicate task id "T1"');
+  });
+
   test("rejects a non-positive context budget", () => {
     const t = task("T1", { context_budget: { tokens: 0, reason: "none" } });
     expect(Plan.safeParse(plan([t])).success).toBe(false);
