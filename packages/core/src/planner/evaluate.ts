@@ -32,7 +32,23 @@ export function extractJson(text: string): unknown {
   return JSON.parse(candidate);
 }
 
-/** The engine stamps `brief_hash`; whatever the planner wrote there is overwritten. */
+/** Removes object keys whose value is null, at any depth; nulls inside arrays stay. */
+export function dropNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(dropNulls);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, v]) => v !== null)
+        .map(([k, v]) => [k, dropNulls(v)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * The engine stamps `brief_hash`; whatever the planner wrote there is overwritten. Null-valued
+ * fields are dropped first, so a placeholder like `"context_budget": null` reads as absent.
+ */
 export function evaluatePlannerOutput(
   text: string,
   ctx: GateContext,
@@ -40,7 +56,7 @@ export function evaluatePlannerOutput(
 ): Evaluation {
   let raw: unknown;
   try {
-    raw = extractJson(text);
+    raw = dropNulls(extractJson(text));
   } catch (e) {
     return { valid: false, failures: ["json_parse"], error: String(e), gates: [] };
   }
