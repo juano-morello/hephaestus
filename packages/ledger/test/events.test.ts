@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EVENT_TYPES, parseStoredEvent, validateEvent } from "../src/events.ts";
 import { samples } from "./samples.ts";
 
-const stamp = (draft: object) => ({
+const stamp = <T extends object>(draft: T) => ({
   id: "01JBX0000000000000000000AA",
   ts: "2026-11-03T20:00:00.000Z",
   schema: 1,
