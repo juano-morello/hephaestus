@@ -52,6 +52,21 @@ describe("evaluatePlannerOutput", () => {
     expect(result.plan?.brief_hash).toBe("stamped");
   });
 
+  test("drops null-valued fields before parsing", () => {
+    const withNulls = {
+      ...valid,
+      tasks: valid.tasks.map((t) => ({ ...t, context_budget: null, covers_note: null })),
+    };
+    const result = evaluatePlannerOutput(JSON.stringify(withNulls), ctx, "hash");
+    expect(result).toMatchObject({ valid: true, failures: [] });
+    expect(result.plan?.tasks[0]).not.toHaveProperty("context_budget");
+  });
+
+  test("still rejects a null where a value is required", () => {
+    const broken = { ...valid, tasks: [{ ...valid.tasks[0], scope: [null] }] };
+    expect(evaluatePlannerOutput(JSON.stringify(broken), ctx, "hash").failures).toEqual(["schema"]);
+  });
+
   test("reports an escalation with its reasons, not as a failure", () => {
     const output = JSON.stringify({ schema: 1, escalate: ["AC2 cannot be checked"] });
     const result = evaluatePlannerOutput(output, ctx, "hash");
