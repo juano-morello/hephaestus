@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { briefGate } from "../src/gates/brief.ts";
-import { brief, workspace } from "./helpers.ts";
+import { brief, gates, workspace } from "./helpers.ts";
 
 describe("briefGate", () => {
   test("passes a complete brief", () => {
@@ -41,6 +41,22 @@ describe("briefGate", () => {
     const result = briefGate(b, workspace());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(['duplicate criterion id "AC1"']);
+  });
+
+  test("passes a gate-checked criterion when some project has the gate", () => {
+    const b = brief({
+      acceptance: [{ id: "AC1", text: "buf passes", kind: "behavior", check: { gate: "buf" } }],
+    });
+    expect(briefGate(b, workspace(), gates()).verdict).toBe("pass");
+  });
+
+  test("fails a gate-checked criterion whose gate no project has", () => {
+    const b = brief({
+      acceptance: [{ id: "AC1", text: "fast", kind: "nonfunctional", check: { gate: "bench" } }],
+    });
+    const result = briefGate(b, workspace(), gates());
+    expect(result.verdict).toBe("fail");
+    expect(result.evidence).toEqual(['AC1: check gate "bench" is not configured in any project']);
   });
 
   test("reports every failure at once", () => {

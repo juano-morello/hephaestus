@@ -17,6 +17,20 @@ describe("Brief", () => {
     expect(Brief.safeParse({ ...brief(), priority: "high" }).success).toBe(false);
   });
 
+  test("accepts a criterion checked by a gate", () => {
+    const b = brief({
+      acceptance: [{ id: "AC1", text: "buf passes", kind: "behavior", check: { gate: "buf" } }],
+    });
+    expect(Brief.safeParse(b).success).toBe(true);
+  });
+
+  test("rejects a check without a gate name", () => {
+    const b = brief({
+      acceptance: [{ id: "AC1", text: "x", kind: "behavior", check: { gate: "" } }],
+    });
+    expect(Brief.safeParse(b).success).toBe(false);
+  });
+
   test("rejects unknown criterion kinds", () => {
     const b = brief({ acceptance: [{ id: "AC1", text: "x", kind: "vibe" as "behavior" }] });
     expect(Brief.safeParse(b).success).toBe(false);

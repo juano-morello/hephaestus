@@ -11,12 +11,13 @@ import {
   testPrecedesImplement,
 } from "../src/gates/plan.ts";
 import { DEFAULT_LIMITS, type GateContext } from "../src/gates/types.ts";
-import { brief, plan, task, workspace } from "./helpers.ts";
+import { brief, gates, plan, task, workspace } from "./helpers.ts";
 
 const ctx = (overrides: Partial<GateContext> = {}): GateContext => ({
   brief: brief(),
   workspace: workspace(),
   limits: DEFAULT_LIMITS,
+  projectGates: gates(),
   ...overrides,
 });
 
@@ -89,6 +90,49 @@ describe("criteria_covered", () => {
     const result = criteriaCovered(goodPlan(), ctx({ brief: b }));
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(["AC2: no test task covers it"]);
+  });
+
+  describe("gate-checked criteria", () => {
+    const gated = brief({
+      acceptance: [
+        { id: "AC1", text: "stacks cap at max", kind: "behavior" },
+        { id: "AC2", text: "buf passes", kind: "behavior", check: { gate: "buf" } },
+      ],
+    });
+    const proto = (covers: string[]) =>
+      task("P1", { kind: "codegen", project: "proto", scope: ["messages/loot.proto"], covers });
+
+    test("passes when a task in a project with the gate covers it", () => {
+      const p = goodPlan();
+      p.tasks.push(proto(["AC2"]));
+      expect(criteriaCovered(p, ctx({ brief: gated })).verdict).toBe("pass");
+    });
+
+    test("fails when no task covers it", () => {
+      const result = criteriaCovered(goodPlan(), ctx({ brief: gated }));
+      expect(result.verdict).toBe("fail");
+      expect(result.evidence).toEqual([
+        'AC2: checked by gate "buf" but no task in a project with that gate covers it',
+      ]);
+    });
+
+    test("fails when the covering task's project lacks the gate", () => {
+      const p = goodPlan();
+      p.tasks.push(task("T3", { kind: "codegen", scope: ["internal/pb/**"], covers: ["AC2"] }));
+      const result = criteriaCovered(p, ctx({ brief: gated }));
+      expect(result.evidence).toEqual([
+        'AC2: checked by gate "buf" but no task in a project with that gate covers it',
+      ]);
+    });
+
+    test("fails a test task that claims a gate-checked criterion", () => {
+      const p = goodPlan();
+      p.tasks.push(proto(["AC2"]));
+      p.tasks[0]?.covers.push("AC2");
+      const result = criteriaCovered(p, ctx({ brief: gated }));
+      expect(result.verdict).toBe("fail");
+      expect(result.evidence).toEqual(['T1: test task covers AC2, which is checked by gate "buf"']);
+    });
   });
 
   test("fails when a task covers an id the brief does not define", () => {

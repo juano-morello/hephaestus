@@ -37,6 +37,11 @@ export function brief(overrides: Partial<Brief> = {}): Brief {
   };
 }
 
+/** Gate names configured per project (resolved config). */
+export function gates(): Record<string, string[]> {
+  return { proto: ["lint", "buf"], server: ["tests", "typecheck", "lint"], client: ["tests"] };
+}
+
 export function workspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     repos: { server: "./server", client: "./client", proto: "./proto" },

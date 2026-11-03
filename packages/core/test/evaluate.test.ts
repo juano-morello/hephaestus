@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_LIMITS } from "../src/gates/types.ts";
 import { evaluatePlannerOutput, extractJson } from "../src/planner/evaluate.ts";
-import { brief, plan, task, workspace } from "./helpers.ts";
+import { brief, gates, plan, task, workspace } from "./helpers.ts";
 
-const ctx = { brief: brief(), workspace: workspace(), limits: DEFAULT_LIMITS };
+const ctx = {
+  brief: brief(),
+  workspace: workspace(),
+  limits: DEFAULT_LIMITS,
+  projectGates: gates(),
+};
 const valid = plan([
   task("T1", { kind: "test", covers: ["AC1"], scope: ["a_test.go"], produces: ["test:A"] }),
   task("T2", { covers: ["AC1"], scope: ["a.go"], consumes: ["test:A"] }),
