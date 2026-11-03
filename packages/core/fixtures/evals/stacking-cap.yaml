@@ -1,0 +1,15 @@
+# Synthetic example of a golden task (SPEC section 14) on the toy MMORPG workspace. The real
+# suites live outside this repo so their hidden oracles never reach the harness or the public.
+id: stacking-cap
+workspace_ref: { server: a1b2c3d }
+brief: ../briefs/stacking-cap.yaml
+oracle:
+  hidden_tests:
+    - project: server
+      from: ./oracle/stacking-cap/stack_cap_oracle_test.go
+      to: internal/inventory/stack_cap_oracle_test.go
+  must_pass:
+    - { project: server, run: go test -race ./internal/inventory/... ./internal/items/... }
+  must_not_touch:
+    - { project: server, paths: [internal/persistence/**, migrations/**] }
+tags: [server, contained, small]

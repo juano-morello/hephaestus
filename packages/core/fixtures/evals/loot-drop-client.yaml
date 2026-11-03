@@ -1,0 +1,13 @@
+# Synthetic cross-project example whose oracle has not been written yet (status needs_oracle).
+id: loot-drop-client
+workspace_ref: { proto: 9f8e7d6, server: a1b2c3d, client: 0c1d2e3 }
+brief: ../briefs/loot-drop-client.yaml
+oracle:
+  hidden_tests:
+    - project: client
+      from: ./oracle/loot-drop-client/test_loot_marker.gd
+      to: test/unit/test_loot_marker_oracle.gd
+  must_pass:
+    - { project: server, run: go test -race ./internal/combat/... }
+    - { project: client, run: godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://test }
+tags: [cross-project, wide]

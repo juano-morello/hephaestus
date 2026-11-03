@@ -1,3 +1,5 @@
+export * from "./eval/check.ts";
+export * from "./eval/suite.ts";
 export * from "./gates/brief.ts";
 export * from "./gates/glob.ts";
 export * from "./gates/plan.ts";
@@ -5,6 +7,7 @@ export * from "./gates/types.ts";
 export * from "./graph/edges.ts";
 export * from "./planner/evaluate.ts";
 export * from "./schemas/brief.ts";
+export * from "./schemas/eval.ts";
 export * from "./schemas/gates.ts";
 export * from "./schemas/plan.ts";
 export * from "./schemas/workspace.ts";
