@@ -2,7 +2,7 @@
 // and measure how often its first answer passes every plan gate.
 //
 //   bun run packages/core/scripts/plan-proto.ts --brief <file> --workspace <file> [--runs N]
-//     [--model opus] [--thinking high] [--repo-maps <dir>] [--out <dir>]
+//     [--model opus] [--thinking high] [--prompt <file>] [--repo-maps <dir>] [--out <dir>]
 
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -29,6 +29,7 @@ const { values } = parseArgs({
     runs: { type: "string", default: "1" },
     model: { type: "string", default: "opus" },
     thinking: { type: "string", default: "high" },
+    prompt: { type: "string" },
     "repo-maps": { type: "string" },
     out: { type: "string" },
   },
@@ -73,7 +74,8 @@ for (const name of Object.keys(workspace.projects)) {
   if (await file.exists()) repoMaps.push((await file.text()).trim());
 }
 
-const template = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
+const promptPath = resolve(values.prompt ?? join(import.meta.dir, "..", "prompts", "planner.md"));
+const template = await Bun.file(promptPath).text();
 const prompt = template
   .replaceAll("{{brief_hash}}", hash)
   .replace("{{brief}}", JSON.stringify(brief, null, 2))
@@ -198,6 +200,7 @@ const summary = {
   brief_hash: hash,
   model: values.model,
   thinking: values.thinking,
+  prompt: promptPath,
   runs,
   valid,
   validity_rate: runs ? valid / runs : 0,

@@ -18,7 +18,7 @@ internal/inventory/
                                    func (*Inventory) Remove(item ItemType, n uint32) error
   inventory_test.go
 internal/combat/
-  kill.go                          func (*Zone) OnKill(killer, mob EntityID)   // emits XP; no loot yet
+  kill.go                          func OnKill(z *zone.Zone, killer, mob zone.EntityID)   // emits XP; no loot yet
   kill_test.go
 internal/loot/
   table.go                         type LootTable struct { Entries []Entry }; type Drop struct { Item ItemType; Count uint32 }
