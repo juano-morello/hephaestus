@@ -603,12 +603,19 @@ Chaos runs in the eval suite: kill the daemon at random points during golden tas
 id: stacking-cap
 workspace_ref: { server: a1b2c3d, proto: 9f8e7d6 }
 brief: ./briefs/stacking-cap.yaml
-oracle:
-  hidden_tests: ./oracle/stacking_cap_test.go   # never shown to the harness
-  must_pass: [go test ./inventory/...]
-  must_not_touch: [persistence/**]
+oracle:                                         # paths in this file are relative to it
+  hidden_tests:                                 # never shown to the harness
+    - project: server
+      from: ./oracle/stacking_cap_test.go
+      to: inventory/stacking_cap_test.go        # relative to the project root
+  must_pass:
+    - { project: server, run: go test ./inventory/... }
+  must_not_touch:
+    - { project: server, paths: [persistence/**] }
 tags: [server, contained, small]
 ```
+
+Every oracle entry names its project, so one task can check several projects. Every repo a task touches is pinned in `workspace_ref`. A task is not runnable until its hidden tests exist.
 
 - 5 to 10 to start: server-only, protocol + server, client logic, cross-repo, and at least one that should escalate.
 - A should-escalate task sets `expect: escalate` instead of `oracle`. It is solved when the planner returns an Escalation, and missed when it returns a Plan, even one that passes every plan gate.
