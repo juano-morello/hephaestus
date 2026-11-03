@@ -171,6 +171,30 @@ Built 2026-11-03: `packages/sandbox` (container and native modes, `proc` moved h
 
 **Finding: the worker never sees the acceptance criteria.** `UnitBrief` (SPEC section 8) carries the task (with `covers` ids only), constraints and the context pack, but not the criterion text and not the Brief's `decisions`. In the smoke run the test author was told to cover "AC1, AC2 and AC3" without their meaning, so it invented AC2 and AC3: the required "non-integer argument exits 1" case was never tested or implemented, and the weak inline gates passed it. **Fixed 2026-11-03 (approved):** UnitBrief now carries `criteria` (the covered Brief criteria with their text; gate-checked ones are marked) and `decisions`, written into SPEC section 8, filled by the engine and rendered in the prompt. Second live smoke: finished, and `test_add.sh` covered the real AC1-AC3 (including the non-integer exit 1 with stderr and empty stdout) while `add.sh` validated its arguments. That run's attempt and token counts were not captured.
 
+## Built-in gates (v0 step 2.4)
+
+Built 2026-11-03 in `packages/engine/src/builtin-gates.ts`; `builtinGates()` returns them cheapest first. The engine opens one fresh gate sandbox per attempt (same spec as the worker's, `RunPlanOptions.gateSandbox`) when any gate needs it, and always disposes it.
+
+| Gate | Rule |
+|---|---|
+| `diff_scope` | every changed file is inside the project and matches a task scope glob |
+| `locked_paths` | no changed file is a locked path |
+| `touched_vs_diff` | `touched` equals the changed files exactly, both directions reported |
+| `tests` | after a `test` unit the test command must fail (red before green), after any other unit it must pass; fails if no test command |
+| `typecheck`, `lint` | must pass; skipped for `test` units and when no command is configured (recorded as a pass that says so) |
+
+Evidence for command gates is the exit code plus the last 60 lines (4000 characters) of output. A command past `gateTimeoutMs` (default 10 minutes) fails its gate.
+
+Known limits:
+
+1. **Red first cannot tell a right-reason failure from a broken test file.** A test unit with a syntax error also leaves the suite red. Parsing per-stack test output would fix it; not in v0.
+2. **`touched_vs_diff` is exact.** A worker that formats extra files fails it. The spec intends this; watch whether it is noisy in real runs.
+3. **typecheck and lint are skipped for test units** because new tests may reference code that does not exist yet (expected compile errors in Go). A test unit could therefore leave lint-dirty test files that only surface on the implement unit.
+4. **A locked test modified by the implementer fails both `diff_scope` and `locked_paths`** (locked files sit outside the implement task's scope), so the Return shows two reasons for one problem.
+5. Not built: coverage delta, project-imports-headless (Godot), requirement-to-check mapping at execution time, the integration gate at merge (2.5), custom gates from `.heph/gates/`.
+
+**Live smoke on the built-ins (2026-11-03, sonnet, alpine container):** finished in 180 s, both units green on attempt 1, all 12 gate results recorded (T1: tests red as required; T2: tests green; typecheck and lint skipped as configured). 10.1k output tokens, 167k cache reads. The generated `test_add.sh` covered AC1-AC3 and `add.sh` validated its arguments.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
