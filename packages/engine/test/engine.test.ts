@@ -4,9 +4,10 @@ import { join } from "node:path";
 import type { Brief, GateResult, Plan, Task, Workspace } from "@hephaestus/core";
 import { briefHash } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
-import { runOk } from "@hephaestus/sandbox";
+import { openSandbox, runOk, type Sandbox } from "@hephaestus/sandbox";
+import { builtinGates } from "../src/builtin-gates.ts";
 import type { EngineConfig } from "../src/config.ts";
-import { attemptBranch, runBranch, runPlan } from "../src/engine.ts";
+import { attemptBranch, type RunPlanOptions, runBranch, runPlan } from "../src/engine.ts";
 import type { UnitGate, UnitGateContext } from "../src/gates.ts";
 import { createGit } from "../src/git.ts";
 import type { SpawnInput, SpawnOutput, Worker } from "../src/worker.ts";
@@ -136,7 +137,12 @@ async function setup() {
   });
   const ledger = openLedger(join(dir(), "node"), { nodeId: "devserver" });
   const worktreesDir = join(dir(), "worktrees");
-  const go = (worker: Worker, gates: UnitGate[] = [], p = plan()) =>
+  const go = (
+    worker: Worker,
+    gates: UnitGate[] = [],
+    p = plan(),
+    extra: Partial<RunPlanOptions> = {},
+  ) =>
     runPlan({
       ledger,
       workspace,
@@ -150,6 +156,7 @@ async function setup() {
       gates,
       config,
       worktreesDir,
+      ...extra,
     });
   const types = () => ledger.read().map((s) => s.event.type);
   return { repoDir, ledger, worktreesDir, go, types, git: createGit(repoDir) };
@@ -445,6 +452,153 @@ describe("runPlan", () => {
     await expect(go(fakeWorker({}).worker, [], { ...plan(), brief_hash: "other" })).rejects.toThrow(
       "plan brief_hash does not match the brief",
     );
+    ledger.close();
+  });
+});
+
+describe("runPlan with the built-in gates", () => {
+  // A shell project: check.sh is the test, impl.sh the implementation.
+  const shellPlan = () =>
+    plan([
+      task("T2", { scope: ["impl.sh"], consumes: ["test:Five"] }),
+      task("T1", { kind: "test", scope: ["check.sh"], produces: ["test:Five"] }),
+    ]);
+  const check = { "check.sh": '[ "$(sh impl.sh 2>/dev/null)" = "5" ]\n' };
+  const impl = { "impl.sh": "echo 5\n" };
+  const withTouched = (files: Record<string, string>, touched = Object.keys(files)) => ({
+    files,
+    output: { schema: 1, summary: "", claims: [], touched },
+  });
+
+  function sandboxes() {
+    const log = { opened: 0, disposed: 0 };
+    const gateSandbox = async (workdir: string): Promise<Sandbox> => {
+      const sb = await openSandbox({ mode: "native", hostDir: workdir });
+      log.opened++;
+      return { ...sb, dispose: async () => void log.disposed++ };
+    };
+    return { gateSandbox, log };
+  }
+  const shellConfig = { ...config, commands: { server: { test: "sh check.sh" } } };
+
+  test("a test unit is accepted while red, the implement unit once green", async () => {
+    const { go, ledger } = await setup();
+    const { gateSandbox, log } = sandboxes();
+    const { worker } = fakeWorker({ T1: [withTouched(check)], T2: [withTouched(impl)] });
+    const result = await go(worker, builtinGates(), shellPlan(), {
+      gateSandbox,
+      config: shellConfig,
+    });
+
+    expect(result.status).toBe("finished");
+    const reasons = ledger
+      .read({ types: ["gate.result"] })
+      .map(
+        (s) =>
+          `${s.event.unit_id} ${(s.event.data as { gate: string }).gate}: ${(s.event.data as { reason: string }).reason}`,
+      );
+    expect(reasons).toEqual([
+      "T1 diff_scope: all changes in scope",
+      "T1 locked_paths: no locked file modified",
+      "T1 touched_vs_diff: touched matches the diff",
+      "T1 tests: tests fail, as a test unit requires (red before green)",
+      "T1 typecheck: skipped for test units",
+      "T1 lint: skipped for test units",
+      "T2 diff_scope: all changes in scope",
+      "T2 locked_paths: no locked file modified",
+      "T2 touched_vs_diff: touched matches the diff",
+      "T2 tests: tests pass",
+      "T2 typecheck: skipped: no typecheck command configured",
+      "T2 lint: skipped: no lint command configured",
+    ]);
+    expect(log).toEqual({ opened: 2, disposed: 2 });
+    ledger.close();
+  });
+
+  test("a test unit whose tests already pass is returned and then escalated", async () => {
+    const { go, ledger } = await setup();
+    const { gateSandbox } = sandboxes();
+    const passing = withTouched({ "check.sh": "exit 0\n" });
+    const { worker, calls } = fakeWorker({ T1: [passing, passing, passing] });
+    const result = await go(worker, builtinGates(), shellPlan(), {
+      gateSandbox,
+      config: shellConfig,
+    });
+
+    expect(result).toMatchObject({ status: "paused", reason: "T1: red after 3 attempts" });
+    expect(calls[1]?.input.brief.feedback?.reasons).toEqual([
+      {
+        gate: "tests",
+        reason: "tests must fail after a test unit (red before green)",
+        evidence: "exit 0",
+      },
+    ]);
+    ledger.close();
+  });
+
+  test("out-of-scope and unreported changes come back as feedback", async () => {
+    const { go, ledger } = await setup();
+    const { gateSandbox } = sandboxes();
+    const { worker, calls } = fakeWorker({
+      T1: [withTouched(check)],
+      T2: [withTouched({ ...impl, "extra.sh": "x" }, ["impl.sh"]), withTouched(impl)],
+    });
+    const result = await go(worker, builtinGates(), shellPlan(), {
+      gateSandbox,
+      config: shellConfig,
+    });
+
+    expect(result.status).toBe("finished");
+    const feedback = calls.filter((c) => c.input.brief.task.id === "T2")[1]?.input.brief.feedback;
+    expect(feedback?.reasons).toEqual([
+      {
+        gate: "diff_scope",
+        reason: "changes outside the task scope",
+        evidence: "out of scope: extra.sh",
+      },
+      {
+        gate: "touched_vs_diff",
+        reason: "touched does not match the diff",
+        evidence: "changed but not in touched: extra.sh",
+      },
+    ]);
+    ledger.close();
+  });
+
+  test("modifying a locked test is caught", async () => {
+    const { go, ledger } = await setup();
+    const { gateSandbox } = sandboxes();
+    const { worker, calls } = fakeWorker({
+      T1: [withTouched(check)],
+      T2: [
+        withTouched({ ...impl, "check.sh": "exit 0\n" }, ["impl.sh", "check.sh"]),
+        withTouched(impl),
+      ],
+    });
+    await go(worker, builtinGates(), shellPlan(), { gateSandbox, config: shellConfig });
+
+    const feedback = calls.filter((c) => c.input.brief.task.id === "T2")[1]?.input.brief.feedback;
+    expect(feedback?.reasons.map((r) => [r.gate, r.evidence])).toEqual([
+      ["diff_scope", "out of scope: check.sh"],
+      ["locked_paths", "modified locked file: check.sh"],
+    ]);
+    ledger.close();
+  });
+
+  test("command gates fail clearly when no gate sandbox is configured", async () => {
+    const { go, ledger } = await setup();
+    const { worker } = fakeWorker({ T1: [withTouched(check)] });
+    await go(worker, builtinGates(), shellPlan(), {
+      config: shellConfig,
+      maxAttemptsOverride: 1,
+    } as Partial<RunPlanOptions>);
+    const tests = ledger
+      .read({ types: ["gate.result"] })
+      .find((s) => (s.event.data as { gate: string }).gate === "tests");
+    expect(tests?.event.data).toMatchObject({
+      verdict: "fail",
+      reason: "no sandbox configured for gates",
+    });
     ledger.close();
   });
 });
