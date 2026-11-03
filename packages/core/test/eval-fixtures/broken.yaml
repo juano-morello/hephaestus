@@ -1,0 +1,4 @@
+id: broken
+workspace_ref: { server: not-a-sha }
+brief: ../../fixtures/briefs/stacking-cap.yaml
+tags: []
