@@ -140,9 +140,9 @@ function printRun(r: RunRecord) {
   const { evaluation: ev } = r;
   const tokens = r.usage ? `in ${r.usage.input} out ${r.usage.output}` : "no usage";
   const secs = (r.duration_ms / 1000).toFixed(1);
-  console.log(
-    `\nrun ${r.run}/${runs}  ${r.model}  ${secs}s  ${tokens}  ${ev.valid ? "VALID" : "INVALID"}`,
-  );
+  const verdict = ev.escalate ? "ESCALATED" : ev.valid ? "VALID" : "INVALID";
+  console.log(`\nrun ${r.run}/${runs}  ${r.model}  ${secs}s  ${tokens}  ${verdict}`);
+  for (const reason of ev.escalate ?? []) console.log(`  - ${reason}`);
   if (ev.error) console.log(`  ${ev.failures[0]}: ${ev.error}`);
   for (const g of ev.gates) {
     console.log(`  ${g.verdict === "pass" ? "PASS" : "FAIL"} ${g.gate}: ${g.reason}`);
@@ -192,6 +192,7 @@ for (let run = 1; run <= runs; run++) {
 }
 
 const valid = records.filter((r) => r.evaluation.valid).length;
+const escalated = records.filter((r) => r.evaluation.escalate).length;
 const histogram: Record<string, number> = {};
 for (const r of records) {
   for (const f of r.evaluation.failures) histogram[f] = (histogram[f] ?? 0) + 1;
@@ -210,6 +211,7 @@ const summary = {
   runs,
   valid,
   validity_rate: runs ? valid / runs : 0,
+  escalated,
   failures_by_gate: Object.fromEntries(Object.entries(histogram).sort(([, a], [, b]) => b - a)),
   complexity_bumps: bumps.length,
   tasks_per_plan: records.map((r) => r.evaluation.plan?.tasks.length ?? null),
@@ -221,6 +223,7 @@ await Bun.write(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
 console.log(
   `\n== ${briefName}: ${valid}/${runs} valid on first try (${Math.round(summary.validity_rate * 100)}%)`,
 );
+console.log(`   escalated: ${escalated}`);
 for (const [gate, n] of Object.entries(summary.failures_by_gate))
   console.log(`   ${gate}: failed ${n}x`);
 console.log(`   complexity bumps: ${bumps.length}`);

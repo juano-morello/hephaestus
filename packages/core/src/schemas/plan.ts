@@ -53,3 +53,12 @@ export const Plan = z
     });
   });
 export type Plan = z.infer<typeof Plan>;
+
+/** The planner's honest exit: the Brief goes back to its author with these reasons. */
+export const Escalation = z
+  .object({
+    schema: z.literal(1),
+    escalate: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+export type Escalation = z.infer<typeof Escalation>;

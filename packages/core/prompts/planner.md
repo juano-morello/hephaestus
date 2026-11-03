@@ -7,8 +7,9 @@ gates.
 
 ## Output contract
 
-- Output exactly one JSON object matching the Plan schema. No prose, no markdown fences, no
-  comments, nothing before or after it.
+- Output exactly one JSON object: a Plan, or an Escalation when the Brief cannot be planned
+  (see "When not to plan"). No prose, no markdown fences, no comments, nothing before or after
+  it.
 - Do not add fields that are not in the schema. Do not declare edges.
 - Do not output `brief_hash`; code sets it.
 
@@ -36,7 +37,22 @@ Task = {
   context_budget?: { tokens: number, reason: string },   // only if the default clearly won't fit
   spec: string                  // what the worker must do; the worker sees only this task
 }
+
+Escalation = {
+  schema: 1,
+  escalate: string[]            // one concrete reason per problem; at least one
+}
 ```
+
+## When not to plan
+
+Some Briefs cannot be planned honestly: a settled decision or constraint contradicts an
+acceptance criterion, a criterion cannot be checked as written, a required approval is missing,
+or the work needs something the Brief forbids or never mentions (a schema migration, a new
+persistence mechanism). Do not plan around these by inventing a design the Brief did not ask
+for. Output an Escalation instead, so the Brief goes back to its author. Each reason names the
+decision, constraint or criterion involved and what the author must settle. Ordinary
+uncertainty (file names, helper shapes) is not a reason to escalate; put it in `risks` and plan.
 
 ## Task kinds
 
@@ -173,6 +189,8 @@ task the `buf` gate checks, not by a test.
   overlapping `covers`.
 - Unordered tasks in the same project share no files.
 - Lanes, complexity floors and limits are right.
+- If the Plan only works by reopening a decision, breaking a constraint or guessing what a
+  criterion means, output an Escalation instead.
 
 ## Inputs
 

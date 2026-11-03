@@ -1,6 +1,7 @@
+import type { z } from "zod";
 import { runPlanGates } from "../gates/plan.ts";
 import type { GateContext, GateResult } from "../gates/types.ts";
-import { Plan } from "../schemas/plan.ts";
+import { Escalation, Plan } from "../schemas/plan.ts";
 
 /** Failure buckets that come before the plan gates can run. */
 export type PreGateFailure = "json_parse" | "schema";
@@ -11,8 +12,17 @@ export type Evaluation = {
   failures: string[];
   error?: string;
   plan?: Plan;
+  /** Set when the planner escalated instead of planning; not a failure. */
+  escalate?: string[];
   gates: GateResult[];
 };
+
+const schemaFailure = (error: z.ZodError): Evaluation => ({
+  valid: false,
+  failures: ["schema"],
+  error: error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
+  gates: [],
+});
 
 /** Accepts bare JSON, a fenced block, or JSON surrounded by stray prose. */
 export function extractJson(text: string): unknown {
@@ -36,15 +46,16 @@ export function evaluatePlannerOutput(
   }
 
   if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    // An object without tasks that says escalate is an Escalation; anything else is a Plan.
+    if ("escalate" in raw && !("tasks" in raw)) {
+      const escalation = Escalation.safeParse(raw);
+      if (!escalation.success) return schemaFailure(escalation.error);
+      return { valid: false, failures: [], escalate: escalation.data.escalate, gates: [] };
+    }
     raw = { ...raw, brief_hash: briefHash };
   }
   const parsed = Plan.safeParse(raw);
-  if (!parsed.success) {
-    const error = parsed.error.issues
-      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("; ");
-    return { valid: false, failures: ["schema"], error, gates: [] };
-  }
+  if (!parsed.success) return schemaFailure(parsed.error);
 
   const plan = parsed.data;
   const gates = runPlanGates(plan, ctx);
