@@ -81,6 +81,23 @@ The reasons are specific and correct, and the realistic briefs did not escalate 
 
 **Classification.** Prompt problems: none found that the existing rules caused; the one prompt-level gap is the missing escalation instruction, which needs a schema change first. Schema/spec problems: `null` optionals, no escalation channel, no per-criterion project list. Fixture problems: missing file names in trimmed repo maps.
 
+**After adopting Escalation (pushback 16).** Committed prompt (with "When not to plan"), same model, 3 runs per brief, all eight briefs:
+
+| Brief | Should | Valid | Escalated | Other |
+|---|---|---|---|---|
+| stacking-cap | plan | 3/3 | 0 | |
+| loot-drop-msg | plan | 3/3 | 0 | |
+| loot-drop-client | plan | 1/3 | 2 | see below |
+| realistic-1 | plan | 2/3 | 0 | `schema` 1x: `"covers_note": null` |
+| realistic-2 | plan | 3/3 | 0 | |
+| messy-contradiction | escalate | 0/3 | 3 | |
+| messy-cross-project | escalate | 0/3 | 3 | |
+| messy-vague-migration | escalate | 0/3 | 3 | |
+
+- **The loot-drop-client escalations are correct.** Both say decision 5 ("item names come from the client's existing item name lookup in InventoryModel") points at a lookup the client repo map does not have: `InventoryModel` only has `apply_update(msg)`, and the protocol carries only `item_id`. That is a **fixture problem** in the original set that every earlier run planned around. **Fixed 2026-11-03:** `fixtures/repo-maps/client.md` now lists `InventoryModel.item_name(item_id) -> String` backed by `data/item_names.json`. Re-run: 5/5 valid, 0 escalated.
+- **`null` placeholders again.** realistic-1 is the only brief where the model writes `null` fields (`context_budget` once, now an unknown `covers_note` once; 2 of 8 runs). Dropping null-valued keys before parsing (pushback 17) fixes both cases; adopted afterwards.
+- Escalation on should-escalate briefs: 9/9 again. Plannable briefs whose inputs are consistent: 0 escalations in 12 runs.
+
 **Does the ~70% target still hold?** For gate validity, yes, easily: 24/25 on real maps, and 39/40 overall. But the number is less meaningful than it looked. On Briefs that should not be planned, 100% "validity" is a failure, and the gates cannot tell the difference. I would redefine the step 0 metric as two numbers: first-try validity on plannable Briefs (target ~70%, currently ~97%), and honest escalation on should-escalate Briefs (currently 0/15 without an escalation channel, 9/9 with one). The planner's judgment is the strong part; the schema needs to let it act on that judgment.
 
 ## Environment and OMP
@@ -113,7 +130,7 @@ The reasons are specific and correct, and the realistic briefs did not escalate 
 13. **`brief_hash` from the model.** An LLM cannot compute a sha256, so the script passes the hash in and checks the echo. Simpler: the engine stamps `brief_hash` itself after parsing and the planner never outputs it. Either way the hash is sha256 of sorted-key JSON of the parsed Brief. **Decided 2026-11-03: the engine stamps it.** The prompt no longer mentions it, `evaluatePlannerOutput` overwrites whatever the planner wrote, and the `brief_hash` failure bucket is gone. SPEC section 8 notes it under Plan.
 14. **Evidence shape.** `GateResult.evidence` is `string[]` (one entry per finding). `Return.reasons[].evidence` in section 8 is a single `string`. Pick one; joining is trivial.
 15. **Verdict vocabulary.** Gates use `pass | fail`; `Return.verdict` is `"red"`. Worth unifying (`green | red`?) before the ledger fixes the event shape.
-16. **Pushback: the planner needs an honest exit.** SPEC section 8 gives workers `blocked`, but the planner can only return a Plan, so a contradictory or uncheckable Brief always becomes a plan that passes the gates (0/15 escalations on the messy briefs). With a one-section prompt change and an `escalate` output, it escalated 9/9 with correct reasons and did not escalate on realistic briefs. Proposal: `PlannerOutput = Plan | { schema: 1, escalate: string[] }`, where `escalate` goes back to the submitting agent like a brief gate failure, and SPEC section 14's "honest failure rate on should-escalate tasks" measures it. Needs a decision before it goes into SPEC sections 8 and 14.
+16. **Pushback: the planner needs an honest exit.** SPEC section 8 gives workers `blocked`, but the planner can only return a Plan, so a contradictory or uncheckable Brief always becomes a plan that passes the gates (0/15 escalations on the messy briefs). With a one-section prompt change and an `escalate` output, it escalated 9/9 with correct reasons and did not escalate on realistic briefs. Proposal: `PlannerOutput = Plan | { schema: 1, escalate: string[] }`, where `escalate` goes back to the submitting agent like a brief gate failure, and SPEC section 14's "honest failure rate on should-escalate tasks" measures it. **Decided 2026-11-03: adopted**, written into SPEC section 8 (`PlannerOutput`, Escalation as the honest exit) and section 14 (`expect: escalate` golden tasks, false escalation rate). The prompt has a "When not to plan" section, `evaluatePlannerOutput` reports `escalate` outside the failure histogram, and the script counts escalations. Still open: a ledger event for it in section 6 (for example `run.plan_escalated` with the reasons) and whether step 0's ~70% target in section 19 should now read "on plannable Briefs".
 17. **Optional fields written as `null`.** Planner output with `"context_budget": null` fails schema parsing. Proposal: the engine drops `null` optional fields before parsing (same spirit as stamping `brief_hash`). Small, but it is a schema rule the spec does not state.
 18. **Criteria that span projects.** A criterion like "the server refuses and the client shows the message" can be covered by a test in one project only. Option: `Criterion.projects?: string[]`, with `criteria_covered` requiring a covering test task in each listed project. Not needed yet (the planner split it correctly 5/5), so this is noted, not proposed.
 
