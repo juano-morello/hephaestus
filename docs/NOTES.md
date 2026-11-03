@@ -100,6 +100,23 @@ The reasons are specific and correct, and the realistic briefs did not escalate 
 
 **Does the ~70% target still hold?** For gate validity, yes, easily: 24/25 on real maps, and 39/40 overall. But the number is less meaningful than it looked. On Briefs that should not be planned, 100% "validity" is a failure, and the gates cannot tell the difference. I would redefine the step 0 metric as two numbers: first-try validity on plannable Briefs (target ~70%, currently ~97%), and honest escalation on should-escalate Briefs (currently 0/15 without an escalation channel, 9/9 with one). The planner's judgment is the strong part; the schema needs to let it act on that judgment.
 
+## Golden tasks (Step 1)
+
+Set up on 2026-11-03. Decisions:
+
+- **Oracle shape:** project-scoped lists (`hidden_tests: [{project, from, to}]`, `must_pass: [{project, run}]`, `must_not_touch: [{project, paths}]`), so one task can check several projects. SPEC section 14 example updated. `must_pass` commands run from the project root.
+- **Where suites live:** a private directory outside this public repo and outside the repos the harness checks out (`~/Workspaces/heph-evals/`, its own local git repo). The real-repo fixtures that were committed here moved there. This repo keeps only the schema (`src/schemas/eval.ts`), checks (`src/eval/check.ts`), the loader (`src/eval/suite.ts`), `scripts/eval-check.ts` and a synthetic example suite on the toy fixtures (`fixtures/evals/`).
+- **Oracles are written by the user** (SPEC section 14). Each task has an oracle README listing what to assert per criterion. `eval-check` reports a task as `needs_oracle` until its hidden test files exist, `invalid` on schema, brief-gate, project or pin problems, and checks every pinned commit with git.
+- **Category mapping.** The real workspace is one repo with two projects and no protocol project, so SPEC section 14's categories map as: server only; a server wire-format change stands in for "protocol + server"; client logic only; cross-project (server + client in one repo) stands in for "cross-repo"; one should-escalate task (`expect: escalate`). A real multi-repo or schema-project case still needs a workspace that has one.
+
+Open:
+
+- **History rewritten 2026-11-03.** The real-repo fixtures and the detailed stress-test write-up were removed from every commit before the first push; the details live in the private suite.
+- **The cross-project task changes code in one project only.** The other project's side is tests locking an existing contract. No documented defect in the real repo needs code on both sides without an owner decision.
+- **No runner yet.** Applying hidden tests, running `must_pass` and checking `must_not_touch` need worktrees and the engine (v0). Until then the suite measures planner-side metrics only (first-pass validity on plannable tasks, escalation on should-escalate tasks) via `plan-proto`.
+
+Planner smoke on the three new plannable briefs (opus, high, `--runs 1` each): 3/3 valid on the first try, 0 false escalations. Plans had the expected shape: test then implement in one project for the single-project tasks; for the cross-project task, a client test and implement plus a server test task that locks the existing contract (and one optional docs task). The should-escalate task is the one already measured in the stress test.
+
 ## Environment and OMP
 
 - **Bun version.** The session prompt said Bun >= 1.3.14, but `@oh-my-pi/pi-coding-agent@18.16.0` declares `engines.bun >= 1.4.4`. The repo pins `>= 1.4.4` (root `engines`, CI uses 1.4.4).
