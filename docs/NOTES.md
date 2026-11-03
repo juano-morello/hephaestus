@@ -38,6 +38,51 @@ The made-up test coverage is gone: no test task lists AC1, and with the stripped
 
 - **Caveat: 100% probably reflects how easy the test is, not how strong the planner is.** The briefs are clean (decisions settled, paths known), the repo maps are small and consistent, and the worked example has the same proto -> codegen -> test -> implement shape as two of the fixtures. Before trusting the number: run the planner against real repo maps, and add a messier brief that should fail or escalate (SPEC section 14 asks for one).
 
+### Stress test: real repo maps and messy briefs (2026-11-03)
+
+Fixture set: a real game repo, kept in a private suite outside this public repo. It is one git repo with two projects, `server` (Go, about 1100 files) and `client` (Godot). There is no proto project: the wire protocol is a frozen legacy text protocol implemented by hand on both sides, so nothing in this set resembles the prompt's proto -> codegen example. Repo maps are hand-trimmed (about 60 lines each). Gates add custom `ci`, `goldens` and `mysql` (server), and `checks` and `py_tools` (client). Same model, full prompt, 5 runs each.
+
+| Brief | Kind | First-try valid | Failing gate | Tasks | Time per run | Output tokens |
+|---|---|---|---|---|---|---|
+| realistic-1 | realistic, server | 4/5 | `schema` 1x (`context_budget: null`) | 2-4 | 32-59s | 3.4k-6.4k |
+| realistic-2 | realistic, server | 5/5 | none | 2-3 | 33-47s | 3.4k-4.9k |
+| messy-contradiction | should escalate | 5/5 | none | 4-5 | 74-105s | 7.9k-11.3k |
+| messy-cross-project | should escalate | 5/5 | none | 5 | 64-105s | 6.8k-11.0k |
+| messy-vague-migration | should escalate | 5/5 | none | 3-4 | 51-81s | 5.2k-8.1k |
+
+24/25 pass every gate, and no complexity bumps. The single failure is a **schema problem**: the model wrote `"context_budget": null` for an optional field, and zod `.optional()` rejects `null`. Either normalize `null` to absent for optional fields before parsing, or add "omit optional fields, never write null" to the prompt. I would do the former; it is deterministic and costs nothing.
+
+**What the messy briefs were meant to catch, and what happened:**
+
+- **messy-contradiction** (a decision keeps some state in memory, the constraints forbid storage changes, two criteria need that state to survive a restart). All 5 plans invented a new persistence mechanism and noted the choice in `risks`. That is a design decision the Brief never made, and it goes against the repo's own rule about which interfaces own that state. **Gates pass, plan is wrong.**
+- **messy-cross-project** (one criterion spans server and client, two criteria are not checkable as written, a required owner approval is missing, a decision conflicts with a constraint). Better than expected: all 5 runs split the cross-project criterion into a server test task and a client test task. But all 5 also planned straight through the missing approval and covered the uncheckable criteria with stand-in tests. Every problem was listed in `risks`. **Gates pass, plan should not exist.**
+- **messy-vague-migration** (two vague criteria, plus a hidden schema migration the Brief never names). The hidden migration was found 5/5: every plan has a `kind: migration`, lane `irreversible` task. The vague criteria were covered by proxy tests, which the plans themselves call proxies. **Gates pass; the plan is reasonable apart from the vague criteria, which should have gone back to the author.**
+
+**Escalation ablation.** Same model, prompt plus one section ("When not to plan": if a decision or constraint contradicts a criterion, a criterion cannot be checked as written, an approval is missing, or the work needs something the Brief forbids or never mentions, output `{"schema": 1, "escalate": [reasons]}`; ordinary uncertainty goes in `risks`). 3 runs each:
+
+| Brief | Escalated | Reasons given |
+|---|---|---|
+| messy-contradiction | 3/3 | no allowed persistence mechanism; whether an existing free-form field counts as touching storage; durability vs no blocking I/O |
+| messy-cross-project | 3/3 | missing approval; two criteria not checkable; a criterion contradicts a decision; unapproved threshold |
+| messy-vague-migration | 3/3 | two criteria not checkable; unmentioned irreversible migration and backfill |
+| realistic-1 | 0/3 (all plans valid) | none |
+| realistic-2 | 0/3 (all plans valid) | none |
+
+The reasons are specific and correct, and the realistic briefs did not escalate (0/6). The variant prompt was a scratch file and is not committed; the added section is summarized above. So the planner already knows when a Brief is not plannable; it only lacks a way to say so.
+
+**Gates that passed plans they should not have** (gates too weak, or a missing schema channel):
+
+1. **No honest exit for the planner.** The Plan schema has no equivalent of `WorkerResult.blocked`, so a non-plannable Brief always comes back as a plan. This is the most important finding; see spec pushback 16.
+2. **Coverage is nominal.** `criteria_covered` checks that a test task lists the id, not that the test can decide the criterion. Vague criteria ("feels consistent", "nothing breaks") were "covered" in 10/10 runs. Code cannot judge testability; the honest place to catch it is the brief gate (vague words) or the planner's escalation.
+3. **Cross-project criteria are invisible.** Nothing tells the gate that a criterion needs both a server and a client test. The planner got it right 5/5 here, but one test task in either project would also have passed. A Criterion could carry `projects?: string[]`, requiring one covering test task per project.
+4. **Test tasks that cannot fail first.** Several plans say the new tests "may already pass". Test locking assumes red-before-green; nothing checks it at plan time. That is an execution gate (run the locked tests before implement and require red), not a plan gate.
+5. **Over-wide test scopes lock unrelated tests.** One run gave its test task a whole package's `*_test.go` glob, which locks dozens of existing test files for every later implement task. A plan gate could reject test globs that match existing files the task does not need, once it has the real file list.
+6. **Guessed paths.** Of 113 literal non-test scope paths across all 25 runs, 24 do not exist in the repo. Most are intended new files, but one existing-file guess (a boot file under a name the repo does not use) appeared in 4 of 5 runs of one brief, so diff-scope would fail at execution. This is a **fixture problem** (the trimmed map lists packages, not every file), but it points at the same fix as interpretation 11: check scopes against the worktree's real file list at plan time.
+
+**Classification.** Prompt problems: none found that the existing rules caused; the one prompt-level gap is the missing escalation instruction, which needs a schema change first. Schema/spec problems: `null` optionals, no escalation channel, no per-criterion project list. Fixture problems: missing file names in trimmed repo maps.
+
+**Does the ~70% target still hold?** For gate validity, yes, easily: 24/25 on real maps, and 39/40 overall. But the number is less meaningful than it looked. On Briefs that should not be planned, 100% "validity" is a failure, and the gates cannot tell the difference. I would redefine the step 0 metric as two numbers: first-try validity on plannable Briefs (target ~70%, currently ~97%), and honest escalation on should-escalate Briefs (currently 0/15 without an escalation channel, 9/9 with one). The planner's judgment is the strong part; the schema needs to let it act on that judgment.
+
 ## Environment and OMP
 
 - **Bun version.** The session prompt said Bun >= 1.3.14, but `@oh-my-pi/pi-coding-agent@18.16.0` declares `engines.bun >= 1.4.4`. The repo pins `>= 1.4.4` (root `engines`, CI uses 1.4.4).
@@ -68,10 +113,15 @@ The made-up test coverage is gone: no test task lists AC1, and with the stripped
 13. **`brief_hash` from the model.** An LLM cannot compute a sha256, so the script passes the hash in and checks the echo. Simpler: the engine stamps `brief_hash` itself after parsing and the planner never outputs it. Either way the hash is sha256 of sorted-key JSON of the parsed Brief. **Decided 2026-11-03: the engine stamps it.** The prompt no longer mentions it, `evaluatePlannerOutput` overwrites whatever the planner wrote, and the `brief_hash` failure bucket is gone. SPEC section 8 notes it under Plan.
 14. **Evidence shape.** `GateResult.evidence` is `string[]` (one entry per finding). `Return.reasons[].evidence` in section 8 is a single `string`. Pick one; joining is trivial.
 15. **Verdict vocabulary.** Gates use `pass | fail`; `Return.verdict` is `"red"`. Worth unifying (`green | red`?) before the ledger fixes the event shape.
+16. **Pushback: the planner needs an honest exit.** SPEC section 8 gives workers `blocked`, but the planner can only return a Plan, so a contradictory or uncheckable Brief always becomes a plan that passes the gates (0/15 escalations on the messy briefs). With a one-section prompt change and an `escalate` output, it escalated 9/9 with correct reasons and did not escalate on realistic briefs. Proposal: `PlannerOutput = Plan | { schema: 1, escalate: string[] }`, where `escalate` goes back to the submitting agent like a brief gate failure, and SPEC section 14's "honest failure rate on should-escalate tasks" measures it. Needs a decision before it goes into SPEC sections 8 and 14.
+17. **Optional fields written as `null`.** Planner output with `"context_budget": null` fails schema parsing. Proposal: the engine drops `null` optional fields before parsing (same spirit as stamping `brief_hash`). Small, but it is a schema rule the spec does not state.
+18. **Criteria that span projects.** A criterion like "the server refuses and the client shows the message" can be covered by a test in one project only. Option: `Criterion.projects?: string[]`, with `criteria_covered` requiring a covering test task in each listed project. Not needed yet (the planner split it correctly 5/5), so this is noted, not proposed.
 
 ## Deferred (urges noted, not built)
 
 - **Planner correction edge.** The obvious next experiment: when a plan fails, send the gate evidence back once and measure second-try validity. That is engine behaviour (section 2 return paths), so it was not built here.
 - JSON Schema generation from the zod schemas for editor autocomplete (section 3).
-- Reading the real repos to build repo maps instead of hand-written ones (section 9 per-stack adapters).
+- Reading the real repos to build repo maps instead of hand-written ones (section 9 per-stack adapters). The real-repo maps are still hand-trimmed; a generated full file list would remove the guessed-path problem (stress test finding 6).
+- A plan gate that matches scope globs against the worktree file list (no guessed existing files, no test globs that lock unrelated existing tests). Needs worktree access, so it is engine work.
+- An execution gate that runs locked tests before the implement task and requires them to be red.
 - A `heph plan` CLI surface around the same evaluation.
