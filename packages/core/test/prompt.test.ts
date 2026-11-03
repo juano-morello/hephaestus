@@ -10,7 +10,8 @@ test("planner prompt example is a valid plan", async () => {
   const text = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
   const json = /## Example[\s\S]*?```json\n([\s\S]*?)\n```/.exec(text)?.[1];
   expect(json).toBeDefined();
-  const plan = Plan.parse(JSON.parse(json as string));
+  // brief_hash is stamped by code, never written by the planner.
+  const plan = Plan.parse({ ...JSON.parse(json as string), brief_hash: "stamped" });
   const b = brief({
     acceptance: [
       ...["AC1", "AC2", "AC3"].map((id) => ({ id, text: id, kind: "behavior" as const })),

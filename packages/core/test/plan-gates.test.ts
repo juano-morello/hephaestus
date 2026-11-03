@@ -221,7 +221,10 @@ describe("test_precedes_implement", () => {
   });
 
   test("fails when an implement task covers nothing", () => {
-    const result = testPrecedesImplement(plan([task("T1", { kind: "implement", covers: [] })]), ctx());
+    const result = testPrecedesImplement(
+      plan([task("T1", { kind: "implement", covers: [] })]),
+      ctx(),
+    );
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(["T1: implement task covers no criteria"]);
   });

@@ -334,6 +334,7 @@ Brief gate: acceptance non-empty, no open questions, every project exists, every
 
 ```ts
 Plan = { schema: 1, brief_hash: string, tasks: Task[], risks: string[] }
+// brief_hash is stamped by the engine after parsing; the planner never outputs it.
 
 Task = {
   id: string,
@@ -345,7 +346,7 @@ Task = {
   complexity_reason: string,
   scope: string[],              // path globs relative to project
   covers: string[],             // Criterion ids
-  produces?: string[],          // "proto:LootMsg", "fn:StackItems"
+  produces?: string[],          // "proto:LootMsg", "fn:StackItems", "test:StackCap"
   consumes?: string[],
   context_budget?: { tokens: number, reason: string },
   spec: string
@@ -358,7 +359,7 @@ Plan gates (pure code):
 
 - every Criterion covered: test-checked ones by at least one `test` task; gate-checked ones by a task in a project where that gate is configured, and never by a `test` task
 - every `consumes` resolves to a `produces`; graph is acyclic
-- every `implement` task has a matching `test` task that precedes it
+- every `implement` task has a matching `test` task that precedes it: same project, overlapping test-checked `covers`, and the test task produces a `test:<Name>` artifact the implement task consumes (directly or through a chain). An implement task covering only gate-checked criteria fails
 - parallel tasks in the same project have non-overlapping scopes
 - `migration` forces lane `irreversible`
 - complexity sanity: `wide` cannot be `trivial`; mismatches bump up, never down

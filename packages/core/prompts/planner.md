@@ -10,14 +10,13 @@ gates.
 - Output exactly one JSON object matching the Plan schema. No prose, no markdown fences, no
   comments, nothing before or after it.
 - Do not add fields that are not in the schema. Do not declare edges.
-- Set `brief_hash` to exactly `{{brief_hash}}`.
+- Do not output `brief_hash`; code sets it.
 
 ## Schema
 
 ```ts
 Plan = {
   schema: 1,
-  brief_hash: string,
   tasks: Task[],
   risks: string[]               // things that could make this plan wrong; may be empty
 }
@@ -68,7 +67,8 @@ Task = {
    - each artifact is produced by exactly one task;
    - there are no cycles.
    Do not consume things that already exist in the repo; only artifacts created in this Plan.
-4. **Test before implement.** Every `implement` task has non-empty `covers`, and there is a
+4. **Test before implement.** Every `implement` task covers at least one criterion without
+   `check` (gate-checked criteria cannot lock an implementation), and there is a
    `test` task in the same project that covers at least one of the same criteria and precedes
    it in the derived order. To make it precede, the test task produces `test:<Name>` and the
    implement task consumes it. Writing a test task alone is not enough; without the
@@ -136,7 +136,6 @@ the proto change passes buf (AC4, `check: { gate: "buf" }`). Workspace has proje
 ```json
 {
   "schema": 1,
-  "brief_hash": "<given>",
   "tasks": [
     { "id": "T1", "title": "Define CooldownStarted message", "kind": "codegen", "project": "proto",
       "lane": "wide", "complexity": "standard", "complexity_reason": "additive protocol message other projects build on",
@@ -173,7 +172,7 @@ task the `buf` gate checks, not by a test.
 - Every `implement` task consumes a `test:` artifact from a same-project test task with an
   overlapping `covers`.
 - Unordered tasks in the same project share no files.
-- Lanes, complexity floors, limits and `brief_hash` are right.
+- Lanes, complexity floors and limits are right.
 
 ## Inputs
 

@@ -83,7 +83,6 @@ for (const name of Object.keys(workspace.projects)) {
 const promptPath = resolve(values.prompt ?? join(import.meta.dir, "..", "prompts", "planner.md"));
 const template = await Bun.file(promptPath).text();
 const prompt = template
-  .replaceAll("{{brief_hash}}", hash)
   .replace("{{brief}}", JSON.stringify(brief, null, 2))
   .replace("{{workspace}}", workspaceFile.text.trim())
   .replace("{{project_gates}}", gatesFile.text.trim())
