@@ -8,15 +8,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import {
-  type Brief,
-  briefHash,
-  globsOverlap,
-  type Plan,
-  type Task,
-  type Workspace,
-} from "@hephaestus/core";
-import { createGit, type EngineConfig, runPlan, type UnitGate } from "@hephaestus/engine";
+import { type Brief, briefHash, type Plan, type Task, type Workspace } from "@hephaestus/core";
+import { builtinGates, createGit, type EngineConfig, runPlan } from "@hephaestus/engine";
 import { openLedger } from "@hephaestus/ledger";
 import { openSandbox, runOk, type SandboxSpec } from "@hephaestus/sandbox";
 import { createOmpWorker } from "../src/omp.ts";
@@ -102,47 +95,6 @@ const plan: Plan = {
   risks: [],
 };
 
-/** Stand-ins for the v0 step 2.4 gates: scope, red-before-green for tests, green for code. */
-const scopeGate: UnitGate = {
-  name: "scope",
-  run: (ctx) => {
-    const out = ctx.diff.files.filter(
-      (f) => !f.startsWith("calc/") || !ctx.task.scope.some((g) => globsOverlap(g, f.slice(5))),
-    );
-    return {
-      gate: "scope",
-      verdict: out.length ? "fail" : "pass",
-      reason: out.length ? "files outside scope" : "in scope",
-      evidence: out,
-    };
-  },
-};
-const testsGate: UnitGate = {
-  name: "tests",
-  async run(ctx) {
-    const sb = await openSandbox(sandboxFor(ctx.workdir));
-    try {
-      if ((await sb.exec("test -f test_add.sh")).code !== 0) {
-        return { gate: "tests", verdict: "fail", reason: "test_add.sh is missing", evidence: [] };
-      }
-      const r = await sb.exec("sh test_add.sh", { timeoutMs: 60_000 });
-      // A test unit must leave the suite red (add.sh does not exist yet); the implement unit green.
-      const want = ctx.task.kind === "test" ? "fail" : "pass";
-      const ok = want === "fail" ? r.code !== 0 : r.code === 0;
-      return {
-        gate: "tests",
-        verdict: ok ? "pass" : "fail",
-        reason: ok ? `tests ${want} as required` : `tests must ${want} here`,
-        evidence: ok
-          ? []
-          : [`exit ${r.code}`, r.stdout.slice(-2000), r.stderr.slice(-2000)].filter(Boolean),
-      };
-    } finally {
-      await sb.dispose();
-    }
-  },
-};
-
 const config: EngineConfig = {
   routing: {
     test_author: { default: { model: values.model, effort: "medium" } },
@@ -170,7 +122,8 @@ const outcome = await runPlan({
   runId: "R1",
   changesetId: "C1",
   worker,
-  gates: [scopeGate, testsGate],
+  gates: builtinGates(),
+  gateSandbox: (workdir) => openSandbox(sandboxFor(workdir)),
   config,
   worktreesDir: join(root, "worktrees"),
 });
