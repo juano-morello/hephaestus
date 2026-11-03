@@ -223,6 +223,8 @@ async function runUnit(
       const brief: UnitBrief = {
         schema: 1,
         task: t,
+        criteria: ctx.brief.acceptance.filter((c) => t.covers.includes(c.id)),
+        decisions: ctx.brief.decisions,
         role,
         tier,
         context: built.pack,

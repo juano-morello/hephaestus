@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Criterion } from "./brief.ts";
 import { Complexity, Task } from "./plan.ts";
 import { Return } from "./return.ts";
 
@@ -65,6 +66,10 @@ export const UnitBrief = z
   .object({
     schema: z.literal(1),
     task: Task,
+    /** The Brief criteria this task covers, with their text: ids alone get reinterpreted. */
+    criteria: z.array(Criterion),
+    /** Settled in the Brief; the worker must not reopen them. */
+    decisions: z.array(z.string()),
     role: z.string().min(1),
     tier: Complexity,
     context: ContextPack,

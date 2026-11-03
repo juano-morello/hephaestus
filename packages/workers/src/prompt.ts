@@ -26,6 +26,13 @@ export function renderUnitPrompt(brief: UnitBrief): string {
     `## Scope\n\nChange only files matching these globs (relative to the project root, your working directory):\n\n${bullets(task.scope)}`,
     `## Locked files (never modify)\n\n${bullets(brief.locked_paths)}`,
     `## Constraints\n\n${bullets(brief.constraints)}`,
+    `## Acceptance criteria this task covers\n\n${bullets(
+      brief.criteria.map(
+        (c) =>
+          `${c.id}: ${c.text}${c.check ? ` (checked by the ${c.check.gate} gate, not by a test)` : ""}`,
+      ),
+    )}`,
+    `## Decisions (settled, do not reopen)\n\n${bullets(brief.decisions)}`,
   ];
 
   if (brief.feedback) {
