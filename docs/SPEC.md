@@ -249,6 +249,7 @@ Event = {
 ```
 run.created            (owner_node)
 run.plan_ready
+run.plan_escalated     (reasons; the run waits for a revised Brief)
 run.paused / run.resumed   (reason: rate_limit | handoff | user)
 run.handed_off         (to)
 run.adopted            (forced, old owner unreachable)
@@ -337,6 +338,8 @@ Brief gate: acceptance non-empty, no open questions, every project exists, every
 PlannerOutput = Plan | Escalation
 Plan = { schema: 1, brief_hash: string, tasks: Task[], risks: string[] }
 // brief_hash is stamped by the engine after parsing; the planner never outputs it.
+// Before parsing, the engine drops null-valued object fields at any depth, so null reads as
+// absent; a null inside an array still fails the schema.
 Escalation = { schema: 1, escalate: string[] }   // >= 1 concrete reason
 
 Task = {
@@ -739,7 +742,7 @@ Small MMORPG across three projects: Go server, Godot client, web. Optional share
 
 ## 19. Build order
 
-0. **Planner prototype (1 day):** planner prompt + Plan schema + plan gates as a script against 2 to 3 real server features. Target ~70% first-try plan validity. Riskiest assumption; goes first.
+0. **Planner prototype (1 day):** planner prompt + Plan schema + plan gates as a script against 2 to 3 real server features. Targets: ~70% first-try plan validity on plannable Briefs; should-escalate Briefs return an Escalation and plannable ones do not. Riskiest assumption; goes first.
 1. **Golden tasks (half a day):** first 5 with hidden oracle tests.
 2. **v0:**
    1. Ledger + projections + blob store
