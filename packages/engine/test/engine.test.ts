@@ -18,9 +18,12 @@ const brief: Brief = {
   schema: 1,
   goal: "stacks cap at max_stack",
   context: "",
-  decisions: [],
+  decisions: ["max_stack lives in the item table"],
   constraints: ["no locks"],
-  acceptance: [{ id: "AC1", text: "cap", kind: "behavior" }],
+  acceptance: [
+    { id: "AC1", text: "stacks cap at max_stack", kind: "behavior" },
+    { id: "AC9", text: "not covered by these tasks", kind: "behavior" },
+  ],
   out_of_scope: [],
   open_questions: [],
   source: "cli",
@@ -171,6 +174,10 @@ describe("runPlan", () => {
     const t2 = calls[1];
     expect(t2?.present).toContain("inventory/stack_test.go");
     expect(t2?.input.brief.locked_paths).toEqual(["inventory/stack_test.go"]);
+    expect(t2?.input.brief.criteria).toEqual([
+      { id: "AC1", text: "stacks cap at max_stack", kind: "behavior" },
+    ]);
+    expect(t2?.input.brief.decisions).toEqual(["max_stack lives in the item table"]);
     expect(t2?.input.brief.context.locked).toEqual([
       { path: "inventory/stack_test.go", content: testFile["inventory/stack_test.go"] },
     ]);

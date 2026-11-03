@@ -16,6 +16,11 @@ const brief = (overrides: Partial<UnitBrief> = {}): UnitBrief => ({
     covers: ["AC1"],
     spec: "Make Add respect max_stack.",
   },
+  criteria: [
+    { id: "AC1", text: "Adding past max_stack starts a new slot", kind: "behavior" },
+    { id: "AC5", text: "Full CI passes", kind: "nonfunctional", check: { gate: "ci" } },
+  ],
+  decisions: ["max_stack lives in the item table"],
   role: "implementer",
   tier: "standard",
   context: {
@@ -44,6 +49,8 @@ describe("renderUnitPrompt", () => {
       "- inventory/stack.go",
       "## Locked files (never modify)\n\n- inventory/stack_test.go",
       "- no locks",
+      "## Acceptance criteria this task covers\n\n- AC1: Adding past max_stack starts a new slot\n- AC5: Full CI passes (checked by the ci gate, not by a test)",
+      "## Decisions (settled, do not reopen)\n\n- max_stack lives in the item table",
       "### inventory/stack.go\n\n```\npackage inventory\n```",
       "### inventory/stack_test.go (locked)\n\n```\npackage inventory // TestCap\n```",
       "- test: `go test ./...`",

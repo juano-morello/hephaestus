@@ -45,6 +45,8 @@ const brief = (locked: string[] = []): UnitBrief => ({
     constraints: [],
   },
   constraints: [],
+  criteria: [{ id: "AC1", text: "sh add.sh 2 3 prints 5", kind: "behavior" }],
+  decisions: [],
   locked_paths: locked,
   output_schema: "WorkerResult",
 });

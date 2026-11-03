@@ -50,6 +50,8 @@ describe("UnitBrief", () => {
     const brief = {
       schema: 1,
       task: task("T2", { covers: ["AC1"] }),
+      criteria: [{ id: "AC1", text: "stacks cap at max_stack", kind: "behavior" }],
+      decisions: ["the cap lives in the item table"],
       role: "implementer",
       tier: "standard",
       context: pack(),
@@ -59,5 +61,7 @@ describe("UnitBrief", () => {
     };
     expect(UnitBrief.safeParse(brief).success).toBe(true);
     expect(UnitBrief.safeParse({ ...brief, tier: "huge" }).success).toBe(false);
+    const { criteria: _, ...noCriteria } = brief;
+    expect(UnitBrief.safeParse(noCriteria).success).toBe(false);
   });
 });
