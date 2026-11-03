@@ -333,8 +333,11 @@ Brief gate: acceptance non-empty, no open questions, every project exists, every
 ### Plan (planner -> engine)
 
 ```ts
+// The planner returns exactly one of these.
+PlannerOutput = Plan | Escalation
 Plan = { schema: 1, brief_hash: string, tasks: Task[], risks: string[] }
 // brief_hash is stamped by the engine after parsing; the planner never outputs it.
+Escalation = { schema: 1, escalate: string[] }   // >= 1 concrete reason
 
 Task = {
   id: string,
@@ -354,6 +357,8 @@ Task = {
 ```
 
 **Edges are derived, not declared:** an edge exists only where a task consumes what another produces.
+
+**Escalation is the planner's honest exit**, like `blocked` for workers. The planner returns an Escalation instead of a Plan when the Brief cannot be planned without reopening a decision, breaking a constraint, guessing what a criterion means, skipping a required approval, or adding work the Brief forbids or never names (a migration, a new persistence mechanism). One concrete reason per problem. Ordinary uncertainty (file names, helper shapes) goes in `risks`, not `escalate`. An Escalation is not a plan gate failure: no retry, no replan. Its reasons return to the submitting agent the same way as a brief gate failure, so it asks the user and submits a revised Brief.
 
 Plan gates (pure code):
 
@@ -603,6 +608,7 @@ tags: [server, contained, small]
 ```
 
 - 5 to 10 to start: server-only, protocol + server, client logic, cross-repo, and at least one that should escalate.
+- A should-escalate task sets `expect: escalate` instead of `oracle`. It is solved when the planner returns an Escalation, and missed when it returns a Plan, even one that passes every plan gate.
 - Hidden oracle tests written by the user, applied after the run.
 - Pinned commits for reproducibility.
 
@@ -617,7 +623,7 @@ Runs each task N times on throwaway worktrees, flagged as eval in the ledger.
 
 ### Metrics
 
-Solved rate (oracle green), first-pass plan validity, attempts per unit, escalation rate, scope violations caught, tokens and wall time per solved task, honest failure rate on should-escalate tasks. Comparisons show run-to-run spread.
+Solved rate (oracle green), first-pass plan validity on plannable tasks, attempts per unit, escalation rate, scope violations caught, tokens and wall time per solved task, honest failure rate on should-escalate tasks (planner Escalation returned), false escalation rate on plannable tasks. Comparisons show run-to-run spread.
 
 ### Rules
 
