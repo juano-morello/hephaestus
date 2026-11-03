@@ -42,7 +42,10 @@ describe("append", () => {
     const ledger = open();
     const bad = { ...samples["run.finished"], data: { surprise: true } };
     expect(() =>
-      ledger.appendMany([samples["run.created"], bad as (typeof samples)["run.finished"]]),
+      ledger.appendMany([
+        samples["run.created"],
+        bad as unknown as (typeof samples)["run.finished"],
+      ]),
     ).toThrow("invalid event");
     expect(ledger.read()).toEqual([]);
     const ok = ledger.appendMany([samples["run.created"], samples["run.finished"]]);
