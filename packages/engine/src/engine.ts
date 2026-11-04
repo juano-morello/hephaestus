@@ -23,7 +23,7 @@ import { buildContextPack } from "./context.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
-import { landChangeset } from "./land.ts";
+import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import type { SpawnOutput, Worker } from "./worker.ts";
@@ -70,7 +70,7 @@ export type RunPlanOptions = {
 
 export type RunOutcome = {
   /** built: ready to land. staged: pull requests open. landed: targets fast-forwarded. */
-  status: "built" | "paused" | "staged" | "landed";
+  status: "built" | "paused" | "staged" | "landed" | "cancelled";
   runBranch: string;
   /** Run-branch tip per touched repo. */
   heads: Record<string, string>;
@@ -102,10 +102,116 @@ export function touchedRepos(workspace: Workspace, plan: Plan): string[] {
  * produce, check, correct for at most `config.maxAttempts` attempts (SPEC section 2).
  */
 export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
-  const repos = touchedRepos(opts.workspace, opts.plan);
-  if (opts.plan.brief_hash !== briefHash(opts.brief)) {
+  validatePlan(opts.workspace, opts.brief, opts.plan);
+  createRun(opts);
+  recordPlan(opts, opts.plan);
+  return build(opts);
+}
+
+type RunMeta = Pick<
+  RunPlanOptions,
+  "ledger" | "brief" | "runId" | "changesetId" | "workspaceRoot" | "config" | "gates" | "eval"
+>;
+
+const runEvent = (o: Pick<RunPlanOptions, "runId" | "changesetId" | "config" | "gates">) => ({
+  run_id: o.runId,
+  changeset_id: o.changesetId,
+  config_hash: configHash(
+    o.config,
+    o.gates.map((g) => g.name),
+  ),
+  actor: "engine" as const,
+});
+
+/** Throws before anything is written if the plan can't run in this workspace. */
+export function validatePlan(workspace: Workspace, brief: Brief, plan: Plan): void {
+  touchedRepos(workspace, plan);
+  if (plan.brief_hash !== briefHash(brief))
     throw new Error("plan brief_hash does not match the brief");
-  }
+  const order = topoOrder(
+    plan.tasks.map((t) => t.id),
+    deriveEdges(plan.tasks).edges,
+  );
+  if (!order.ok) throw new Error(`plan has a cycle: ${order.cycle.join(" -> ")}`);
+}
+
+/** run.created, carrying the Brief and the workspace root so the run can be rebuilt later. */
+export function createRun(o: RunMeta): void {
+  o.ledger.append({
+    ...runEvent(o),
+    type: "run.created",
+    data: {
+      owner_node: o.ledger.nodeId,
+      brief_hash: briefHash(o.brief),
+      eval: o.eval ?? false,
+      brief: o.brief,
+      workspace_root: o.workspaceRoot,
+    },
+  });
+}
+
+/** run.plan_ready for a validated plan; returns the event id (what a plan approval names). */
+export function recordPlan(o: RunMeta & Pick<RunPlanOptions, "workspace">, plan: Plan): string {
+  validatePlan(o.workspace, o.brief, plan);
+  return o.ledger.append({ ...runEvent(o), type: "run.plan_ready", data: { plan } }).id;
+}
+
+/** The planner's honest exit: the run waits for a revised Brief. */
+export function recordEscalation(o: RunMeta, reasons: string[]): void {
+  o.ledger.append({ ...runEvent(o), type: "run.plan_escalated", data: { reasons } });
+}
+
+/** Builds a run that was created and planned earlier, from what the ledger holds. */
+export async function buildRun(opts: Omit<RunPlanOptions, "brief" | "plan">): Promise<RunOutcome> {
+  const created = opts.ledger.read({ run_id: opts.runId, types: ["run.created"] }).at(-1)?.event;
+  const brief = (created?.data as { brief?: Brief } | undefined)?.brief;
+  if (!brief) throw new Error(`run ${opts.runId} has no recorded brief`);
+  const plan = (
+    opts.ledger.read({ run_id: opts.runId, types: ["run.plan_ready"] }).at(-1)?.event.data as
+      | { plan: Plan }
+      | undefined
+  )?.plan;
+  if (!plan) throw new Error(`run ${opts.runId} has no plan`);
+  const status = opts.ledger.run(opts.runId)?.status;
+  if (status === "failed" || status === "finished")
+    throw new Error(`run ${opts.runId} is ${status}`);
+  validatePlan(opts.workspace, brief, plan);
+  return build({ ...opts, brief, plan });
+}
+
+/** Hints (`heph hint`) for this unit or the whole run, and a budget override for this unit. */
+function humanInput(ctx: Ctx, t: Task): { constraints: string[]; budgetTokens: number } {
+  const inputs = ctx.ledger
+    .read({ run_id: ctx.runId, types: ["human.input"] })
+    .map((s) => s.event)
+    .filter((e) => !e.unit_id || e.unit_id === t.id);
+  const data = (e: (typeof inputs)[number]) =>
+    e.data as { kind: string; text?: string; budget_tokens?: number };
+  const hints = inputs
+    .filter((e) => data(e).kind === "hint" && data(e).text)
+    .map((e) => `Hint from the user: ${data(e).text}`);
+  const budget = inputs
+    .filter((e) => e.unit_id === t.id && data(e).kind === "budget_override")
+    .at(-1);
+  return {
+    constraints: [...ctx.brief.constraints, ...hints],
+    budgetTokens: budget
+      ? (data(budget).budget_tokens ?? ctx.config.budgetTokens)
+      : ctx.config.budgetTokens,
+  };
+}
+
+/** A run is cancelled by a run.failed written from outside (heph cancel). */
+function cancelled(ledger: Ledger, runId: string): string | undefined {
+  if (ledger.run(runId)?.status !== "failed") return undefined;
+  const failed = ledger.read({ run_id: runId, types: ["run.failed"] }).at(-1)?.event.data as
+    | { reason: string }
+    | undefined;
+  return failed?.reason ?? "cancelled";
+}
+
+async function build(opts: RunPlanOptions): Promise<RunOutcome> {
+  const repos = touchedRepos(opts.workspace, opts.plan);
   const ids = opts.plan.tasks.map((t) => t.id);
   const { edges } = deriveEdges(opts.plan.tasks);
   const order = topoOrder(ids, edges);
@@ -145,19 +251,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
     Object.fromEntries(
       await Promise.all([...gits].map(async ([r, g]) => [r, await g.revParse(branch)])),
     );
-  ledger.appendMany([
-    {
-      ...engine,
-      type: "run.created",
-      data: {
-        owner_node: ledger.nodeId,
-        brief_hash: opts.plan.brief_hash,
-        eval: opts.eval ?? false,
-      },
-    },
-    { ...engine, type: "run.plan_ready", data: { plan: opts.plan } },
-    { ...engine, type: "node.started", graph_node: "build", data: {} },
-  ]);
+  ledger.append({ ...engine, type: "node.started", graph_node: "build", data: {} });
 
   const reach = reachability(ids, edges);
   const accepted = new Map<string, string[]>();
@@ -174,7 +268,17 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
       .flatMap((f) => projectRelative(projectPath, f) ?? [])
       .sort();
 
+    const stop = cancelled(ledger, runId);
+    if (stop) return { status: "cancelled", runBranch: branch, heads: await heads(), reason: stop };
     const result = await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked);
+    if (result.status === "cancelled") {
+      return {
+        status: "cancelled",
+        runBranch: branch,
+        heads: await heads(),
+        reason: result.reason,
+      };
+    }
     if (result.status === "paused") {
       return {
         status: "paused",
@@ -203,12 +307,27 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
   ledger.append({ ...engine, type: "node.finished", graph_node: "build", data: { outcome: "ok" } });
   if (opts.autoMerge && opts.plan.tasks.every((t) => t.lane === "contained")) {
     const landed = await landChangeset(opts);
+    const prs = landed.prs ? { prs: landed.prs } : {};
+    if (landed.status !== "staged") {
+      return {
+        status: "paused",
+        runBranch: branch,
+        heads: await heads(),
+        reason: landed.reason ?? "landing failed",
+        ...prs,
+      };
+    }
+    const merged = await mergeChangeset(opts);
+    if (merged.status === "merged")
+      return { status: "landed", runBranch: branch, heads: await heads(), ...prs };
+    if (merged.status === "not_ready")
+      return { status: "staged", runBranch: branch, heads: await heads(), ...prs };
     return {
-      status: landed.status === "aborted" ? "paused" : landed.status,
+      status: "paused",
       runBranch: branch,
       heads: await heads(),
-      ...(landed.prs ? { prs: landed.prs } : {}),
-      ...(landed.reason ? { reason: landed.reason } : {}),
+      reason: merged.reason,
+      ...prs,
     };
   }
   return { status: "built", runBranch: branch, heads: await heads() };
@@ -244,7 +363,10 @@ export function integrationGate(
   });
 }
 
-type UnitResult = { status: "accepted"; files: string[] } | { status: "paused"; reason: string };
+type UnitResult =
+  | { status: "accepted"; files: string[] }
+  | { status: "paused"; reason: string }
+  | { status: "cancelled"; reason: string };
 
 async function runUnit(
   ctx: Ctx,
@@ -282,8 +404,11 @@ async function runUnit(
 
   let feedback: Return | undefined;
   for (let n = 1; n <= config.maxAttempts; n++) {
+    const stop = cancelled(ledger, ctx.runId);
+    if (stop) return { status: "cancelled", reason: stop };
     const at = { ...unit, attempt: n };
     const engine = { ...at, actor: "engine" as const };
+    const { constraints, budgetTokens } = humanInput(ctx, t);
     const tip = await git.revParse(branch);
     const worktree = join(ctx.worktreesDir, ctx.runId, t.id, `a${n}`);
     await git.worktreeAdd(worktree, attemptBranch(ctx.runId, t.id, n), tip);
@@ -296,9 +421,9 @@ async function runUnit(
         project,
         task: t,
         locked,
-        constraints: ctx.brief.constraints,
+        constraints,
         ...(feedback ? { feedback } : {}),
-        budgetTokens: config.budgetTokens,
+        budgetTokens,
       });
       const brief: UnitBrief = {
         schema: 1,
@@ -308,7 +433,7 @@ async function runUnit(
         role,
         tier,
         context: built.pack,
-        constraints: ctx.brief.constraints,
+        constraints,
         locked_paths: locked,
         ...(feedback ? { feedback } : {}),
         output_schema: "WorkerResult",

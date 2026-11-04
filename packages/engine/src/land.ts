@@ -156,31 +156,12 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
     return { status: "staged", refs, prs: urls };
   }
 
-  // 3b. Local: staging refs, then fast-forward every target; undo the moved ones if one fails.
-  for (const r of repos)
+  // 3b. Local: staging refs only; mergeChangeset fast-forwards the targets (heph approve merge).
+  for (const r of repos) {
     await (gits.get(r) as Git).setRef(`refs/heph/staging/${opts.runId}`, refs[r] as string);
-  ledger.append({ ...engine, type: "merge.staged", data: { refs } });
-  const moved: string[] = [];
-  try {
-    for (const r of repos) {
-      await (gits.get(r) as Git).updateRef(target(r), refs[r] as string, tips.get(r) as string);
-      moved.push(r);
-    }
-  } catch (e) {
-    for (const r of moved.reverse())
-      await (gits.get(r) as Git).updateRef(target(r), tips.get(r) as string, refs[r] as string);
-    return abort(
-      ledger,
-      base,
-      `fast-forward failed, rolled back: ${e instanceof Error ? e.message : e}`,
-      refs,
-    );
   }
-  ledger.appendMany([
-    { ...engine, type: "merge.committed", data: { refs } },
-    { ...engine, type: "run.finished", data: {} },
-  ]);
-  return { status: "landed", refs };
+  ledger.append({ ...engine, type: "merge.staged", data: { refs } });
+  return { status: "staged", refs };
 }
 
 async function regate(
@@ -285,10 +266,11 @@ function prBody(
 
 type Staged = { refs: Record<string, string>; prs?: Record<string, string> };
 
-function lastStaged(opts: LandOptions): Staged {
+function lastStaged(opts: LandOptions, needPrs = false): Staged {
   const staged = opts.ledger.read({ run_id: opts.runId, types: ["merge.staged"] }).at(-1)?.event
     .data as Staged | undefined;
-  if (!staged?.prs) throw new Error(`run ${opts.runId} has no pull requests staged`);
+  if (!staged) throw new Error(`run ${opts.runId} has nothing staged`);
+  if (needPrs && !staged.prs) throw new Error(`run ${opts.runId} has no pull requests staged`);
   return staged;
 }
 
@@ -338,9 +320,9 @@ export type MergeOutcome =
 export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   const { base, repos, dirOf } = context(opts);
   const staged = lastStaged(opts);
-  if (!opts.prs) throw new Error("no pull request client configured");
-  const prs = opts.prs;
   const order = repos.filter((r) => staged.prs?.[r]);
+  if (order.length && !opts.prs) throw new Error("no pull request client configured");
+  const prs = opts.prs as PullRequests;
 
   const reasons: string[] = [];
   for (const r of order) {
@@ -380,7 +362,13 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   try {
     Object.assign(refs, await finishLocal(opts, staged));
   } catch (e) {
-    const reason = `half-landed: merged ${merged.join(", ")}; local fast-forward failed: ${e instanceof Error ? e.message : e}`;
+    const why = `local fast-forward failed: ${e instanceof Error ? e.message : e}`;
+    // finishLocal rolls its own moves back, so with no PR merged nothing has landed.
+    if (!merged.length) {
+      abort(opts.ledger, base, why, staged.refs);
+      return { status: "aborted", reason: why };
+    }
+    const reason = `half-landed: merged ${merged.join(", ")}; ${why}`;
     abort(opts.ledger, base, reason, staged.refs);
     return { status: "half_landed", merged, reason };
   }
@@ -397,7 +385,7 @@ export type CheckOutcome =
 /** For a changeset staged as pull requests: finish the run once all are merged, abort if one closed. */
 export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
   const { base, dirOf } = context(opts);
-  const staged = lastStaged(opts);
+  const staged = lastStaged(opts, true);
   if (!opts.prs) throw new Error("no pull request client configured");
 
   const states = await Promise.all(
