@@ -268,6 +268,41 @@ How it works and what I interpreted:
 
 Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs 2.8), handoff and adopt, interrupting a worker already in flight on `heph cancel` (it still finishes its attempt), scheduler rerouting a rate-limited role.
 
+## Node model (v0 step 2.8)
+
+Built 2026-11-04 in `packages/node` (peer protocol, sync, workspace checkout, handoff, adopt), `packages/ledger` (import, cursors, single writer), `packages/engine` (coordinator and runner, abort signal) and `packages/cli` (host, daemon, node commands). SPEC sections 7, 13 and 16 now describe what is built.
+
+Decided with you: daemon plus SSH (no network port, SSH keys as auth), named workspaces cloned on demand, handoff interrupts the attempt in flight, live test on denver.
+
+How it works and what I interpreted:
+
+1. **Sync cursors are the peer's `seq`, not ULIDs.** A ULID cursor would miss events that reach a node late through a third node (older ids arriving after newer ones).
+2. **Single writer lives in the ledger:** `append` refuses an event for a run another node owns, except `run.created` and `run.adopted`. Every write path is covered, the CLI's included, which is why commands for a remote run are forwarded to the owner instead of written here.
+3. **Leases and heartbeats are not built.** The only runner is in-process, where a lease can't expire; they come with cross-node runners (build order step 3). The coordinator/runner split is there (`Runner.runAttempt`), so that step adds a remote runner, not a refactor.
+4. **A fresh build starts from `origin/<target>`** (fetched) when the repo has that remote, also for the integration gate's untouched repos. A node's local `main`, especially in a checkout cloned on demand, goes stale. Repos without a remote still use the local branch.
+5. **`run.created` records the workspace name;** a node taking a run over resolves its own checkout from it. A runtime always uses its own node's checkout, never the path recorded by the node that created the run.
+6. **Handoff recovery is "run it again".** A handoff stopped before `run.handed_off` leaves the old owner in charge; one stopped after it is finished by the old owner, which can still deliver (sync, take) though it can no longer write. Chaos-tested at every step.
+7. **Handoff waits for nothing:** only the interrupt default is built (the attempt in flight is redone by the new owner). SPEC calls the policy configurable; waiting is not built.
+8. **Builds reached through `heph peer` require the owner's daemon**, since a build tied to an ssh session dies with it. Reading and quick commands work through `heph peer` without a daemon.
+9. **`heph run` through a daemon follows the job** by polling its events (1 s locally; each poll of a remote owner is one ssh round trip). Ctrl-C stops following, not the build.
+10. **The daemon is the rate-limit scheduler:** a job that ends rate limited starts again and waits out `retry_after` inside the build; at start the daemon also resumes runs left `running` by a killed process.
+11. **`--set` overrides apply only in-process.** A command that goes through a daemon uses the daemon's configuration.
+12. **OMP loads lazily** (only to plan or build), and a Linux binary ships OMP's native addon beside it (`build:heph:linux` writes `dist/linux-x64/`; `fetch-natives.ts` takes the addon from npm at the version OMP resolved, after checking the registry's sha512). The first Linux binary died at startup because a binary cross-compiled on macOS carries only the macOS addon, and OMP loads it at import.
+13. **`HEPH_DEPS_MODULE`** (a module exporting `deps`) injects a scripted planner and worker into heph processes that tests start (daemon tests, daemon chaos). It is a test hook only.
+
+**Results (2026-11-04):**
+- **Tests:** 459 pass.
+  - Two nodes over an in-process transport and over a real `heph peer` process.
+  - A real daemon killed mid-build that resumes by itself.
+  - Handoff mid-build and stopped at each of its 7 steps.
+- **Mutation check:** a handoff that skips pushing the run branches fails the handoff test.
+- **`daemon-chaos.ts`** (seed 3, 10 runs): the daemon was SIGKILLed while the run was building in all 10. All 10 were resumed by the restarted daemon and matched an uninterrupted run.
+- **On denver (Ubuntu 26.04 x86_64):** the Linux binary runs, `heph sync` from this Mac over real SSH pushed 2 events (then nothing on the next sync), and `heph daemon` serves its socket and stops cleanly.
+
+**Not done yet:** the model-backed live run on denver (`new --on denver`, a build there, a handoff back). It needs OMP logged in on denver. `~/heph-test` on denver holds the test binary and home until then.
+
+Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
@@ -278,6 +313,7 @@ Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs
 - **Blocked postinstalls.** Bun blocked lifecycle scripts for `onnxruntime-node` and `protobufjs` (OMP transitive deps). The planner path does not need them. Revisit before using OMP as a full worker.
 - **Usage accounting.** Assistant `usage.input` is tiny on cached prompts (`cacheRead` carries the bulk). Ledger usage should record input, output, cacheRead and cacheWrite separately, not only `input`.
 - **Runtime-specific code.** The script uses `Bun.YAML` and `Bun.file`. SPEC section 3 wants runtime-specific code behind `db`/`proc`; config loading will need the same treatment (or a YAML dependency) when it becomes real code.
+- **Native-mode tests can't run inside another macOS sandbox.** `sandbox-exec` refuses to nest (`sandbox_apply: Operation not permitted`), so the gate, native sandbox and daemon tests fail when the test runner itself is sandboxed (as in a sandboxed agent session); they pass when it isn't, and on Linux CI (bwrap).
 
 ## Spec interpretations made in code (all decided by 2026-11-03)
 

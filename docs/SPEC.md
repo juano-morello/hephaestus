@@ -293,8 +293,8 @@ Constraint from day one: **every machine is a full node.** Devserver as coordina
 
 ```yaml
 nodes:
-  devserver: { labels: [linux, unattended], preferred: true }
-  mbp:       { labels: [macos, godot-editor, fast] }
+  devserver: { ssh: devserver, labels: [linux, unattended], preferred: true }
+  mbp:       { ssh: mbp.local, labels: [macos, godot-editor, fast] }
 ```
 
 - **Sync is event union.** Nodes exchange events and blobs (`heph sync` + background sync when peers see each other). ULIDs + append-only + single owner means no conflicts. Each node keeps a sync cursor per peer.
@@ -302,6 +302,16 @@ nodes:
 - **Git is the code transport.** Unit branches push to the shared remote when reachable; offline they stay local and push on reconnect. Merge runs on the owner. Unreachable remote at merge time: run waits at `merge.staged`.
 - Transport between nodes over the LAN or Tailscale.
 - v0 ships coordinator and runner as separate modules talking over an internal API, even when in one process.
+
+### v0 as built
+
+- **Transport is SSH.** A node reaches another with `ssh <nodes.<id>.ssh> <heph> peer`: one JSON request and one JSON response per line over stdio (protocol 1). Nothing listens on the network; SSH keys are the auth, over the LAN or Tailscale.
+- **Sync** pulls the peer's events after this node's cursor for it, then pushes this node's events after the peer's cursor for it; blobs travel with their events. Cursors are the peer's local arrival order (`seq`), not ULIDs, so events relayed through a third node are not missed. Each node keeps one cursor per peer, outside the event log.
+- **Single writer is enforced by the ledger:** appending an event for a run another node owns is refused, except `run.created` and `run.adopted`. `run.handed_off` moves ownership.
+- **Placement:** `heph new --on <node|local>`; by default the `preferred` node if it answers, else local. A remote owner plans and builds in its own checkout.
+- **Workspaces are named** (`name:` in `workspace.yaml`). A node finds its checkout as `workspaces.<name>` in its home config, else `$HEPH_HOME/workspaces/<name>`, and clones it from the repos' `origin` remotes when missing, writing the heph files that aren't committed. A run on another node needs every repo to have an `origin`. A fresh build starts from `origin/<target>` when the repo has that remote.
+- **Commands for a run go to its owner:** a command that changes a run is carried out on the owner (`rpc` over the peer protocol), then this node syncs. Reading commands sync first and say "possibly stale" when the owner can't be reached.
+- **Coordinator and runner:** the engine's coordinator decides and writes every event; a `Runner` executes one attempt. Only the in-process runner exists; leases and heartbeats come with cross-node runners (build order step 3).
 
 ---
 
@@ -608,7 +618,9 @@ A build is fresh when there is no `node.started` (build) since the latest `run.p
 3. Emits `run.handed_off`, syncs events and blobs
 4. New owner reconciles and resumes
 
-`heph adopt <run>`: forced takeover when the old owner is unreachable. Recorded loudly; the only path that could produce two writers.
+As built in v0: the owner interrupts the attempt in flight (it is marked interrupted with reason `handoff` and does not count; waiting is not built yet), pushes the run branches (`push` effects), writes `run.handed_off`, syncs, and asks the new owner to take the run. The new owner makes or finds its checkout, fetches the run branches, and resumes without redoing accepted units (`run.resumed`, reason `handoff`). A handoff stopped at any step is finished by running it again on the old owner. A handoff is refused when a touched repo has no remote.
+
+`heph adopt <run>`: forced takeover when the old owner is unreachable. Recorded loudly; the only path that could produce two writers. In v0 it is refused while the owner answers `hello`, unless `--force`.
 
 ### Testing
 
@@ -686,6 +698,8 @@ Solved rate (oracle green), first-pass plan validity on plannable tasks, attempt
 
 Owns runs, ledger, worktrees, scheduling. Runs on every node. Everything else is a client.
 
+As built in v0: `heph daemon` runs in the foreground (under systemd or launchd if you want it unattended). It serves HTTP on a Unix socket, `$HEPH_HOME/daemon.sock`, runs builds as jobs, and resumes at start the runs it owns that a killed process left running. It reschedules rate-limited builds after `retry_after`, and syncs with the configured nodes every `sync.interval_s` (default 30). The CLI is its client when it answers, and opens the node in-process otherwise. A build started from another node goes to the owner's daemon so it outlives the SSH session.
+
 ### CLI (primary)
 
 ```sh
@@ -699,8 +713,10 @@ heph hint <run> <unit> "<text>" [--budget N]
 heph approve plan|merge <run>
 heph cancel <run>
 heph handoff <run> <node>
-heph adopt <run>
+heph adopt <run> [--force]
 heph sync
+heph daemon
+heph peer                  (the far side of node-to-node traffic; run through ssh)
 heph eval ...
 heph retro
 heph config explain
@@ -710,7 +726,7 @@ heph ui
 
 Every command supports `--json` with stable, versioned output schemas: `{ schema: 1, command, ok, data }` or `{ schema: 1, command, ok: false, error: { message } }` with a non-zero exit.
 
-v0 runs the CLI in-process on the node's ledger (`$HEPH_HOME`, default `~/.heph`) through a runtime facade that the daemon wraps once it exists. `heph run` builds in the foreground and then stages the changeset (pull requests where repos have a remote, staging refs otherwise); `heph approve merge` merges it. `heph merge status` follows pull requests merged on GitHub directly.
+The CLI works on the node's ledger (`$HEPH_HOME`, default `~/.heph`): through the daemon when one answers, else in-process. `heph run` builds and then stages the changeset (pull requests where repos have a remote, staging refs otherwise). In-process it builds in the foreground; through a daemon, or on another node, it follows the job's events until it is done. `heph approve merge` merges it. `heph merge status` follows pull requests merged on GitHub directly.
 
 ### Chat hosts (Claude Code, Codex)
 
