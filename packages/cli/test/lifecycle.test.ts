@@ -383,7 +383,7 @@ describe("heph lifecycle", () => {
       ok: false,
       code: 1,
       command: "status",
-      error: { message: "no run nope" },
+      error: { message: "no run nope on test-node (heph sync?)" },
     });
   });
 });

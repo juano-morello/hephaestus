@@ -102,13 +102,18 @@ export function openRuntime(opts: {
   onAppend?: (events: LedgerEvent[]) => void;
   /** Human progress lines that are not events (e.g. waiting out a rate limit). */
   notify?: (line: string) => void;
+  /** The node's ledger when several runtimes (one per workspace) share it; closed by its owner. */
+  ledger?: Ledger;
 }) {
   const { config } = opts.loaded;
   const deps = opts.deps ?? {};
-  const ledger: Ledger = openLedger(opts.home, {
-    nodeId: config.node.id,
-    ...(opts.onAppend ? { onAppend: opts.onAppend } : {}),
-  });
+  const ownLedger = !opts.ledger;
+  const ledger: Ledger =
+    opts.ledger ??
+    openLedger(opts.home, {
+      nodeId: config.node.id,
+      ...(opts.onAppend ? { onAppend: opts.onAppend } : {}),
+    });
   const { targets, name: _name, ...workspaceWithIntegration } = config.workspace;
   const workspace: Workspace = workspaceWithIntegration;
   const engineConfig = toEngineConfig(config);
@@ -174,9 +179,11 @@ export function openRuntime(opts: {
     const e = ledger.read({ run_id: runId, types: ["run.created"] }).at(-1)?.event;
     const data = e?.data as { brief?: unknown; workspace_root?: string } | undefined;
     if (!data?.brief) throw new Error(`run ${runId} has no recorded brief`);
+    // The run's workspace on this node is the one this runtime was opened for: a run taken
+    // over from another node lives in this node's own checkout (SPEC section 7).
     return {
       brief: Brief.parse(data.brief),
-      workspaceRoot: data.workspace_root ?? opts.workspaceDir,
+      workspaceRoot: opts.workspaceDir,
       changesetId: e?.changeset_id ?? runId,
     };
   };
@@ -219,6 +226,7 @@ export function openRuntime(opts: {
     runId,
     changesetId,
     workspaceRoot,
+    workspaceName: config.workspace.name,
     config: engineConfig,
     gates,
     workspace,
@@ -361,7 +369,9 @@ export function openRuntime(opts: {
 
   return {
     ledger,
-    close: () => ledger.close(),
+    close: () => {
+      if (ownLedger) ledger.close();
+    },
 
     async newRun(briefInput: unknown, o: { runId?: string } = {}): Promise<PlanResult> {
       const brief = Brief.parse(briefInput);
@@ -432,7 +442,7 @@ export function openRuntime(opts: {
      * from where the run is: a stopped or paused build resumes, a built one is staged, and a
      * rate-limited one first waits for the limit to pass (`now` skips the wait).
      */
-    async build(runId: string, o: { now?: boolean } = {}) {
+    async build(runId: string, o: { now?: boolean; signal?: AbortSignal } = {}) {
       const row = runRow(runId);
       if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is ${row.status}`);
       if (row.status === "staged")
@@ -452,7 +462,7 @@ export function openRuntime(opts: {
         const { brief: _brief, ...ro } = runOptions(runId);
         let heads: Record<string, string> = {};
         if (runRow(runId).status !== "built") {
-          const out = await buildRun(ro);
+          const out = await buildRun({ ...ro, ...(o.signal ? { signal: o.signal } : {}) });
           const base = {
             run_id: runId,
             status: out.status,

@@ -1,0 +1,184 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { PullRequests } from "@hephaestus/engine";
+import { localTransport } from "@hephaestus/node";
+import { loadHomeConfig } from "../src/config.ts";
+import { type Host, openHost } from "../src/host.ts";
+import { type Io, run } from "../src/main.ts";
+import { deps } from "./fixtures/deps.ts";
+
+let root: string;
+let ws: string;
+let homeA: string;
+let homeB: string;
+let denver: Host;
+
+const put = (path: string, text: string) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+};
+const sh = (cmd: string[], cwd: string) => {
+  const r = Bun.spawnSync(cmd, { cwd });
+  if (r.exitCode !== 0) throw new Error(`${cmd.join(" ")}: ${r.stderr.toString()}`);
+  return r.stdout.toString().trim();
+};
+
+/** Pull requests that open and stay open: enough to stage. */
+const prs: PullRequests = {
+  async open({ head }) {
+    return { url: `https://github.com/acme/calc/pull/${head.length}` };
+  },
+  async find() {
+    return undefined;
+  },
+  async edit() {},
+  async status() {
+    return { state: "open" };
+  },
+  async readiness() {
+    return { ready: false, reason: "not in this test" };
+  },
+  async merge() {
+    throw new Error("not in this test");
+  },
+};
+
+beforeEach(async () => {
+  root = mkdtempSync(join(tmpdir(), "heph-nodes-"));
+  ws = join(root, "calc");
+  homeA = join(root, "mbp");
+  homeB = join(root, "denver");
+  put(join(ws, "README.md"), "# calc\n");
+  const g = ["git", "-c", "user.name=T", "-c", "user.email=t@x"];
+  sh(["git", "init", "-q", "-b", "main"], ws);
+  sh([...g, "add", "-A"], ws);
+  sh([...g, "commit", "-qm", "base"], ws);
+  sh(["git", "clone", "-q", "--bare", ws, join(root, "calc.git")], root);
+  sh(["git", "remote", "add", "origin", join(root, "calc.git")], ws);
+  sh(["git", "fetch", "-q", "origin"], ws);
+  put(
+    join(homeA, "config.yaml"),
+    "node: { id: mbp }\nsandbox: { mode: native }\nnodes:\n  denver: { ssh: denver, preferred: true }\n",
+  );
+  put(join(homeB, "config.yaml"), "node: { id: denver }\nsandbox: { mode: native }\n");
+  put(join(root, "brief.yaml"), BRIEF);
+  denver = openHost({
+    home: homeB,
+    config: await loadHomeConfig(homeB),
+    deps: { ...deps, prs },
+    daemon: true,
+  });
+});
+afterEach(async () => {
+  await denver.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+const BRIEF = `schema: 1
+source: cli
+goal: add.sh prints the sum of two integers
+context: ""
+decisions: [Usage is sh add.sh A B]
+constraints: [POSIX sh only]
+acceptance:
+  - { id: AC1, text: "sh add.sh 2 3 prints 5", kind: behavior }
+out_of_scope: []
+open_questions: []
+`;
+
+/** heph on mbp; denver answers as its daemon would, over an in-process transport. */
+async function heph(args: string[]) {
+  let out = "";
+  const io: Io = {
+    cwd: ws,
+    env: { HEPH_HOME: homeA },
+    stdout: (s) => {
+      out += s;
+    },
+    stderr: () => {},
+    deps: { ...deps, prs },
+    connect: (node) => {
+      if (node !== "denver") throw new Error(`unknown node ${node}`);
+      return localTransport(denver.peerMethods());
+    },
+  };
+  const code = await run([...args, "--json"], io);
+  return {
+    ...(JSON.parse(out) as {
+      ok: boolean;
+      data?: Record<string, unknown>;
+      error?: { message: string };
+    }),
+    code,
+  };
+}
+
+describe("a run on another node", () => {
+  test("is created, planned, approved, built and staged there, driven from this node", async () => {
+    await heph(["init", "--force"]);
+    // Travels to denver's checkout with the workspace description (it isn't committed).
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh }\n",
+    );
+    const created = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R1"]);
+    expect(created.data).toMatchObject({ run_id: "R1", status: "planned", node: "denver" });
+    expect(denver.ledger.run("R1")?.owner_node).toBe("denver");
+
+    const status = await heph(["status", "R1"]);
+    expect(status.data).toMatchObject({
+      run: { run_id: "R1", owner_node: "denver", status: "planned" },
+    });
+    expect(status.data?.stale).toBeUndefined();
+
+    expect((await heph(["approve", "plan", "R1"])).ok).toBe(true);
+    expect(denver.ledger.read({ run_id: "R1", types: ["human.input"] })).toHaveLength(1);
+
+    const built = await heph(["run", "R1"]);
+    expect(built.data).toMatchObject({ run_id: "R1", status: "staged" });
+    expect((await heph(["status", "R1"])).data).toMatchObject({ run: { status: "staged" } });
+
+    const checkout = join(homeB, "workspaces", sh(["basename", ws], root));
+    expect(sh(["git", "show", "heph/R1:add.sh"], checkout)).toBe("echo $(($1 + $2))");
+  }, 60_000);
+
+  test("--on local keeps the run here even when a preferred node answers", async () => {
+    await heph(["init", "--force"]);
+    const created = await heph([
+      "new",
+      "--brief",
+      join(root, "brief.yaml"),
+      "--run-id",
+      "R2",
+      "--on",
+      "local",
+    ]);
+    expect(created.data).toMatchObject({ node: "mbp" });
+    expect(denver.ledger.run("R2")).toBeUndefined();
+  });
+
+  test("status says possibly stale when the owner can't be reached", async () => {
+    await heph(["init", "--force"]);
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3"]);
+    let out = "";
+    const io: Io = {
+      cwd: ws,
+      env: { HEPH_HOME: homeA },
+      stdout: (s) => {
+        out += s;
+      },
+      stderr: () => {},
+      deps,
+      connect: () => {
+        throw new Error("ssh: connect to host denver port 22: Operation timed out");
+      },
+    };
+    await run(["status", "R3", "--json"], io);
+    expect(JSON.parse(out).data).toMatchObject({
+      run: { owner_node: "denver" },
+      stale: "possibly stale: denver is unreachable",
+    });
+  });
+});

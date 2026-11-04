@@ -34,6 +34,8 @@ export const PlanResult = z
     escalate: z.array(z.string()).optional(),
     reason: z.string().optional(),
     planner_attempts: z.int().positive(),
+    /** The node that owns the run (SPEC section 7); `new` only. */
+    node: z.string().optional(),
   })
   .strict();
 
@@ -79,6 +81,8 @@ export const StatusOne = z
     ),
     usage: z.array(z.object({ provider: z.string(), model: z.string() }).passthrough()),
     prs: z.record(z.string(), z.string()).optional(),
+    /** Set when the run's owner could not be reached to refresh it. */
+    stale: z.string().optional(),
   })
   .strict();
 
@@ -105,6 +109,27 @@ export const Hint = z
   .object({ run_id: z.string(), unit: z.string(), recorded: z.array(z.string()) })
   .strict();
 export const Cancelled = z.object({ run_id: z.string(), status: z.literal("failed") }).strict();
+export const Synced = z
+  .object({
+    peers: z.array(
+      z
+        .object({
+          node: z.string(),
+          ok: z.boolean(),
+          pulled: z.int().optional(),
+          pushed: z.int().optional(),
+          error: z.string().optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export const HandedOff = z
+  .object({ run_id: z.string(), to: z.string(), pushed: z.array(z.string()), dir: z.string() })
+  .strict();
+export const Adopted = z
+  .object({ run_id: z.string(), from: z.string(), fetched: z.array(z.string()) })
+  .strict();
 export const MergeResult = z
   .object({ run_id: z.string(), result: z.object({ status: z.string() }).passthrough() })
   .strict();
@@ -126,5 +151,8 @@ export const OUTPUT = {
   explain: Explain,
   hint: Hint,
   cancel: Cancelled,
+  sync: Synced,
+  handoff: HandedOff,
+  adopt: Adopted,
   "merge status": MergeResult,
 } as const;

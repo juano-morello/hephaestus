@@ -3,11 +3,13 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { openLedger } from "@hephaestus/ledger";
-import { servePeer, stdinLines, syncMethods } from "@hephaestus/node";
+import type { LedgerEvent } from "@hephaestus/ledger";
+import { servePeer, stdinLines, type Transport } from "@hephaestus/node";
 import { explainConfig, type LoadedConfig, loadConfig, loadHomeConfig } from "./config.ts";
+import { daemonAt, startDaemon } from "./daemon.ts";
+import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
-import { type Deps, describe, openRuntime, type Runtime } from "./runtime.ts";
+import { type Deps, describe, type Runtime } from "./runtime.ts";
 
 /** Output schema version of every `--json` envelope (SPEC section 16). */
 export const JSON_SCHEMA = 1;
@@ -21,6 +23,8 @@ export type Io = {
   stdin?: AsyncIterable<string>;
   /** Test injection: planner, worker, pull requests. */
   deps?: Deps;
+  /** Test injection: how this node reaches another. */
+  connect?: (node: string) => Transport;
 };
 
 type Flags = {
@@ -33,6 +37,7 @@ type Flags = {
   budget?: number;
   now: boolean;
   home?: string;
+  on?: string;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -48,39 +53,106 @@ const homeOf = (ctx: Ctx) => ctx.flags.home || ctx.env.HEPH_HOME || join(homedir
 const workspaceOf = (ctx: Ctx) =>
   ctx.flags.workspace ? resolve(ctx.cwd, ctx.flags.workspace) : findWorkspace(ctx.cwd);
 
-/** Opens the runtime on the resolved config for one command, and always closes it. */
+type Api = { call(method: string, args: unknown[]): Promise<unknown> };
+type Out<F extends (...a: never[]) => unknown> = Promise<Awaited<ReturnType<F>>>;
+
+/** The CLI's view of this node: every command goes through the host, in-process or daemon. */
+function remote(api: Api, follow: (line: string) => void) {
+  const c = <T>(method: string, ...args: unknown[]) => api.call(method, args) as Promise<T>;
+  return {
+    newRun: (brief: unknown, o: { runId?: string; on?: string }) =>
+      c<Awaited<ReturnType<Runtime["newRun"]>> & { node?: string }>("newRun", brief, o),
+    planShow: (id: string) => c<ReturnType<Runtime["planShow"]>>("planShow", id),
+    revise: (id: string, text: string) =>
+      c<Awaited<ReturnType<Runtime["revise"]>>>("revise", id, text),
+    approvePlan: (id: string) => c<ReturnType<Runtime["approvePlan"]>>("approvePlan", id),
+    status: (id?: string) =>
+      c<ReturnType<Runtime["status"]> & { stale?: string }>("status", ...(id ? [id] : [])),
+    explain: (id: string, unit?: string) =>
+      c<ReturnType<Runtime["explain"]>>("explain", id, ...(unit ? [unit] : [])),
+    hint: (id: string, unit: string, text: string, budget?: number) =>
+      c<ReturnType<Runtime["hint"]>>("hint", id, unit, text, ...(budget ? [budget] : [])),
+    cancel: (id: string) => c<ReturnType<Runtime["cancel"]>>("cancel", id),
+    approveMerge: (id: string) =>
+      c<Awaited<ReturnType<Runtime["approveMerge"]>>>("approveMerge", id),
+    mergeStatus: (id: string) => c<Awaited<ReturnType<Runtime["mergeStatus"]>>>("mergeStatus", id),
+    sync: () =>
+      c<{
+        peers: { node: string; ok: boolean; pulled?: number; pushed?: number; error?: string }[];
+      }>("sync"),
+    handoff: (id: string, node: string) =>
+      c<{ run_id: string; to: string; pushed: string[]; dir: string }>("handoff", id, node),
+    adopt: (id: string, force: boolean) =>
+      c<{ run_id: string; from: string; fetched: string[] }>("adopt", id, { force }),
+    /**
+     * heph run. In-process the build runs right here; with a daemon (or on another node) it runs
+     * as a job there, and this follows its events until it is done.
+     */
+    async build(id: string, o: { now?: boolean }): Out<Runtime["build"]> {
+      const first = (await api.call("run", [id, o])) as Record<string, unknown>;
+      if (!("started" in first)) return first as Awaited<ReturnType<Runtime["build"]>>;
+      let after: string | undefined;
+      for (;;) {
+        const f = (await api.call("follow", [id, after])) as {
+          events: { id: string; type: string; data: unknown; unit_id?: string; attempt?: number }[];
+          status: string;
+          done: boolean;
+          result?: unknown;
+          error?: string;
+        };
+        for (const e of f.events) {
+          follow(line(e));
+          after = e.id;
+        }
+        if (f.done) {
+          if (f.error) throw new Error(f.error);
+          return (f.result ?? { run_id: id, status: f.status, heads: {} }) as Awaited<
+            ReturnType<Runtime["build"]>
+          >;
+        }
+        await Bun.sleep(1000);
+      }
+    },
+  };
+}
+
+const line = (e: { type: string; data: unknown; unit_id?: string; attempt?: number }) =>
+  `  ${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${describe(e)}\n`;
+
+/**
+ * Runs one command against this node: through its daemon when one is running, else on a host
+ * opened in this process (local fallback) and closed afterwards.
+ */
 async function withRuntime<T>(
   ctx: Ctx,
-  fn: (rt: Runtime) => Promise<T> | T,
+  fn: (rt: ReturnType<typeof remote>) => Promise<T> | T,
   progress = false,
 ): Promise<T> {
-  const workspaceDir = workspaceOf(ctx);
-  const loaded = await loadConfig({
-    workspaceDir,
-    home: homeOf(ctx),
+  const home = homeOf(ctx);
+  const cwd = workspaceOf(ctx);
+  const show = progress && !ctx.flags.json ? (l: string) => ctx.stderr(l) : () => {};
+  const daemon = ctx.deps ? undefined : await daemonAt(home);
+  if (daemon) return fn(remote({ call: (m, a) => daemon.call(m, a, cwd) }, show));
+  const host = openHost({
+    home,
+    config: await loadHomeConfig(home),
     overrides: parseSets(ctx.flags.set),
-  });
-  const rt = openRuntime({
-    loaded,
-    workspaceDir,
-    home: homeOf(ctx),
     ...(ctx.deps ? { deps: ctx.deps } : {}),
-    ...(ctx.flags.json ? {} : { notify: (line: string) => ctx.stderr(`  ${line}\n`) }),
+    ...(ctx.connect ? { connect: ctx.connect } : {}),
+    ...(ctx.flags.json ? {} : { notify: (l: string) => ctx.stderr(`  ${l}\n`) }),
     ...(progress && !ctx.flags.json
       ? {
-          onAppend: (events) => {
-            for (const e of events) {
-              const where = e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : "";
-              ctx.stderr(`  ${where}${describe(e)}\n`);
-            }
+          onAppend: (events: LedgerEvent[]) => {
+            for (const e of events) show(line(e));
           },
         }
       : {}),
+    localDaemon: () => daemonAt(home),
   });
   try {
-    return await fn(rt);
+    return await fn(remote({ call: (m, a) => host.api.call(m, a, cwd) }, show));
   } finally {
-    rt.close();
+    await host.close();
   }
 }
 
@@ -115,7 +187,10 @@ const newCommand = command({
       const path = resolve(ctx.cwd, ctx.flags.brief);
       const text = await Bun.file(path).text();
       const data = path.endsWith(".json") ? JSON.parse(text) : Bun.YAML.parse(text);
-      return rt.newRun(data, ctx.flags.runId ? { runId: ctx.flags.runId } : {});
+      return rt.newRun(data, {
+        ...(ctx.flags.runId ? { runId: ctx.flags.runId } : {}),
+        ...(ctx.flags.on ? { on: ctx.flags.on } : {}),
+      });
     }),
   render: planText,
 });
@@ -224,19 +299,66 @@ const COMMANDS: Record<string, Command<unknown>> = {
   peer: command({
     run: async (ctx) => {
       const home = homeOf(ctx);
-      const config = await loadHomeConfig(home);
-      const ledger = openLedger(home, { nodeId: config.node.id });
+      const host = openHost({
+        home,
+        config: await loadHomeConfig(home),
+        ...(ctx.deps ? { deps: ctx.deps } : {}),
+        localDaemon: () => daemonAt(home),
+      });
       try {
-        await servePeer(syncMethods(ledger), {
+        await servePeer(host.peerMethods(), {
           lines: ctx.stdin ?? stdinLines(Bun.stdin.stream()),
           write: ctx.stdout,
         });
       } finally {
-        ledger.close();
+        await host.close();
       }
       return { served: true };
     },
     render: () => "",
+  }),
+  /** Runs this node's daemon in the foreground until it is stopped (Ctrl-C, SIGTERM). */
+  daemon: command({
+    run: async (ctx) => {
+      const home = homeOf(ctx);
+      const config = await loadHomeConfig(home);
+      const log = (l: string) => ctx.stderr(`heph daemon: ${l}\n`);
+      const host = openHost({
+        home,
+        config,
+        daemon: true,
+        ...(ctx.deps ? { deps: ctx.deps } : {}),
+        notify: log,
+        onAppend: (events) => {
+          for (const e of events) log(`${e.run_id} ${line(e).trim()}`);
+        },
+      });
+      const d = await startDaemon(host, { home, intervalS: config.sync.interval_s, log });
+      log(`node ${host.node} serving ${d.socket}`);
+      // A stop leaves running builds as they are; the next start resumes them.
+      await new Promise<void>((done) => {
+        process.once("SIGINT", done);
+        process.once("SIGTERM", done);
+      });
+      await d.stop();
+      process.exit(0);
+    },
+    render: () => "",
+  }),
+  sync: command({
+    run: (ctx) => withRuntime(ctx, (rt) => rt.sync()),
+    render: (r) =>
+      `${r.peers.map((p) => (p.ok ? `${p.node}: pulled ${p.pulled}, pushed ${p.pushed}` : `${p.node}: ${p.error}`)).join("\n") || "no nodes configured"}\n`,
+  }),
+  handoff: command({
+    run: (ctx) =>
+      withRuntime(ctx, (rt) => rt.handoff(need(ctx.args, 0, "run id"), need(ctx.args, 1, "node"))),
+    render: (h) => `handed ${h.run_id} to ${h.to}; it continues there (${h.dir})\n`,
+  }),
+  adopt: command({
+    run: (ctx) => withRuntime(ctx, (rt) => rt.adopt(need(ctx.args, 0, "run id"), ctx.flags.force)),
+    render: (a) =>
+      `ADOPTED ${a.run_id} from ${a.from}: this node now owns it. If ${a.from} comes back, it must not write this run.\n`,
   }),
   "config explain": command<LoadedConfig>({
     run: (ctx) =>
@@ -299,6 +421,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         budget: { type: "string" },
         now: { type: "boolean", default: false },
         home: { type: "string" },
+        on: { type: "string" },
       },
     });
     json = values.json ?? false;
@@ -315,12 +438,19 @@ export async function run(argv: string[], io: Io): Promise<number> {
       force: values.force ?? false,
       now: values.now ?? false,
       ...(values.home ? { home: values.home } : {}),
+      ...(values.on ? { on: values.on } : {}),
       ...(values.brief ? { brief: values.brief } : {}),
       ...(values["run-id"] ? { runId: values["run-id"] } : {}),
       ...(values.budget ? { budget: Number.parseInt(values.budget, 10) } : {}),
       ...(values.workspace ? { workspace: values.workspace } : {}),
     };
-    const data = await cmd.run({ ...io, flags, args: found.args });
+    // Tests that start heph processes inject a scripted planner and worker this way.
+    const deps =
+      io.deps ??
+      (io.env.HEPH_DEPS_MODULE
+        ? ((await import(io.env.HEPH_DEPS_MODULE)) as { deps: Deps }).deps
+        : undefined);
+    const data = await cmd.run({ ...io, ...(deps ? { deps } : {}), flags, args: found.args });
     if (json) {
       io.stdout(`${JSON.stringify({ schema: JSON_SCHEMA, command: name, ok: true, data })}\n`);
     } else {
