@@ -376,7 +376,13 @@ async function finishLocal(opts: LandOptions, staged: Staged): Promise<Record<st
         on: { repo: r },
       },
       async () => {
-        await (gits.get(r) as Git).updateRef(target(r), to, from);
+        const git = gits.get(r) as Git;
+        // A target you have checked out moves with its files, or not at all.
+        const at = await git.checkedOutAt(target(r));
+        if (!at) await git.updateRef(target(r), to, from);
+        else if ((await git.revParse(target(r))) !== from)
+          throw new Error(`${target(r)} in ${r} moved`);
+        else await git.moveCheckout(at, to);
         return { sha: to };
       },
     );

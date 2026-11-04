@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Workspace } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
@@ -491,6 +492,44 @@ describe("mergeChangeset locally", () => {
     const r = await mergeChangeset(options);
     expect(r).toMatchObject({ status: "aborted" });
     expect(await git("proto").revParse("main")).toBe(protoMain);
+    ledger.close();
+  });
+});
+
+describe("landing into a target you have checked out", () => {
+  const status = (dir: string) => runOk(["git", "status", "--porcelain"], { cwd: dir });
+
+  test("the checkout moves with it: files on disk, a clean status, your other edits kept", async () => {
+    const { root, ledger, options } = await built();
+    await runPlan(options);
+    await landChangeset(options);
+    writeFiles(join(root, "server"), { "README.md": "server, being edited\n" });
+    expect(await mergeChangeset(options)).toEqual({ status: "merged" });
+    expect(readFileSync(join(root, "proto", "loot.txt"), "utf8")).toBe("LootDrop\n");
+    expect(readFileSync(join(root, "server", "impl.sh"), "utf8")).toBe("echo loot\n");
+    expect(await status(join(root, "proto"))).toBe("");
+    expect(await status(join(root, "server"))).toBe(" M README.md\n");
+    expect(readFileSync(join(root, "server", "README.md"), "utf8")).toBe("server, being edited\n");
+    ledger.close();
+  });
+
+  test("an edit the merge would overwrite aborts it, and the repos already moved go back", async () => {
+    const { root, ledger, options, git } = await built();
+    await runPlan(options);
+    await landChangeset(options);
+    const before = {
+      proto: await git("proto").revParse("main"),
+      server: await git("server").revParse("main"),
+    };
+    writeFiles(join(root, "server"), { "impl.sh": "mine\n" });
+    const r = await mergeChangeset(options);
+    expect(r).toMatchObject({ status: "aborted" });
+    expect((r as { reason: string }).reason).toContain("impl.sh");
+    expect(await git("proto").revParse("main")).toBe(before.proto);
+    expect(await git("server").revParse("main")).toBe(before.server);
+    expect(existsSync(join(root, "proto", "loot.txt"))).toBe(false);
+    expect(await status(join(root, "proto"))).toBe("");
+    expect(readFileSync(join(root, "server", "impl.sh"), "utf8")).toBe("mine\n");
     ledger.close();
   });
 });

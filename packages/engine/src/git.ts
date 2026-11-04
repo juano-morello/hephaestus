@@ -21,6 +21,13 @@ export type Git = {
   diff(from: string, to: string): Promise<Diff>;
   /** Moves `refs/heads/<branch>` to `next` only if it currently points at `expected`. */
   updateRef(branch: string, next: string, expected: string): Promise<void>;
+  /** The worktree (the main checkout included) that has `branch` checked out, if any. */
+  checkedOutAt(branch: string): Promise<string | undefined>;
+  /**
+   * Moves the branch checked out at `path` to `to` with its files (`git reset --keep`): local
+   * edits are kept, and it refuses, changing nothing, when one would be overwritten.
+   */
+  moveCheckout(path: string, to: string): Promise<void>;
   lsFiles(worktree: string): Promise<string[]>;
   /** The remote's url, or undefined when the repo has no such remote. */
   remoteUrl(remote: string): Promise<string | undefined>;
@@ -80,6 +87,21 @@ export function createGit(repoDir: string): Git {
     updateRef: async (branch, next, expected) =>
       void (await git(["update-ref", `refs/heads/${branch}`, next, expected])),
     lsFiles: async (worktree) => lines(await git(["ls-files"], worktree)),
+    async checkedOutAt(branch) {
+      let path: string | undefined;
+      for (const l of lines(await git(["worktree", "list", "--porcelain"]))) {
+        if (l.startsWith("worktree ")) path = l.slice("worktree ".length);
+        else if (l === `branch refs/heads/${branch}`) return path;
+      }
+      return undefined;
+    },
+    async moveCheckout(path, to) {
+      const r = await run(["git", "reset", "-q", "--keep", to], { cwd: path });
+      if (r.code !== 0)
+        throw new Error(
+          `your checkout at ${path} has changes the merge would overwrite: ${r.stderr.trim().replaceAll("\n", " ")}`,
+        );
+    },
     async remoteUrl(remote) {
       const r = await run(["git", "remote", "get-url", remote], { cwd: repoDir });
       return r.code === 0 ? r.stdout.trim() : undefined;
