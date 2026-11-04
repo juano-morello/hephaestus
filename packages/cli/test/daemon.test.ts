@@ -99,10 +99,23 @@ describe("heph daemon", () => {
       node: "test-node",
     });
     await heph(ws, home, ["approve", "plan", "R1"]);
-    expect((await heph(ws, home, ["run", "R1"])).data).toMatchObject({
-      run_id: "R1",
-      status: "staged",
+    // It prints what the build does from now on, not the run's history again.
+    let progress = "";
+    let out = "";
+    await run(["run", "R1"], {
+      cwd: ws,
+      env: { HEPH_HOME: home },
+      stdout: (s) => {
+        out += s;
+      },
+      stderr: (s) => {
+        progress += s;
+      },
     });
+    expect(out).toContain("run R1: staged");
+    expect(progress).toContain("T1/a1 attempt 1 started");
+    expect(progress).not.toContain("run created");
+    expect(progress).not.toContain("approve plan");
   }, 60_000);
 
   test("a daemon killed mid-build resumes the run on its own when it starts again", async () => {

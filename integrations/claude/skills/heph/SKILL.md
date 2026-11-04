@@ -72,9 +72,10 @@ Rules that keep plans valid:
 heph new --brief .heph/briefs/<short-name>.yaml --json
 ```
 
-- `status: planned`: show the user the tasks (id, kind, project, title) and the order, and any
-  `risks` from `heph plan show <run> --json`. Ask for feedback. Then tell them to approve with
-  `heph approve plan <run>` when they're happy.
+- `status: planned`: show the user the tasks (id, kind, project, title, scope) and the order,
+  and any `risks` from `heph plan show <run> --json`. Ask for feedback. Tell them to approve
+  with `heph approve plan <run>` when they're happy, and start `heph run <run>` right away (step
+  4): it waits for the approval and builds as soon as it lands, so they needn't tell you.
 - `status: escalated`: the planner refused, and `escalate` says why (a contradiction, an
   unclear criterion, missing work). Bring each reason to the user, update the Brief with their
   answer, and submit it again with `heph new`.
@@ -90,14 +91,14 @@ New runs go to the node configured as `preferred` (the devserver) when it answer
 
 ## 4. Run it
 
-After the user has approved the plan:
-
 ```bash
 heph run <run>
 ```
 
-It builds every unit, then stages the change, printing one line per event. It can take many
-minutes: run it in the background, and tell the user it's going. It ends in one of:
+Start it in the background as soon as the plan is shown. Until the user approves it prints
+`waiting for your approval` and waits; then it builds every unit and stages the change,
+printing one line per event from that point on. It can take many minutes. A revised plan needs
+its own approval; the waiting `heph run` builds whichever plan is approved. It ends in one of:
 
 - `staged`: the change is ready. Report the pull request URLs (or, for repos without a remote,
   the `heph/<run>` branches) and tell the user to review, then run `heph approve merge <run>`.

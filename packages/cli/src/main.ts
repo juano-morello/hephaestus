@@ -119,7 +119,7 @@ function remote(api: Api, follow: (line: string) => void) {
     async build(id: string, o: { now?: boolean }): Out<Runtime["build"]> {
       const first = (await api.call("run", [id, o])) as Record<string, unknown>;
       if (!("started" in first)) return first as Awaited<ReturnType<Runtime["build"]>>;
-      let after: string | undefined;
+      let after = typeof first.after === "string" ? first.after : undefined;
       for (;;) {
         const f = (await api.call("follow", [id, after])) as {
           events: { id: string; type: string; data: unknown; unit_id?: string; attempt?: number }[];
@@ -143,6 +143,21 @@ function remote(api: Api, follow: (line: string) => void) {
       }
     },
   };
+}
+
+/**
+ * heph run on a planned run whose plan isn't approved yet waits for the approval, so an agent
+ * can start it right after showing the plan and the build begins when the user approves.
+ */
+async function untilApproved(ctx: Ctx, rt: ReturnType<typeof remote>, id: string) {
+  for (let told = false; ; told = true) {
+    const s = await rt.status(id);
+    if (s.runs || s.plan_approved || s.run.status !== "planned") return;
+    if (!told && !ctx.flags.json)
+      ctx.stderr(`waiting for your approval: heph approve plan ${id} (Ctrl-C to stop waiting)\n`);
+    // Status of a run on another node syncs with it first, so this asks every 2 s, not faster.
+    await Bun.sleep(2000);
+  }
 }
 
 const line = (e: { type: string; data: unknown; unit_id?: string; attempt?: number }) =>
@@ -303,7 +318,15 @@ const COMMANDS: Record<string, Command<unknown>> = {
   }),
   run: command({
     run: (ctx) =>
-      withRuntime(ctx, (rt) => rt.build(need(ctx.args, 0, "run id"), { now: ctx.flags.now }), true),
+      withRuntime(
+        ctx,
+        async (rt) => {
+          const id = need(ctx.args, 0, "run id");
+          await untilApproved(ctx, rt, id);
+          return rt.build(id, { now: ctx.flags.now });
+        },
+        true,
+      ),
     render: (r) =>
       `${[
         `run ${r.run_id}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`,

@@ -191,17 +191,18 @@ describe("heph lifecycle", () => {
     const shown = await heph(["plan", "show", "R1"], deps);
     expect(shown.data).toMatchObject({ approved: false, order: ["T1", "T2"] });
 
-    const refused = await heph(["run", "R1"], deps);
-    expect(refused).toMatchObject({
-      ok: false,
-      code: 1,
-      error: { message: "the latest plan of R1 is not approved (heph approve plan R1)" },
+    // heph run before the approval waits for it (an agent starts it right after showing the
+    // plan), then builds.
+    let done = false;
+    const waiting = heph(["run", "R1"], deps).finally(() => {
+      done = true;
     });
-
+    await Bun.sleep(700);
+    expect(done).toBe(false);
     expect((await heph(["approve", "plan", "R1"], deps)).ok).toBe(true);
     expect((await heph(["plan", "show", "R1"], deps)).data).toMatchObject({ approved: true });
 
-    const built = await heph(["run", "R1"], deps);
+    const built = await waiting;
     expect(built.data).toMatchObject({ run_id: "R1", status: "staged" });
 
     const status = await heph(["status", "R1"], deps);

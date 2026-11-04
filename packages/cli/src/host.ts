@@ -199,9 +199,13 @@ export function openHost(o: HostOptions) {
   const startJob = async (
     runId: string,
     opts: { now?: boolean } = {},
-  ): Promise<{ run_id: string; started: boolean; running?: boolean }> => {
+  ): Promise<{ run_id: string; started: boolean; running?: boolean; after?: string }> => {
+    // Followers start here: what the run did before is in heph explain, not printed again.
+    const last = ledger.read({ run_id: runId }).at(-1)?.event.id;
+    const after = last ? { after: last } : {};
     const running = jobs.get(runId);
-    if (running && !running.done) return { run_id: runId, started: false, running: true };
+    if (running && !running.done)
+      return { run_id: runId, started: false, running: true, ...after };
     const { rt } = await runtimeFor(workspaceOf(runId));
     const controller = new AbortController();
     const job: Job = { controller, done: false, promise: Promise.resolve() };
@@ -221,7 +225,7 @@ export function openHost(o: HostOptions) {
         if (o.daemon && !controller.signal.aborted && rateLimited(runId)) void startJob(runId);
       });
     jobs.set(runId, job);
-    return { run_id: runId, started: true };
+    return { run_id: runId, started: true, ...after };
   };
   /** Runs this node is handing off right now: their followers wait for the new owner. */
   const handingOff = new Set<string>();
