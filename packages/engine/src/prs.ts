@@ -74,7 +74,27 @@ export function ghPullRequests(run: Runner = runOk): PullRequests {
       return { url: pr.url, state };
     },
     async edit({ repoDir, url, body }) {
-      await run(["gh", "pr", "edit", url, "--body", body], { cwd: repoDir });
+      // REST, not gh pr edit: older gh (2.46, Ubuntu's) asks GraphQL for Projects (classic)
+      // cards there, which GitHub has removed, and the edit fails.
+      const u = new URL(url);
+      const [owner, repo, kind, number] = u.pathname.split("/").filter(Boolean);
+      if (kind !== "pull" || !owner || !repo || !number)
+        throw new Error(`not a pull request url: ${url}`);
+      await run(
+        [
+          "gh",
+          "api",
+          "--hostname",
+          u.hostname,
+          "-X",
+          "PATCH",
+          `repos/${owner}/${repo}/pulls/${number}`,
+          "-f",
+          `body=${body}`,
+          "--silent",
+        ],
+        { cwd: repoDir },
+      );
     },
     async status({ repoDir, url }) {
       const raw = JSON.parse(

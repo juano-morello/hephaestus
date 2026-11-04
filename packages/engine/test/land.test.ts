@@ -341,8 +341,21 @@ describe("ghPullRequests", () => {
     });
     expect(seen.map((s) => s.cmd.slice(0, 3).join(" "))).toEqual([
       "gh pr create",
-      "gh pr edit",
+      "gh api --hostname",
       "gh pr view",
+    ]);
+    // The body goes through the REST API: gh pr edit fails on older gh (Projects classic).
+    expect(seen[1]?.cmd).toEqual([
+      "gh",
+      "api",
+      "--hostname",
+      "github.com",
+      "-X",
+      "PATCH",
+      "repos/acme/server/pulls/9",
+      "-f",
+      "body=b2",
+      "--silent",
     ]);
     expect(seen[0]?.cmd).toEqual([
       "gh",
