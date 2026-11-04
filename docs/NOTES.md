@@ -291,7 +291,7 @@ How it works and what I interpreted:
 13. **`HEPH_DEPS_MODULE`** (a module exporting `deps`) injects a scripted planner and worker into heph processes that tests start (daemon tests, daemon chaos). It is a test hook only.
 
 **Results (2026-11-04):**
-- **Tests:** 459 pass.
+- **Tests:** 459 pass (CI green).
   - Two nodes over an in-process transport and over a real `heph peer` process.
   - A real daemon killed mid-build that resumes by itself.
   - Handoff mid-build and stopped at each of its 7 steps.
@@ -299,7 +299,20 @@ How it works and what I interpreted:
 - **`daemon-chaos.ts`** (seed 3, 10 runs): the daemon was SIGKILLed while the run was building in all 10. All 10 were resumed by the restarted daemon and matched an uninterrupted run.
 - **On denver (Ubuntu 26.04 x86_64):** the Linux binary runs, `heph sync` from this Mac over real SSH pushed 2 events (then nothing on the next sync), and `heph daemon` serves its socket and stops cleanly.
 
-**Not done yet:** the model-backed live run on denver (`new --on denver`, a build there, a handoff back). It needs OMP logged in on denver. `~/heph-test` on denver holds the test binary and home until then.
+**Live run on denver (2026-11-04):** OMP logged in there, the Linux binary and its daemon, a throwaway private repo (`juano-morello/heph-node-test`), and this Mac as the other node.
+
+- **R1, created on denver from this Mac** (`heph new --on denver`): denver cloned the workspace and planned on the first answer (40 s). `status` from the Mac was synced over SSH. `approve plan` was forwarded. `heph run` was forwarded to denver's daemon, and every event streamed back to the Mac.
+  - T2 escalated twice, because I configured `sh test_add.sh` and the planner had named the file `add_test.sh`. The second escalation exposed a real bug: the daemon cached each workspace's config, so it never saw the fix. Fixed: config is now loaded per command.
+  - After the fix, T2 went green on attempt 7 (the escalations gave it fresh budgets, as designed). The run branch was staged and pushed to GitHub. Opening the PR then failed: denver has no `gh`, and that effect was closed as abandoned.
+- **R2, built by this Mac's daemon and handed to denver once T1 was accepted:**
+  - The Mac interrupted T2's first attempt (reason `handoff`), pushed `heph/R2`, and wrote `run.handed_off` 9 s after the handoff began.
+  - Denver took the run 5 s later (`run.resumed`, reason `handoff`). It did not redo T1, took T2 red then green on attempts 2 and 3, and finished `built` 2 minutes after the handoff.
+- **Findings, still open:**
+  - **A node that lands needs `gh`.** A node without it builds and pushes, but can't open the pull requests.
+  - **One remote URL for every node.** This Mac pushes over HTTPS (gh's credentials) and denver over SSH; denver's heph needed a `url.<ssh>.insteadOf <https>` rewrite (given through `GIT_CONFIG_*` in its environment) to clone and fetch. Any node of a run must be able to use the URL the run's checkout reports.
+  - **The planner isn't held to the project's test command.** It named a test file the configured command didn't run. A plan gate could check test-unit scopes against the configured command.
+  - **After a handoff, `heph run` on the old node ends with "paused (T2: handoff)".** It could say where the run went and follow it there.
+- **Cleanup:** `~/heph-test` on denver and the Mac's test home are removed, no containers are left on either machine, and both daemons are stopped. The GitHub repo is still up for you to delete.
 
 Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
 
