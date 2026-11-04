@@ -74,3 +74,50 @@ describe("native sandbox", () => {
     expect(readFileSync(join(outside, "secret.txt"), "utf8")).toBe("secret");
   });
 });
+
+describe("native sandbox confinement", () => {
+  test("commands can write in the project and in temp, nowhere else", async () => {
+    const { root, sb } = await native();
+    const outside = dir();
+    const r = await sb.exec(
+      `echo in > inside.txt && t=$(mktemp) && echo t > "$t" && echo ok; echo out > ${outside}/x.txt`,
+    );
+    expect(r.stdout).toBe("ok\n");
+    expect(r.code).not.toBe(0);
+    expect(readFileSync(join(root, "inside.txt"), "utf8")).toBe("in\n");
+    expect(existsSync(join(outside, "x.txt"))).toBe(false);
+  });
+
+  test("commands cannot read denied paths but can read the rest of the system", async () => {
+    const secret = dir();
+    writeFileSync(join(secret, "id_ed25519"), "PRIVATE KEY");
+    const root = dir();
+    const sb = await openSandbox({ mode: "native", hostDir: root, denyRead: [secret] });
+    const r = await sb.exec(
+      `cat ${secret}/id_ed25519; echo "exit=$?"; test -r /etc/hosts && echo hosts-ok`,
+    );
+    expect(r.stdout).not.toContain("PRIVATE KEY");
+    expect(r.stdout).toContain("exit=1");
+    expect(r.stdout).toContain("hosts-ok");
+  });
+
+  test("commands have no network", async () => {
+    const { sb } = await native();
+    const r = await sb.exec("curl -s -m 3 http://1.1.1.1 >/dev/null 2>&1; echo net=$?");
+    expect(r.stdout).not.toBe("net=0\n");
+  });
+
+  test("the default deny list covers credentials in the home directory", async () => {
+    const { defaultDenyRead } = await import("../src/native.ts");
+    const list = defaultDenyRead("/home/u");
+    for (const p of [
+      "/home/u/.ssh",
+      "/home/u/.aws",
+      "/home/u/.config/gh",
+      "/home/u/.omp",
+      "/home/u/.gnupg",
+    ]) {
+      expect(list).toContain(p);
+    }
+  });
+});
