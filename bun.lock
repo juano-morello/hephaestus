@@ -10,6 +10,17 @@
         "typescript": "7.0.2",
       },
     },
+    "packages/cli": {
+      "name": "@hephaestus/cli",
+      "version": "0.0.0",
+      "bin": {
+        "heph": "./src/main.ts",
+      },
+      "dependencies": {
+        "@hephaestus/core": "workspace:*",
+        "zod": "4.6.7",
+      },
+    },
     "packages/core": {
       "name": "@hephaestus/core",
       "version": "0.0.0",
@@ -84,6 +95,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.6.4", "", { "os": "win32", "cpu": "x64" }, "sha512-pYsMy5AThiHFOZAsngg8qN4PurM6nInKBhVX7sbj3eNpRQqo1Hb0MgCwPL7VqVMrmcEEMj9Ks3qbkallR65e8g=="],
 
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
+
+    "@hephaestus/cli": ["@hephaestus/cli@workspace:packages/cli"],
 
     "@hephaestus/core": ["@hephaestus/core@workspace:packages/core"],
 

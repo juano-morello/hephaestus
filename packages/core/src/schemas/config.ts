@@ -1,0 +1,154 @@
+import { z } from "zod";
+import { Workspace } from "./workspace.ts";
+
+/** SPEC section 5: layered configuration. Each layer file has its own schema; the merge is `ResolvedConfig`. */
+
+export const Route = z
+  .object({ model: z.string().min(1), effort: z.string().min(1).optional() })
+  .strict();
+export type Route = z.infer<typeof Route>;
+
+/** Complexity tiers plus `default`, which covers missing tiers (SPEC section 10). */
+export const RoleRoutes = z
+  .object({
+    trivial: Route.optional(),
+    standard: Route.optional(),
+    complex: Route.optional(),
+    default: Route.optional(),
+  })
+  .strict();
+export type RoleRoutes = z.infer<typeof RoleRoutes>;
+
+export const Routing = z.record(z.string().min(1), RoleRoutes);
+export type Routing = z.infer<typeof Routing>;
+
+export const Limits = z
+  .object({
+    attempts_per_unit: z.int().positive(),
+    budget_tokens: z.int().positive(),
+    gate_timeout_ms: z.int().positive(),
+  })
+  .strict();
+export type Limits = z.infer<typeof Limits>;
+
+export const SandboxConfig = z
+  .object({
+    mode: z.enum(["container", "native"]),
+    runtime: z.enum(["docker", "podman"]),
+    image: z.string().min(1),
+    integration_image: z.string().min(1).optional(),
+  })
+  .strict();
+export type SandboxConfig = z.infer<typeof SandboxConfig>;
+
+export const NodeConfig = z.object({ id: z.string().min(1) }).strict();
+export type NodeConfig = z.infer<typeof NodeConfig>;
+
+export const ProjectCommands = z
+  .object({
+    test: z.string().min(1).optional(),
+    typecheck: z.string().min(1).optional(),
+    lint: z.string().min(1).optional(),
+  })
+  .strict();
+export type ProjectCommands = z.infer<typeof ProjectCommands>;
+
+/** Per project settings, owned by the project's repo (`<repo>/.heph/config.yaml`). */
+export const ProjectSettings = z
+  .object({
+    commands: ProjectCommands,
+    image: z.string().min(1).optional(),
+    gates: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+export type ProjectSettings = z.infer<typeof ProjectSettings>;
+
+/** `<workspace>/.heph/workspace.yaml`: the Workspace plus the branch each repo lands on. */
+export const WorkspaceConfig = Workspace.safeExtend({
+  targets: z.record(z.string(), z.string().min(1)).optional(),
+}).superRefine((ws, ctx) => {
+  for (const repo of Object.keys(ws.targets ?? {})) {
+    if (!(repo in ws.repos)) {
+      ctx.addIssue({ code: "custom", path: ["targets", repo], message: `unknown repo "${repo}"` });
+    }
+  }
+});
+export type WorkspaceConfig = z.infer<typeof WorkspaceConfig>;
+
+export const ResolvedConfig = z
+  .object({
+    node: NodeConfig,
+    routing: Routing,
+    limits: Limits,
+    sandbox: SandboxConfig,
+    workspace: WorkspaceConfig,
+    projects: z.record(z.string(), ProjectSettings),
+  })
+  .strict()
+  .superRefine((config, ctx) => {
+    for (const name of Object.keys(config.projects)) {
+      if (!(name in config.workspace.projects)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["projects", name],
+          message: `unknown project "${name}"`,
+        });
+      }
+    }
+  });
+export type ResolvedConfig = z.infer<typeof ResolvedConfig>;
+
+/** `~/.heph/config.yaml` (or `$HEPH_HOME/config.yaml`): node-wide settings. */
+export const HomeConfigLayer = z
+  .object({
+    node: NodeConfig.partial().optional(),
+    routing: Routing.optional(),
+    limits: Limits.partial().optional(),
+    sandbox: SandboxConfig.partial().optional(),
+  })
+  .strict();
+export type HomeConfigLayer = z.infer<typeof HomeConfigLayer>;
+
+export const ProjectLayer = z
+  .object({
+    commands: ProjectCommands.optional(),
+    image: z.string().min(1).optional(),
+    gates: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+export type ProjectLayer = z.infer<typeof ProjectLayer>;
+
+/** `<repo>/.heph/config.yaml`: `projects.<name>`, or `project` when the repo has one project. */
+export const RepoConfigLayer = z
+  .object({
+    project: ProjectLayer.optional(),
+    projects: z.record(z.string(), ProjectLayer).optional(),
+  })
+  .strict()
+  .refine((layer) => !(layer.project && layer.projects), {
+    message: "use either project or projects, not both",
+    path: ["project"],
+  });
+export type RepoConfigLayer = z.infer<typeof RepoConfigLayer>;
+
+export type DefaultConfig = Omit<ResolvedConfig, "workspace" | "projects">;
+
+/** Built-in defaults: everything except the workspace, which comes from workspace.yaml or is implied. */
+export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
+  const tiered = (): RoleRoutes => ({
+    trivial: { model: "claude/haiku" },
+    standard: { model: "claude/sonnet", effort: "medium" },
+    complex: { model: "claude/sonnet", effort: "high" },
+  });
+  return {
+    node: { id: opts.nodeId },
+    routing: {
+      planner: { default: { model: "claude/opus", effort: "high" } },
+      test_author: tiered(),
+      implementer: tiered(),
+      documenter: { default: { model: "claude/haiku" } },
+    },
+    limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000 },
+    sandbox: { mode: "container", runtime: "docker", image: "alpine:3.20" },
+  };
+}

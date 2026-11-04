@@ -1,0 +1,13 @@
+{
+  "name": "@hephaestus/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "heph": "./src/main.ts"
+  },
+  "dependencies": {
+    "@hephaestus/core": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

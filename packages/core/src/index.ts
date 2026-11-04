@@ -7,6 +7,7 @@ export * from "./gates/types.ts";
 export * from "./graph/edges.ts";
 export * from "./planner/evaluate.ts";
 export * from "./schemas/brief.ts";
+export * from "./schemas/config.ts";
 export * from "./schemas/eval.ts";
 export * from "./schemas/gates.ts";
 export * from "./schemas/plan.ts";
