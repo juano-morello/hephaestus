@@ -735,6 +735,8 @@ heph ui
 
 Every command supports `--json` with stable, versioned output schemas: `{ schema: 1, command, ok, data }` or `{ schema: 1, command, ok: false, error: { message } }` with a non-zero exit.
 
+`heph run` on a run whose latest plan isn't approved yet waits for the approval, then builds; it prints the build's events from when it starts.
+
 `heph hint --scope` widens one unit's scope by the paths or globs given, relative to its project (decided 2026-11-04): the owner's direction can need a file the plan gave another task, and replanning for one file throws away accepted work. It is recorded as a `human.input` of kind `scope` and holds for that unit's later attempts; locked paths stay locked.
 
 `heph doctor` checks what this node needs to plan, build and land, one line per check with the command that fixes a problem: the node's config, the workspace and its test commands, every routed model (one tiny call each), the sandbox, gh where repos land as pull requests, the daemon, and every configured node (reachable, same version). `--tests` runs each project's test command in the sandbox on a clean checkout of its target branch. It exits 1 when a check fails.

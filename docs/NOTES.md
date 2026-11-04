@@ -360,6 +360,20 @@ Goal set by you: use heph on real work without rough edges, starting with Legend
     - **The client's sandbox was `client/godot`**, so a unit couldn't write the checks in `client/tools`. The client project's path is now `client` (and its test command runs from there). `heph doctor --tests` still passes both projects (client 84 s, server 216 s).
 9. **Installer upgrade bug:** `launchctl bootout` returns before the agent is gone, so restarting a running daemon failed (error 5) and left it down. Fixed: it waits and retries.
 
+## First real runs on LegendsAO (2026-11-04)
+
+A presentation zoom for the Godot client, driven from Claude Code with the skill: three runs. The first dead-ended and was cancelled, the second staged and merged (7 files, +409/-37), and the third (a 2.5x factor on top) was building at the time of writing. What got in the way, and what changed:
+
+1. **The plan could not go green.** T1 tested AC1 to AC7, but AC7 (a `MIGRATION_PLAN.md` entry) was only T5's, the last task, and every task must pass all of its project's tests. T2 passed 63 of 64 checks three times and escalated. **Decided: plan gate `tests_passable`** (SPEC section 9): in execution order, every criterion a test task checks is covered by the first non-test task in that project after it, or earlier. The planner prompt says so too.
+2. **A hint couldn't widen a unit's scope.** Your direction to T2 ("also add the entry") was rejected by diff_scope, since the file was T5's. **Decided: `heph hint --scope <path>`** (SPEC section 16), recorded as a `human.input` of kind `scope`; the skill uses it only for files you agreed to.
+3. **heph failed inside Claude Code's Bash sandbox** ("attempt to write a readonly database"; the agent retried outside it). The installer now adds `heph` to `sandbox.excludedCommands` in `~/.claude/settings.json`, and the error says what to do. My call: heph confines its own commands, and `heph approve` stays denied.
+4. **`heph run` before the approval failed**, and each run needed an "approved now" message from you. `heph run` now waits for the approval (my call: the approval still gates the build; it just needn't be followed by a message). The skill starts it right after showing the plan.
+5. **Every `heph run` reprinted the run from its start**, so a resume after a hint showed T1 again. It now prints from when it starts.
+6. **touched vs diff:** the documenter listed `client/MIGRATION_PLAN.md` for a project-relative `MIGRATION_PLAN.md` and spent three attempts on it. The project's own repo-relative paths are now accepted.
+7. **Smaller:** plans show each task's scope and criteria; attempt commits are titled by their unit with `Heph-Run`/`Heph-Unit`/`Heph-Attempt` trailers (`main` got four `heph: r-... T4 a4` commits); daemon log lines are timestamped; a second escalation says "3 more attempts (6 in all)"; a pause for you reads "waiting for you".
+8. **Open: stacking.** You asked to build the 2.5x change on the unmerged zoom branch. A run always starts from its target, so you merged first. Building on another run's branch (and landing in order) is not built; it belongs with step 3.
+9. **Seen, not a heph problem:** the agent's own Brief had a wrong decision number (23 was taken); the documenter refused to duplicate it, which is the `blocked` exit working.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
