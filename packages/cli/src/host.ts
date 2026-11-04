@@ -24,6 +24,7 @@ import {
 } from "@hephaestus/node";
 import { type HomeConfig, loadConfig } from "./config.ts";
 import { type Deps, openRuntime } from "./runtime.ts";
+import { hephVersion } from "./version.ts";
 
 /** Run commands that change the run: only its owner may carry them out. */
 const OWNER_ONLY = new Set([
@@ -254,7 +255,7 @@ export function openHost(o: HostOptions) {
 
   /** Everything this node answers for its peers (`heph peer`). */
   const peerMethods = (): Methods => ({
-    ...syncMethods(ledger),
+    ...syncMethods(ledger, { version: hephVersion().version }),
     "workspace.ensure": (p: { workspace: WorkspaceDescription }) => prepare(p.workspace),
     "workspace.files": (p: { workspace: WorkspaceDescription }) =>
       ensureWorkspace(p.workspace, { home: o.home, workspaces: o.config.workspaces }),

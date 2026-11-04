@@ -235,3 +235,39 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
     },
   };
 }
+
+export type ModelProbe = { model: string } | { error: string };
+
+/**
+ * One tiny call to a model (`heph doctor`): which model the pattern resolves to, or why it
+ * can't be used (no login, unknown model, provider error). Costs a few tokens.
+ */
+export async function probeModel(modelPattern: string, cwd: string): Promise<ModelProbe> {
+  try {
+    const { session } = (await createAgentSession(
+      sessionOptions({
+        cwd,
+        modelPattern,
+        thinking: "off",
+        systemPrompt: "Reply with the single word OK.",
+        tools: [],
+      }),
+    )) as unknown as {
+      session: OmpSession & { model?: { provider: string; id: string }; dispose?: () => unknown };
+    };
+    try {
+      await session.prompt("ping");
+      const last = session.getLastAssistantMessage() as
+        | { stopReason?: string; errorMessage?: string }
+        | undefined;
+      if (last?.stopReason === "error") return { error: firstLine(last.errorMessage ?? "error") };
+      return { model: `${session.model?.provider} ${session.model?.id}` };
+    } finally {
+      await session.dispose?.();
+    }
+  } catch (e) {
+    return { error: firstLine(e instanceof Error ? e.message : String(e)) };
+  }
+}
+
+const firstLine = (s: string) => s.trim().split("\n")[0] ?? s;

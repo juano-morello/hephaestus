@@ -20,6 +20,8 @@ export type Hello = {
   protocol: number;
   /** The peer's cursor for the caller: how far it has imported the caller's events. */
   cursor: number;
+  /** The peer's heph version, when it says (0.1.0 on). */
+  version?: string;
 };
 
 export type Batch = { seq: number; events: Envelope[]; blobs: WireBlobs; more: boolean };
@@ -48,7 +50,10 @@ export class PeerError extends Error {
 }
 
 /** The methods every node serves for sync. More (workspace, rpc) are added by the node. */
-export function syncMethods(ledger: Ledger, opts: { pageSize?: number } = {}): Methods {
+export function syncMethods(
+  ledger: Ledger,
+  opts: { pageSize?: number; version?: string } = {},
+): Methods {
   const page = opts.pageSize ?? 500;
   return {
     hello: (p: { from: string; protocol: number }): Hello => {
@@ -56,7 +61,12 @@ export function syncMethods(ledger: Ledger, opts: { pageSize?: number } = {}): M
         throw new PeerError(
           `protocol ${p.protocol} is not supported by ${ledger.nodeId} (speaks ${PROTOCOL_VERSION})`,
         );
-      return { node: ledger.nodeId, protocol: PROTOCOL_VERSION, cursor: ledger.cursor(p.from) };
+      return {
+        node: ledger.nodeId,
+        protocol: PROTOCOL_VERSION,
+        cursor: ledger.cursor(p.from),
+        ...(opts.version ? { version: opts.version } : {}),
+      };
     },
     "events.since": (p: { seq: number }): Batch => {
       const b = ledger.since(p.seq, page + 1);
