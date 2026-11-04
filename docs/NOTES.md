@@ -308,7 +308,7 @@ How it works and what I interpreted:
   - The Mac interrupted T2's first attempt (reason `handoff`), pushed `heph/R2`, and wrote `run.handed_off` 9 s after the handoff began.
   - Denver took the run 5 s later (`run.resumed`, reason `handoff`). It did not redo T1, took T2 red then green on attempts 2 and 3, and finished `built` 2 minutes after the handoff.
 - **Findings:**
-  - **A node that lands needs `gh`.** A node without it builds and pushes, but can't open the pull requests. Fixed on denver by installing gh and logging it in (HTTPS, gh as git's credential helper). heph now checks for it before giving a node a run (below).
+  - **A node that lands needs `gh`.** A node without it builds and pushes, but can't open the pull requests. Fixed on denver by installing gh and logging it in (HTTPS, gh as git's credential helper), and verified live by landing two runs from denver (below). heph now checks for it before giving a node a run.
   - **One remote URL for every node.** This Mac pushes over HTTPS (gh's credentials) and denver over SSH; denver's heph needed a `url.<ssh>.insteadOf <https>` rewrite (given through `GIT_CONFIG_*` in its environment) to clone and fetch. Any node of a run must be able to use the URL the run's checkout reports. On denver, gh as git's credential helper makes the HTTPS URLs work without the rewrite. heph doesn't translate URLs between nodes; the check below catches a node that can't use them.
   - **The planner isn't held to the project's test command (still open).** It named a test file the configured command didn't run. A plan gate could check test-unit scopes against the configured command.
   - **After a handoff, `heph run` on the old node ended with "paused (T2: handoff)".** Fixed: it now says where the run went and follows it there (below).
@@ -321,6 +321,15 @@ How it works and what I interpreted:
    - `heph handoff` asks for it before stopping the build, so a refused handoff leaves the build running on the old owner. Making the checkout first also shortens the time the run is stopped.
    - The dry-run push proves credentials and write access on GitHub (receive-pack needs both); a remote that accepts the ref advertisement but rejects the actual push would still pass.
 2. **`heph run` follows a run across a handoff.** While a daemon is handing a run off, its `follow` answers "not done" (the old job's end is not the run's end); once the run is handed off, `follow` is forwarded to the new owner as for any remote run. The follower prints `handed off to denver`, `following it there`, then the new owner's events. The follow cursor is the last event id, which assumes the nodes' clocks are roughly in step (ULIDs start with a timestamp).
+
+**Live re-run on denver (2026-11-04),** with gh 2.46 (Ubuntu's package) logged in over HTTPS as git's credential helper, no `insteadOf` rewrite, and a throwaway private repo (`juano-morello/heph-land-test`):
+
+- **L1, `heph new --on denver` from this Mac:** denver's pre-check passed (dry-run push to the HTTPS remote, gh with write access) and it planned in 28 s. `heph run` built both units on the first attempt, pushed, and opened pull/1, then failed editing the PR body: gh 2.46's `gh pr edit` asks GraphQL for Projects (classic) cards, which GitHub has removed. **Fixed:** the body is now edited over REST (`gh api -X PATCH repos/<owner>/<repo>/pulls/<n>`), which works on any gh. After redeploying, `heph run L1` again finished staging in 5 s and reused pull/1 (no second PR). `heph approve merge L1` merged it from denver; `add.sh` is on `main`.
+- **L2, built by this Mac's daemon and handed to denver while `heph run L2` followed it:** handed off during T2's first attempt (7 s); the follower printed `handed off to denver`, `following it there`, then denver's events through T2 attempt 2 green, the push, pull/2 and `staged`, and exited there. `heph approve merge L2`, forwarded to denver, merged it.
+- **Findings:**
+  - **The uncommitted heph files on a node's checkout don't follow later changes.** `ensureWorkspace` writes `.heph/workspace.yaml` and each repo's `.heph/config.yaml` only when missing, so a node keeps the config from the first run it took (L2's test command had to be changed on denver by hand). Options: send the files with every run and use them for that run only, or commit them. Open.
+  - **`heph approve merge` prints its result as JSON** (`merge of L1: {"status":"merged"}`) in human output. Cosmetic, from 2.6.
+- **Cleanup:** both daemons stopped, `~/heph-test` on denver and the Mac's test home removed, no heph containers on either machine. The repo `juano-morello/heph-land-test` is still up for you to delete.
 
 Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
 
