@@ -146,8 +146,7 @@ async function setup() {
     runPlan({
       ledger,
       workspace,
-      repoDir,
-      baseRef: "main",
+      workspaceRoot: repoDir,
       brief,
       plan: p,
       runId: "R1",
@@ -176,7 +175,7 @@ describe("runPlan", () => {
       onlyFor("T2", contains("impl", "inventory/stack.go", "capped")),
     ]);
 
-    expect(result).toMatchObject({ status: "finished", runBranch: "heph/R1" });
+    expect(result).toMatchObject({ status: "built", runBranch: "heph/R1" });
     expect(calls.map((c) => c.input.brief.task.id)).toEqual(["T1", "T2"]);
     const t2 = calls[1];
     expect(t2?.present).toContain("inventory/stack_test.go");
@@ -201,7 +200,7 @@ describe("runPlan", () => {
     expect(t2?.input.workdir.endsWith(join("R1", "T2", "a1", "server"))).toBe(true);
 
     const sha = await git.revParse("heph/R1");
-    expect(result.runBranchSha).toBe(sha);
+    expect(result.heads).toEqual({ game: sha });
     expect((await git.diff("main", sha)).files).toEqual([
       "server/inventory/stack.go",
       "server/inventory/stack_test.go",
@@ -225,10 +224,9 @@ describe("runPlan", () => {
       "unit.attempt.finished",
       "unit.accepted",
       "node.finished",
-      "run.finished",
     ]);
     expect(ledger.run("R1")).toMatchObject({
-      status: "finished",
+      status: "built",
       brief_hash: briefHash(brief),
       eval: false,
     });
@@ -249,7 +247,7 @@ describe("runPlan", () => {
       onlyFor("T2", contains("impl", "inventory/stack.go", "capped")),
     ]);
 
-    expect(result.status).toBe("finished");
+    expect(result.status).toBe("built");
     const second = calls.filter((c) => c.input.brief.task.id === "T2")[1];
     expect(second?.input.brief.feedback).toEqual({
       schema: 1,
@@ -355,7 +353,7 @@ describe("runPlan", () => {
     });
     const result = await go(worker);
 
-    expect(result.status).toBe("finished");
+    expect(result.status).toBe("built");
     expect(ledger.attempts("R1", "T1").map((a) => a.outcome)).toEqual(["error", "green"]);
     const feedback = calls[1]?.input.brief.feedback;
     expect(feedback?.reasons[0]).toMatchObject({
@@ -414,35 +412,87 @@ describe("runPlan", () => {
     ledger.close();
   });
 
-  test("rejects a plan that spans two repos", async () => {
-    const { ledger } = await setup();
+  test("a plan across repos: one run branch per touched repo, each with only its own commits", async () => {
+    const root = dir();
+    for (const [name, files] of Object.entries({
+      proto: { "messages.txt": "base\n" },
+      server: { "README.md": "server\n" },
+      web: { "index.html": "web\n" },
+    })) {
+      await initRepo(join(root, name), files);
+    }
     const ws: Workspace = {
-      repos: { game: ".", proto: "../proto" },
+      repos: { proto: "./proto", server: "./server", web: "./web" },
       projects: {
-        server: { repo: "game", path: "server", stack: "go" },
         proto: { repo: "proto", path: ".", stack: "schema" },
+        server: { repo: "server", path: ".", stack: "sh", depends_on: ["proto"] },
+        web: { repo: "web", path: ".", stack: "ts" },
       },
     };
     const p = plan([
-      task("T1", { scope: ["a.go"] }),
-      task("P1", { project: "proto", kind: "codegen", covers: [], scope: ["x.proto"] }),
-    ]);
-    await expect(
-      runPlan({
-        ledger,
-        workspace: ws,
-        repoDir: dir(),
-        baseRef: "main",
-        brief,
-        plan: p,
-        runId: "R1",
-        changesetId: "C1",
-        worker: fakeWorker({}).worker,
-        gates: [],
-        config,
-        worktreesDir: dir(),
+      task("S2", { project: "server", scope: ["impl.sh"], consumes: ["test:Loot"] }),
+      task("S1", {
+        project: "server",
+        kind: "test",
+        scope: ["check.sh"],
+        consumes: ["proto:Loot"],
+        produces: ["test:Loot"],
       }),
-    ).rejects.toThrow("multi-repo changesets are v0 step 2.5");
+      task("P1", {
+        project: "proto",
+        kind: "codegen",
+        covers: [],
+        scope: ["loot.txt"],
+        produces: ["proto:Loot"],
+      }),
+    ]);
+    const ledger = openLedger(join(dir(), "node"), { nodeId: "devserver" });
+    const { worker, calls } = fakeWorker({
+      P1: [{ files: { "loot.txt": "LootDrop\n" } }],
+      S1: [{ files: { "check.sh": "test -f impl.sh\n" } }],
+      S2: [{ files: { "impl.sh": "echo loot\n" } }],
+    });
+    const result = await runPlan({
+      ledger,
+      workspace: ws,
+      workspaceRoot: root,
+      brief,
+      plan: p,
+      runId: "R1",
+      changesetId: "C1",
+      worker,
+      gates: [],
+      config,
+      worktreesDir: join(dir(), "worktrees"),
+    });
+
+    expect(result.status).toBe("built");
+    expect(calls.map((c) => c.input.brief.task.id)).toEqual(["P1", "S1", "S2"]);
+    const proto = createGit(join(root, "proto"));
+    const server = createGit(join(root, "server"));
+    expect(result.heads).toEqual({
+      proto: await proto.revParse("heph/R1"),
+      server: await server.revParse("heph/R1"),
+    });
+    expect((await proto.diff("main", "heph/R1")).files).toEqual(["loot.txt"]);
+    expect((await server.diff("main", "heph/R1")).files).toEqual(["check.sh", "impl.sh"]);
+    await expect(createGit(join(root, "web")).revParse("heph/R1")).rejects.toThrow();
+    const repos = ledger
+      .read({ types: ["unit.attempt.started"] })
+      .map((e) => [e.event.unit_id, e.event.repo]);
+    expect(repos).toEqual([
+      ["P1", "proto"],
+      ["S1", "server"],
+      ["S2", "server"],
+    ]);
+    ledger.close();
+  });
+
+  test("rejects a task whose project is not in the workspace", async () => {
+    const { go, ledger } = await setup();
+    await expect(
+      go(fakeWorker({}).worker, [], plan([task("X1", { project: "mobile", scope: ["a"] })])),
+    ).rejects.toThrow("task X1: unknown project mobile");
     expect(ledger.read()).toEqual([]);
     ledger.close();
   });
@@ -490,7 +540,7 @@ describe("runPlan with the built-in gates", () => {
       config: shellConfig,
     });
 
-    expect(result.status).toBe("finished");
+    expect(result.status).toBe("built");
     const reasons = ledger
       .read({ types: ["gate.result"] })
       .map(
@@ -548,7 +598,7 @@ describe("runPlan with the built-in gates", () => {
       config: shellConfig,
     });
 
-    expect(result.status).toBe("finished");
+    expect(result.status).toBe("built");
     const feedback = calls.filter((c) => c.input.brief.task.id === "T2")[1]?.input.brief.feedback;
     expect(feedback?.reasons).toEqual([
       {
