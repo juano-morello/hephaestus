@@ -105,6 +105,21 @@ describe("touched_vs_diff", () => {
     expect(r.verdict).toBe("pass");
   });
 
+  test("accepts touched paths given from the repo root (the project's own files)", () => {
+    const r = touchedVsDiffGate.run(
+      ctx({
+        diff: { files: ["server/inventory/a.go", "server/NOTES.md"], text: "" },
+        worker: {
+          schema: 1,
+          summary: "",
+          claims: [],
+          touched: ["server/inventory/a.go", "NOTES.md"],
+        },
+      }),
+    );
+    expect(r.verdict).toBe("pass");
+  });
+
   test("reports both directions of a mismatch", () => {
     const r = touchedVsDiffGate.run(
       ctx({

@@ -69,7 +69,13 @@ export const touchedVsDiffGate: DiffGate = {
   name: "touched_vs_diff",
   run(ctx) {
     const diff = changed(ctx).map((c) => c.path);
-    const touched = ctx.worker.touched.map(normalizePath);
+    // Workers are told project-relative, but some give the project's files from the repo root.
+    const prefix = ctx.projectPath === "." ? "" : `${normalizePath(ctx.projectPath)}/`;
+    const touched = ctx.worker.touched.map(normalizePath).map((t) => {
+      if (!prefix || diff.includes(t) || !t.startsWith(prefix)) return t;
+      const rel = t.slice(prefix.length);
+      return diff.includes(rel) ? rel : t;
+    });
     const evidence = [
       ...diff.filter((f) => !touched.includes(f)).map((f) => `changed but not in touched: ${f}`),
       ...touched.filter((f) => !diff.includes(f)).map((f) => `in touched but unchanged: ${f}`),
