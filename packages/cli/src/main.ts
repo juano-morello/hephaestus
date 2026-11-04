@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { LedgerEvent } from "@hephaestus/ledger";
 import {
