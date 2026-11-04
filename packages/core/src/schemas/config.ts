@@ -182,7 +182,9 @@ export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
       documenter: { default: { model: "claude/claude-haiku-5-5" } },
     },
     limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000 },
-    sandbox: { mode: "container", runtime: "docker", image: "alpine:3.20" },
+    // Native by default (decided 2026-11-04): container mode has no per-project images, network
+    // allowlist or dependency caches yet. runtime and image apply when mode is container.
+    sandbox: { mode: "native", runtime: "docker", image: "alpine:3.20" },
     nodes: {},
     workspaces: {},
     sync: { interval_s: 30 },

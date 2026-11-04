@@ -38,7 +38,7 @@ describe("defaultConfig", () => {
       budget_tokens: 20000,
       gate_timeout_ms: 600000,
     });
-    expect(d.sandbox).toEqual({ mode: "container", runtime: "docker", image: "alpine:3.20" });
+    expect(d.sandbox).toEqual({ mode: "native", runtime: "docker", image: "alpine:3.20" });
   });
 });
 

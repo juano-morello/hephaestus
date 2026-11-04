@@ -553,6 +553,7 @@ Principles:
 
 ### Devserver
 
+- Target design; not the default yet (decided 2026-11-04, see Mac below: `native` on every node for now).
 - One container per unit (Docker or rootless Podman) from per-project images (`heph/go-server`, `heph/godot-headless`, `heph/web`).
 - Worktree bind-mounted read-write; everything else read-only or absent.
 - Network off by default; per-project allowlist (module proxy, package registry).
@@ -561,10 +562,10 @@ Principles:
 
 ### Mac
 
-- `container` mode by default (OrbStack or Colima).
+- ~~`container` mode by default (OrbStack or Colima).~~ **Decided 2026-11-04: `native` is the default on every node** until container mode has per-project images, a network allowlist and dependency caches (below). `container` stays available per node or workspace.
 - `native` mode for label-locked tasks (Godot editor, Metal) with a restricted profile (`sandbox-exec` or dedicated user) and diff-scope as backstop. Native tasks may be restricted to lane `contained`.
 
-As built in v0, native mode: commands see only `PATH`, `LANG` and a scratch `HOME` (never the project, so tool caches stay out of the diff); writes only in the project and temp; no network except loopback (bwrap gives a private loopback; macOS allows the host's); credential paths unreadable. Go reads the host's module cache with the proxy off and builds in a shared temp cache. **The installer currently writes `sandbox: { mode: native }` on every node, against the container default above:** container mode can't build a real project yet (no per-project images, no network allowlist, no dependency caches). See NOTES.
+As built in v0, native mode: commands see only `PATH`, `LANG` and a scratch `HOME` (never the project, so tool caches stay out of the diff); writes only in the project and temp; no network except loopback (bwrap gives a private loopback; macOS allows the host's); credential paths unreadable. Go reads the host's module cache with the proxy off and builds in a shared temp cache. Native is the default (decided 2026-11-04) because container mode can't build a real project yet: no per-project images, no network allowlist, no dependency caches. Those come before containers become the default again.
 
 ### Secrets
 
