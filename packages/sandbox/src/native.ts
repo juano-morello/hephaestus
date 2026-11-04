@@ -103,7 +103,8 @@ function hostGoModCache(): string | undefined {
   if (goModCache === null) {
     const go = which("go");
     const out = go ? Bun.spawnSync([go, "env", "GOMODCACHE"]).stdout.toString().trim() : "";
-    goModCache = out && existsSync(out) ? out : undefined;
+    // Even when it doesn't exist yet: Go still gets the offline settings and a temp build cache.
+    goModCache = out || undefined;
   }
   return goModCache;
 }
