@@ -33,13 +33,12 @@ import {
 } from "@hephaestus/engine";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
 import { openSandbox, removeContainers, type SandboxSpec } from "@hephaestus/sandbox";
-import {
-  createOmpWorker,
-  type PlannerInput,
-  type PlannerResult,
-  repoMapFromFiles,
-  runPlanner,
-} from "@hephaestus/workers";
+// OMP (and its native addon) loads only when this node plans or builds: status, sync, peer
+// and the daemon's routing work without it.
+import type { PlannerInput, PlannerResult } from "@hephaestus/workers";
+
+const workers = () => import("@hephaestus/workers");
+
 import type { LoadedConfig } from "./config.ts";
 import { lockRun } from "./lock.ts";
 
@@ -156,9 +155,17 @@ export function openRuntime(opts: {
   };
   const worker = (runId: string): Worker =>
     deps.worker ??
-    createOmpWorker({ sandbox: (i) => sandboxFor(runId, i.brief.task.project, i.workdir) });
+    ({
+      async spawn(input) {
+        const { createOmpWorker } = await workers();
+        return createOmpWorker({
+          sandbox: (i) => sandboxFor(runId, i.brief.task.project, i.workdir),
+        }).spawn(input);
+      },
+    } satisfies Worker);
   const prs = (): PullRequests => deps.prs ?? ghPullRequests();
-  const planner = deps.planner ?? runPlanner;
+  const planner =
+    deps.planner ?? (async (input: PlannerInput) => (await workers()).runPlanner(input));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
   const locked = async <T>(runId: string, fn: () => Promise<T>): Promise<T> => {
@@ -295,7 +302,7 @@ export function openRuntime(opts: {
         workspace,
         projectGates,
         files,
-        repoMap: repoMapFromFiles(files),
+        repoMap: (await workers()).repoMapFromFiles(files),
         route,
         ...extra,
         ...(feedback ? { feedback } : {}),
