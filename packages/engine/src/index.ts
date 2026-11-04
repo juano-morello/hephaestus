@@ -4,5 +4,8 @@ export * from "./context.ts";
 export * from "./engine.ts";
 export type * from "./gates.ts";
 export * from "./git.ts";
+export * from "./integration.ts";
+export * from "./land.ts";
 export * from "./paths.ts";
+export * from "./prs.ts";
 export type * from "./worker.ts";

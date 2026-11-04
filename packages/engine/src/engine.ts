@@ -23,7 +23,9 @@ import { buildContextPack } from "./context.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
+import { landChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
+import type { PullRequests } from "./prs.ts";
 import type { SpawnOutput, Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
@@ -59,15 +61,20 @@ export type RunPlanOptions = {
   gateSandbox?: (workdir: string, task: Task) => Promise<Sandbox>;
   /** Opens a sandbox over the assembled changeset for the workspace integration gate. */
   integrationSandbox?: (dir: string) => Promise<Sandbox>;
+  /** Land right after a clean build, but only if every unit is lane contained (SPEC section 2). */
+  autoMerge?: boolean;
+  /** Used when the touched repos have a remote: the changeset lands as pull requests. */
+  prs?: PullRequests;
   eval?: boolean;
 };
 
 export type RunOutcome = {
-  /** built: every unit accepted, the changeset is ready to land. */
-  status: "built" | "paused";
+  /** built: ready to land. staged: pull requests open. landed: targets fast-forwarded. */
+  status: "built" | "paused" | "staged" | "landed";
   runBranch: string;
   /** Run-branch tip per touched repo. */
   heads: Record<string, string>;
+  prs?: Record<string, string>;
   reason?: string;
 };
 
@@ -78,7 +85,7 @@ type Ctx = RunPlanOptions & {
 };
 
 /** The repos the plan touches, in first-use order. Unknown projects or repos are errors. */
-function touchedRepos(workspace: Workspace, plan: Plan): string[] {
+export function touchedRepos(workspace: Workspace, plan: Plan): string[] {
   const repos: string[] = [];
   for (const t of plan.tasks) {
     const project = workspace.projects[t.project];
@@ -194,6 +201,16 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
 
   // Landing (staging, PRs or fast-forward) is a separate step: see land.ts.
   ledger.append({ ...engine, type: "node.finished", graph_node: "build", data: { outcome: "ok" } });
+  if (opts.autoMerge && opts.plan.tasks.every((t) => t.lane === "contained")) {
+    const landed = await landChangeset(opts);
+    return {
+      status: landed.status === "aborted" ? "paused" : landed.status,
+      runBranch: branch,
+      heads: await heads(),
+      ...(landed.prs ? { prs: landed.prs } : {}),
+      ...(landed.reason ? { reason: landed.reason } : {}),
+    };
+  }
   return { status: "built", runBranch: branch, heads: await heads() };
 }
 

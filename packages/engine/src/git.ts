@@ -33,6 +33,8 @@ export type Git = {
   ): Promise<void>;
   worktreeAddDetached(path: string, ref: string): Promise<void>;
   mergeBase(a: string, b: string): Promise<string>;
+  /** Points any ref (e.g. refs/heph/staging/<run>) at a sha. */
+  setRef(ref: string, sha: string): Promise<void>;
   /** Rebases `branch` onto `onto` in a temp worktree at `path`. On conflict the branch is untouched. */
   rebase(path: string, branch: string, onto: string): Promise<RebaseResult>;
 };
@@ -87,6 +89,7 @@ export function createGit(repoDir: string): Git {
     worktreeAddDetached: async (path, ref) =>
       void (await git(["worktree", "add", "-q", "-f", "--detach", path, ref])),
     mergeBase: async (a, b) => (await git(["merge-base", a, b])).trim(),
+    setRef: async (ref, sha) => void (await git(["update-ref", ref, sha])),
     async rebase(path, branch, onto) {
       await git(["worktree", "add", "-q", "-f", path, branch]);
       try {
