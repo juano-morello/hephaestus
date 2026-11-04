@@ -67,6 +67,11 @@ export type RunPlanOptions = {
   /** Used when the touched repos have a remote: the changeset lands as pull requests. */
   prs?: PullRequests;
   eval?: boolean;
+  /**
+   * Removes sandboxes a stopped process left for this run (containers are never disposed when
+   * the process is killed). Called wherever leftover worktrees are cleared.
+   */
+  reapSandboxes?: () => Promise<void>;
   /** Tests only: called before and after every effect (see effects.ts). */
   chaos?: Chaos;
 };
@@ -353,6 +358,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     runId,
     Object.keys(opts.workspace.repos).map((r) => createGit(dirOf(r))),
   );
+  await opts.reapSandboxes?.();
   await reconcile(ledger, runId, realityOf(opts, dirOf));
 
   const resuming = sinceLatestPlan(ledger, runId).some(

@@ -83,13 +83,16 @@ describe("resuming a build", () => {
   test("accepted units are kept; their files stay locked for the units after them", async () => {
     const { ledger, rest, git } = await setup();
     const first = scripted((i) => (i.brief.task.id === "S2" ? "rate_limited" : "ok"));
-    const paused = await buildRun({ ...rest, worker: first.worker });
+    let reaped = 0;
+    const reapSandboxes = async () => void reaped++;
+    const paused = await buildRun({ ...rest, worker: first.worker, reapSandboxes });
     expect(paused.status).toBe("paused");
     const serverTip = await git("server").revParse("heph/R1");
 
     const second = scripted();
-    const out = await buildRun({ ...rest, worker: second.worker });
+    const out = await buildRun({ ...rest, worker: second.worker, reapSandboxes });
     expect(out.status).toBe("built");
+    expect(reaped).toBe(2);
     expect(second.ids()).toEqual(["S2"]);
     expect(second.inputs[0]?.brief.locked_paths).toEqual(["check.sh"]);
     expect(second.inputs[0]?.workdir).toContain(join("S2", "a2"));

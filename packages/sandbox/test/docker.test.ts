@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "../src/proc.ts";
-import { type ContainerSpec, openSandbox, type Sandbox } from "../src/sandbox.ts";
+import { type ContainerSpec, openSandbox, removeContainers, type Sandbox } from "../src/sandbox.ts";
 import { tempDir } from "./helpers.ts";
 
 const IMAGE = "alpine:3.20";
@@ -83,6 +83,25 @@ describe.skipIf(!daemon)("container sandbox", () => {
       expect(Date.now() - started).toBeLessThan(15_000);
     } finally {
       await sb.dispose();
+    }
+  }, 60_000);
+
+  test("containers a killed process left are removed by their labels, others are kept", async () => {
+    const run1 = `t${Date.now()}`;
+    const open = (labels: Record<string, string>) =>
+      openSandbox({ mode: "container", hostDir: dir(), image: IMAGE, labels }) as Promise<
+        Sandbox & { id: string }
+      >;
+    const left = await open({ "heph.run": run1 });
+    const other = await open({ "heph.run": `${run1}x` });
+    try {
+      // Nothing disposes `left`: its process was killed.
+      expect(await removeContainers("docker", { "heph.run": run1 })).toBe(1);
+      expect((await run(["docker", "inspect", left.id])).code).not.toBe(0);
+      expect((await run(["docker", "inspect", other.id])).code).toBe(0);
+      expect(await removeContainers("docker", { "heph.run": run1 })).toBe(0);
+    } finally {
+      await other.dispose();
     }
   }, 60_000);
 

@@ -28,6 +28,7 @@ export async function openContainer(spec: ContainerSpec): Promise<ContainerSandb
     user,
     "--label",
     "heph.sandbox=1",
+    ...Object.entries(spec.labels ?? {}).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
     "--cpus",
     String(spec.cpus ?? 2),
     "--memory",
@@ -97,4 +98,19 @@ export async function openContainer(spec: ContainerSpec): Promise<ContainerSandb
       await run([rt, "rm", "-f", id]);
     },
   };
+}
+
+export async function removeContainers(
+  rt: "docker" | "podman",
+  labels: Record<string, string>,
+): Promise<number> {
+  const filters = Object.entries({ "heph.sandbox": "1", ...labels }).flatMap(([k, v]) => [
+    "--filter",
+    `label=${k}=${v}`,
+  ]);
+  const listed = await run([rt, "ps", "-aq", ...filters]);
+  if (listed.code !== 0) throw new Error(`cannot list sandbox containers: ${listed.stderr.trim()}`);
+  const ids = listed.stdout.split("\n").filter(Boolean);
+  if (ids.length) await run([rt, "rm", "-f", ...ids]);
+  return ids.length;
 }

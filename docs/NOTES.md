@@ -264,6 +264,8 @@ How it works and what I interpreted:
 
 **Live smoke (2026-11-04, `dist/heph`, container sandbox):** `heph run` SIGKILLed after T1 was accepted, while T2 attempt 1 was in flight. `status` showed `running`; the second `heph run` marked T2/a1 interrupted (crash), wrote `run.resumed` (crash), removed the leftover worktree, did not redo T1, took T2 green on attempt 2 and staged; `approve merge` landed `add.sh` and `test_add.sh`. T2 shows 1 attempt: the interrupted one does not count.
 
+**Found after the live smoke, fixed:** the SIGKILL left T2 attempt 1's sandbox container running (`sleep infinity`, `--rm` only applies once it stops), mounting a worktree the resume had already removed. A killed process never runs `dispose()`. Containers now carry `heph.run` and `heph.node` labels, and every place that clears a run's leftover worktrees (build, landing) also removes its containers (`removeContainers`, through the engine's `reapSandboxes` option). Native mode has the same gap without a fix yet: a command runs in its own process group so its timeout can kill all of it, and a SIGKILL of heph leaves that group running until it ends on its own; there is no record to find it by.
+
 Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs 2.8), handoff and adopt, interrupting a worker already in flight on `heph cancel` (it still finishes its attempt), scheduler rerouting a rate-limited role.
 
 ## Environment and OMP

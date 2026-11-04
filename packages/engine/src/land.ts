@@ -105,6 +105,7 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
     opts.runId,
     Object.keys(opts.workspace.repos).map((r) => createGit(dirOf(r))),
   );
+  await opts.reapSandboxes?.();
   await c.reconcile();
 
   const remotes = new Map<string, boolean>();

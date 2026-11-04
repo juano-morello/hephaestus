@@ -32,7 +32,7 @@ import {
   type Worker,
 } from "@hephaestus/engine";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
-import { openSandbox, type SandboxSpec } from "@hephaestus/sandbox";
+import { openSandbox, removeContainers, type SandboxSpec } from "@hephaestus/sandbox";
 import {
   createOmpWorker,
   type PlannerInput,
@@ -123,7 +123,9 @@ export function openRuntime(opts: {
     engineConfig,
     gates.map((g) => g.name),
   );
-  const sandboxFor = (project: string | undefined, hostDir: string): SandboxSpec =>
+  // Every container carries its run, so a process that was killed can have them removed.
+  const labels = (runId: string) => ({ "heph.run": runId, "heph.node": config.node.id });
+  const sandboxFor = (runId: string, project: string | undefined, hostDir: string): SandboxSpec =>
     config.sandbox.mode === "native"
       ? { mode: "native", hostDir }
       : {
@@ -131,8 +133,9 @@ export function openRuntime(opts: {
           hostDir,
           image: (project ? config.projects[project]?.image : undefined) ?? config.sandbox.image,
           runtime: config.sandbox.runtime,
+          labels: labels(runId),
         };
-  const integrationSpec = (dir: string): SandboxSpec =>
+  const integrationSpec = (runId: string, dir: string): SandboxSpec =>
     config.sandbox.mode === "native"
       ? { mode: "native", hostDir: dir }
       : {
@@ -140,9 +143,15 @@ export function openRuntime(opts: {
           hostDir: dir,
           image: config.sandbox.integration_image ?? config.sandbox.image,
           runtime: config.sandbox.runtime,
+          labels: labels(runId),
         };
-  const worker = (): Worker =>
-    deps.worker ?? createOmpWorker({ sandbox: (i) => sandboxFor(i.brief.task.project, i.workdir) });
+  const reapSandboxes = (runId: string) => async () => {
+    if (config.sandbox.mode === "container")
+      await removeContainers(config.sandbox.runtime, labels(runId));
+  };
+  const worker = (runId: string): Worker =>
+    deps.worker ??
+    createOmpWorker({ sandbox: (i) => sandboxFor(runId, i.brief.task.project, i.workdir) });
   const prs = (): PullRequests => deps.prs ?? ghPullRequests();
   const planner = deps.planner ?? runPlanner;
   const now = deps.now ?? Date.now;
@@ -223,12 +232,13 @@ export function openRuntime(opts: {
       ...(targets ? { targets } : {}),
       runId,
       changesetId: c.changesetId,
-      worker: worker(),
+      worker: worker(runId),
       gates,
       config: engineConfig,
       worktreesDir: join(opts.home, "worktrees"),
-      gateSandbox: (workdir, t) => openSandbox(sandboxFor(t.project, workdir)),
-      integrationSandbox: (dir) => openSandbox(integrationSpec(dir)),
+      gateSandbox: (workdir, t) => openSandbox(sandboxFor(runId, t.project, workdir)),
+      integrationSandbox: (dir) => openSandbox(integrationSpec(runId, dir)),
+      reapSandboxes: reapSandboxes(runId),
       prs: prs(),
       brief: c.brief,
     };

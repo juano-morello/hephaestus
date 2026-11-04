@@ -30,6 +30,11 @@ export type ContainerSpec = {
   runtime?: "docker" | "podman";
   cpus?: number;
   memory?: string;
+  /**
+   * Extra container labels, e.g. `heph.run`. A killed process never disposes its containers;
+   * the labels let the next one find and remove them (removeContainers).
+   */
+  labels?: Record<string, string>;
 };
 
 /**
@@ -44,4 +49,15 @@ export type SandboxSpec = ContainerSpec | NativeSpec;
 export async function openSandbox(spec: SandboxSpec): Promise<Sandbox> {
   if (spec.mode === "native") return (await import("./native.ts")).openNative(spec);
   return (await import("./docker.ts")).openContainer(spec);
+}
+
+/**
+ * Removes every heph sandbox container carrying all of `labels`, running or not. Returns how
+ * many were removed.
+ */
+export async function removeContainers(
+  runtime: "docker" | "podman",
+  labels: Record<string, string>,
+): Promise<number> {
+  return (await import("./docker.ts")).removeContainers(runtime, labels);
 }
