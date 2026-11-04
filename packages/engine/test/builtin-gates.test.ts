@@ -233,3 +233,61 @@ describe("builtinGates", () => {
     ]);
   });
 });
+
+describe("rough edges", () => {
+  test("a modified locked file is reported by locked_paths only", () => {
+    const c = ctx({
+      task: task({ scope: ["inventory/stack.go"] }),
+      lockedPaths: ["inventory/stack_test.go"],
+      diff: { files: ["server/inventory/stack.go", "server/inventory/stack_test.go"], text: "" },
+    });
+    expect(diffScopeGate.run(c)).toMatchObject({ verdict: "pass" });
+    expect(lockedPathsGate.run(c)).toMatchObject({
+      verdict: "fail",
+      evidence: ["modified locked file: inventory/stack_test.go"],
+    });
+  });
+
+  const lint = {
+    "lint.sh": 'for f in "$@"; do case "$f" in *bad*) echo "lint: $f"; exit 1;; esac; done\n',
+  };
+
+  test("{files} runs lint on the changed project files, for test units too", async () => {
+    const t = task({ kind: "test" });
+    const changed = (files: string[]) => ({ files: files.map((f) => `server/${f}`), text: "" });
+    const clean = await withSandbox(lint, {
+      task: t,
+      commands: { lint: "sh lint.sh {files}" },
+      diff: changed(["inventory/a_test.go"]),
+    });
+    expect(await lintGate.run(clean)).toMatchObject({ verdict: "pass", reason: "lint passed" });
+    const dirty = await withSandbox(lint, {
+      task: t,
+      commands: { lint: "sh lint.sh {files}" },
+      diff: changed(["inventory/ok_test.go", "inventory/bad name_test.go"]),
+    });
+    expect(await lintGate.run(dirty)).toMatchObject({
+      verdict: "fail",
+      evidence: ["exit 1", "lint: inventory/bad name_test.go"],
+    });
+  });
+
+  test("{files} with nothing changed in the project is skipped; without {files} test units still skip", async () => {
+    const none = await withSandbox(lint, {
+      commands: { lint: "sh lint.sh {files}" },
+      diff: { files: ["NOTICE"], text: "" },
+    });
+    expect(await lintGate.run(none)).toMatchObject({
+      verdict: "pass",
+      reason: "skipped: no changed files in the project",
+    });
+    const plain = await withSandbox(lint, {
+      task: task({ kind: "test" }),
+      commands: { typecheck: "sh lint.sh" },
+    });
+    expect(await typecheckGate.run(plain)).toMatchObject({
+      verdict: "pass",
+      reason: "skipped for test units",
+    });
+  });
+});

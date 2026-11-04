@@ -633,7 +633,6 @@ describe("runPlan with the built-in gates", () => {
 
     const feedback = calls.filter((c) => c.input.brief.task.id === "T2")[1]?.input.brief.feedback;
     expect(feedback?.reasons.map((r) => [r.gate, r.evidence])).toEqual([
-      ["diff_scope", "out of scope: check.sh"],
       ["locked_paths", "modified locked file: check.sh"],
     ]);
     ledger.close();
