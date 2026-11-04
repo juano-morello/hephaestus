@@ -5,7 +5,7 @@ import { openLedger } from "@hephaestus/ledger";
 import { openSandbox, runOk } from "@hephaestus/sandbox";
 import { type RunPlanOptions, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
-import { checkChangeset, landChangeset } from "../src/land.ts";
+import { checkChangeset, landChangeset, mergeChangeset } from "../src/land.ts";
 import { ghPullRequests, type PrState, type PullRequests } from "../src/prs.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, crossRepoPlan, threeRepos, writer, writeScript } from "./workspace.ts";
@@ -17,6 +17,8 @@ function fakePrs() {
   const calls: string[] = [];
   const bodies = new Map<string, string>();
   const states = new Map<string, PrState>();
+  const notReady = new Map<string, string>();
+  const failMerge = new Set<string>();
   let n = 0;
   const prs: PullRequests = {
     async open({ repoDir, head, base, title, body }) {
@@ -24,6 +26,7 @@ function fakePrs() {
       calls.push(`open ${url} ${head}->${base} ${title}`);
       bodies.set(url, body);
       states.set(url, { state: "open" });
+      heads.set(url, await createGit(repoDir).revParse(head));
       return { url };
     },
     async edit({ url, body }) {
@@ -33,8 +36,20 @@ function fakePrs() {
     async status({ url }) {
       return states.get(url) ?? { state: "open" };
     },
+    async readiness({ url }) {
+      const why = notReady.get(url);
+      return why ? { ready: false, reason: why } : { ready: true, head: heads.get(url) as string };
+    },
+    async merge({ url, head }) {
+      calls.push(`merge ${url} at ${head.slice(0, 7)}`);
+      if (failMerge.has(url)) throw new Error("merge blocked by branch protection");
+      const mergeCommit = String(n++).padStart(40, "0");
+      states.set(url, { state: "merged", mergeCommit });
+      return { mergeCommit };
+    },
   };
-  return { prs, calls, bodies, states };
+  const heads = new Map<string, string>();
+  return { prs, calls, bodies, states, notReady, failMerge, heads };
 }
 
 async function built(
@@ -231,15 +246,21 @@ describe("landChangeset with remotes", () => {
     ledger.close();
   });
 
-  test("some repos with a remote and some without is refused", async () => {
+  test("mixed repos: PRs where there is a remote, local fast-forward for the rest once they merge", async () => {
     const { ledger, options, git } = await withOrigins(["proto"]);
     await runPlan(options);
-    const out = await landChangeset({ ...options, prs: fakePrs().prs });
+    const fake = fakePrs();
+    const serverMain = await git("server").revParse("main");
+    const out = await landChangeset({ ...options, prs: fake.prs });
     expect(out).toMatchObject({
-      status: "aborted",
-      reason: "mixed local and remote repos: proto has origin, server does not",
+      status: "staged",
+      prs: { proto: "https://github.com/acme/proto/pull/1" },
     });
-    expect(await git("proto").remoteRef("origin", "heph/R1")).toBeUndefined();
+    expect(await git("server").revParse("main")).toBe(serverMain);
+
+    expect(await mergeChangeset({ ...options, prs: fake.prs })).toEqual({ status: "merged" });
+    expect(await git("server").revParse("main")).toBe(await git("server").revParse("heph/R1"));
+    expect(types(ledger).slice(-2)).toEqual(["merge.committed", "run.finished"]);
     ledger.close();
   });
 
@@ -310,5 +331,112 @@ describe("ghPullRequests", () => {
       "b",
     ]);
     expect(seen.every((s) => s.cwd === "/r")).toBe(true);
+  });
+});
+
+describe("mergeChangeset", () => {
+  async function staged() {
+    const b = await built();
+    for (const r of ["proto", "server"]) {
+      const origin = join(dir(), `${r}.git`);
+      await runOk(["git", "clone", "-q", "--bare", join(b.root, r), origin]);
+      await runOk(["git", "remote", "add", "origin", origin], { cwd: join(b.root, r) });
+    }
+    await runPlan(b.options);
+    const fake = fakePrs();
+    const out = await landChangeset({ ...b.options, prs: fake.prs });
+    return { ...b, fake, out };
+  }
+
+  test("merges every PR in depends_on order once all are ready", async () => {
+    const { ledger, options, fake, out } = await staged();
+    expect(await mergeChangeset({ ...options, prs: fake.prs })).toEqual({ status: "merged" });
+    expect(fake.calls.filter((c) => c.startsWith("merge")).map((c) => c.split(" ")[1])).toEqual([
+      out.prs?.proto,
+      out.prs?.server,
+    ]);
+    expect(types(ledger).slice(-2)).toEqual(["merge.committed", "run.finished"]);
+    expect(ledger.run("R1")?.status).toBe("finished");
+    ledger.close();
+  });
+
+  test("merges nothing while any PR is not ready", async () => {
+    const { ledger, options, fake, out } = await staged();
+    fake.notReady.set(out.prs?.server as string, "checks failing: ci");
+    const before = types(ledger).length;
+    expect(await mergeChangeset({ ...options, prs: fake.prs })).toEqual({
+      status: "not_ready",
+      reasons: [`server: checks failing: ci (${out.prs?.server})`],
+    });
+    expect(fake.calls.some((c) => c.startsWith("merge"))).toBe(false);
+    expect(types(ledger)).toHaveLength(before);
+    ledger.close();
+  });
+
+  test("a merge that fails after another landed is recorded loudly as half-landed", async () => {
+    const { ledger, options, fake, out } = await staged();
+    fake.failMerge.add(out.prs?.server as string);
+    const r = await mergeChangeset({ ...options, prs: fake.prs });
+    expect(r).toEqual({
+      status: "half_landed",
+      merged: ["proto"],
+      reason: "half-landed: merged proto; server failed: merge blocked by branch protection",
+    });
+    expect(types(ledger).slice(-2)).toEqual(["merge.aborted", "run.paused"]);
+    ledger.close();
+  });
+});
+
+describe("ghPullRequests readiness and merge", () => {
+  test("reads readiness from gh and merges at the expected head", async () => {
+    const seen: string[][] = [];
+    const views = [
+      {
+        state: "OPEN",
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        headRefOid: "d".repeat(40),
+        statusCheckRollup: [{ conclusion: "SUCCESS" }],
+      },
+      {
+        state: "OPEN",
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        headRefOid: "d".repeat(40),
+        statusCheckRollup: [{ name: "ci", conclusion: "FAILURE" }],
+      },
+      {
+        state: "OPEN",
+        isDraft: false,
+        mergeable: "UNKNOWN",
+        headRefOid: "d".repeat(40),
+        statusCheckRollup: [],
+      },
+      { state: "MERGED", mergeCommit: { oid: "e".repeat(40) } },
+    ];
+    const prs = ghPullRequests(async (cmd) => {
+      seen.push(cmd);
+      if (cmd[2] === "view") return JSON.stringify(views.shift());
+      return "";
+    });
+    const at = { repoDir: "/r", url: "https://github.com/acme/server/pull/9" };
+    expect(await prs.readiness(at)).toEqual({ ready: true, head: "d".repeat(40) });
+    expect(await prs.readiness(at)).toEqual({ ready: false, reason: "checks failing: ci" });
+    expect(await prs.readiness(at)).toEqual({
+      ready: false,
+      reason: "mergeability not computed yet, try again",
+    });
+    expect(await prs.merge({ ...at, head: "d".repeat(40) })).toEqual({
+      mergeCommit: "e".repeat(40),
+    });
+    expect(seen.find((c) => c[2] === "merge")).toEqual([
+      "gh",
+      "pr",
+      "merge",
+      at.url,
+      "--merge",
+      "--match-head-commit",
+      "d".repeat(40),
+    ]);
   });
 });
