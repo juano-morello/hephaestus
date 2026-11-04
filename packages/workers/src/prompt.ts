@@ -1,12 +1,21 @@
-import { join } from "node:path";
 import type { UnitBrief } from "@hephaestus/core";
+import documenter from "../prompts/roles/documenter.md" with { type: "text" };
+import implementer from "../prompts/roles/implementer.md" with { type: "text" };
+import testAuthor from "../prompts/roles/test_author.md" with { type: "text" };
 
 export const ROLES = ["test_author", "implementer", "documenter"] as const;
 
 /** Role prompts are files (SPEC section 5), loaded as the worker's system prompt. */
+const ROLE_PROMPTS: Record<(typeof ROLES)[number], string> = {
+  test_author: testAuthor,
+  implementer,
+  documenter,
+};
+
+/** Embedded at build time, so the compiled binary needs no prompt files next to it. */
 export async function loadRolePrompt(role: string): Promise<string> {
   if (!(ROLES as readonly string[]).includes(role)) throw new Error(`no role prompt for ${role}`);
-  return Bun.file(join(import.meta.dir, "..", "prompts", "roles", `${role}.md`)).text();
+  return ROLE_PROMPTS[role as (typeof ROLES)[number]];
 }
 
 const fence = (text: string) => `\`\`\`\n${text.replace(/\n$/, "")}\n\`\`\``;

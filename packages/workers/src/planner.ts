@@ -15,9 +15,11 @@ import {
 } from "@hephaestus/core";
 import type { Usage } from "@hephaestus/ledger";
 import { type CreateAgentSessionOptions, createAgentSession } from "@oh-my-pi/pi-coding-agent";
+import plannerTemplate from "../prompts/planner.md" with { type: "text" };
 import { defaultModelPattern, sessionOptions, thinkingFor } from "./omp.ts";
 
 const SYSTEM = "You are the Hephaestus planner. You output one JSON object and nothing else.";
+/** On-disk path of the default prompt, for tools that pass `promptPath` (plan-proto --prompt). */
 export const PLANNER_PROMPT = join(import.meta.dir, "..", "prompts", "planner.md");
 
 /** The slice of OMP's AgentSession the planner uses, so tests can stand in for it. */
@@ -117,7 +119,8 @@ export function renderPlannerPrompt(template: string, input: PlannerInput): stri
  * the prompt, the answer checked by the plan gates. Code decides what happens next.
  */
 export async function runPlanner(input: PlannerInput): Promise<PlannerResult> {
-  const template = await Bun.file(input.promptPath ?? PLANNER_PROMPT).text();
+  // Embedded by default, so the compiled binary needs no files next to it.
+  const template = input.promptPath ? await Bun.file(input.promptPath).text() : plannerTemplate;
   const prompt = renderPlannerPrompt(template, input);
   const create =
     input.createSession ??
