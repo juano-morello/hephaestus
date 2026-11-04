@@ -84,7 +84,11 @@ function remote(api: Api, follow: (line: string) => void) {
   const c = <T>(method: string, ...args: unknown[]) => api.call(method, args) as Promise<T>;
   return {
     newRun: (brief: unknown, o: { runId?: string; on?: string }) =>
-      c<Awaited<ReturnType<Runtime["newRun"]>> & { node?: string }>("newRun", brief, o),
+      c<Awaited<ReturnType<Runtime["newRun"]>> & { node?: string; placed?: string }>(
+        "newRun",
+        brief,
+        o,
+      ),
     planShow: (id: string) => c<ReturnType<Runtime["planShow"]>>("planShow", id),
     revise: (id: string, text: string) =>
       c<Awaited<ReturnType<Runtime["revise"]>>>("revise", id, text),
@@ -218,9 +222,10 @@ const tasksText = (
   tasks: { id: string; kind: string; project: string; lane: string; title: string }[] = [],
 ) => tasks.map((t) => `  ${t.id} ${t.kind} ${t.project} (${t.lane}): ${t.title}`).join("\n");
 
-const planText = (r: Awaited<ReturnType<Runtime["newRun"]>>) =>
+const planText = (r: Awaited<ReturnType<Runtime["newRun"]>> & { node?: string; placed?: string }) =>
   `${[
-    `run ${r.run_id}: ${r.status} after ${r.planner_attempts} planner attempt(s)`,
+    `run ${r.run_id}: ${r.status} after ${r.planner_attempts} planner attempt(s)${r.node ? ` on ${r.node}` : ""}`,
+    ...(r.placed ? [`  (${r.placed})`] : []),
     ...(r.tasks ? [tasksText(r.tasks)] : []),
     ...(r.escalate ?? []).map((x) => `  - ${x}`),
     ...(r.reason ? [`  ${r.reason}`] : []),

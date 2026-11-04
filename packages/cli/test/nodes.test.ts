@@ -164,6 +164,19 @@ describe("a run on another node", () => {
     expect(readFileSync(there, "utf8")).toContain("sh b.sh");
   });
 
+  test("a workspace that can't leave this node stays here when no node was asked for", async () => {
+    await heph(["init", "--force"]);
+    sh(["git", "remote", "remove", "origin"], ws);
+    const created = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R7"]);
+    expect(created.data).toMatchObject({ run_id: "R7", status: "planned", node: "mbp" });
+    expect(created.data?.placed).toBe(
+      "here: a run on denver needs every repo to have a remote named origin; missing in calc",
+    );
+    // Asked for by name, it is an error.
+    const asked = await heph(["new", "--brief", join(root, "brief.yaml"), "--on", "denver"]);
+    expect(asked.ok).toBe(false);
+  });
+
   test("--on local keeps the run here even when a preferred node answers", async () => {
     await heph(["init", "--force"]);
     const created = await heph([

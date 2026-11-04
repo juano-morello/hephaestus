@@ -302,13 +302,30 @@ export function openHost(o: HostOptions) {
         case "newRun": {
           const [brief, opts] = args as [unknown, { runId?: string; on?: string }];
           if (!cwd) throw new Error("newRun needs a workspace");
-          const node = await placeNew(opts?.on);
-          if (node === me) {
+          const here = async (placed?: string) => {
             const { rt } = await runtimeFor(cwd);
-            return { ...(await rt.newRun(brief, opts?.runId ? { runId: opts.runId } : {})), node };
-          }
+            return {
+              ...(await rt.newRun(brief, opts?.runId ? { runId: opts.runId } : {})),
+              node: me,
+              ...(placed ? { placed } : {}),
+            };
+          };
+          if (opts?.on === "local" || opts?.on === me) return here();
           const { workspace } = await runtimeFor(cwd);
-          const description = await describeWorkspace(cwd, workspace);
+          let description: WorkspaceDescription;
+          try {
+            description = await describeWorkspace(cwd, workspace);
+          } catch (e) {
+            // Can't leave this node (a repo has no remote): fine unless a node was asked for.
+            if (opts?.on || !(e instanceof Error)) throw e;
+            const preferred = Object.entries(o.config.nodes).find(([, n]) => n.preferred)?.[0];
+            if (!preferred || preferred === me) return here();
+            return here(
+              `here: ${e.message.replace("a run on another node", `a run on ${preferred}`)}`,
+            );
+          }
+          const node = await placeNew(opts?.on);
+          if (node === me) return here();
           const result = await withPeer(node, async (t) => {
             const r = await t.request<Record<string, unknown>>("run.new", {
               workspace: description,
