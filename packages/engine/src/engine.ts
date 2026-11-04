@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   type Brief,
   briefHash,
@@ -41,8 +41,10 @@ export const attemptBranch = (run: string, unit: string, n: number) =>
 export type RunPlanOptions = {
   ledger: Ledger;
   workspace: Workspace;
-  repoDir: string;
-  baseRef: string;
+  /** Repo paths in the workspace resolve against this. */
+  workspaceRoot: string;
+  /** Repo -> target branch the changeset lands on. Default "main". */
+  targets?: Record<string, string>;
   brief: Brief;
   /** Already through the plan gates and approved. */
   plan: Plan;
@@ -58,24 +60,31 @@ export type RunPlanOptions = {
 };
 
 export type RunOutcome = {
-  status: "finished" | "paused";
+  /** built: every unit accepted, the changeset is ready to land. */
+  status: "built" | "paused";
   runBranch: string;
-  runBranchSha: string;
+  /** Run-branch tip per touched repo. */
+  heads: Record<string, string>;
   reason?: string;
 };
 
-type Ctx = RunPlanOptions & { repo: string; hash: string };
+type Ctx = RunPlanOptions & {
+  hash: string;
+  repoOf: (t: Task) => string;
+  dirOf: (repo: string) => string;
+};
 
-function singleRepo(workspace: Workspace, plan: Plan): string {
-  const repos = new Set(
-    plan.tasks.map((t) => {
-      const project = workspace.projects[t.project];
-      if (!project) throw new Error(`task ${t.id}: unknown project ${t.project}`);
-      return project.repo;
-    }),
-  );
-  if (repos.size !== 1) throw new Error("multi-repo changesets are v0 step 2.5");
-  return [...repos][0] as string;
+/** The repos the plan touches, in first-use order. Unknown projects or repos are errors. */
+function touchedRepos(workspace: Workspace, plan: Plan): string[] {
+  const repos: string[] = [];
+  for (const t of plan.tasks) {
+    const project = workspace.projects[t.project];
+    if (!project) throw new Error(`task ${t.id}: unknown project ${t.project}`);
+    if (!(project.repo in workspace.repos))
+      throw new Error(`project ${t.project}: unknown repo ${project.repo}`);
+    if (!repos.includes(project.repo)) repos.push(project.repo);
+  }
+  return repos;
 }
 
 /**
@@ -83,7 +92,7 @@ function singleRepo(workspace: Workspace, plan: Plan): string {
  * produce, check, correct for at most `config.maxAttempts` attempts (SPEC section 2).
  */
 export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
-  const repo = singleRepo(opts.workspace, opts.plan);
+  const repos = touchedRepos(opts.workspace, opts.plan);
   if (opts.plan.brief_hash !== briefHash(opts.brief)) {
     throw new Error("plan brief_hash does not match the brief");
   }
@@ -92,18 +101,21 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
   const order = topoOrder(ids, edges);
   if (!order.ok) throw new Error(`plan has a cycle: ${order.cycle.join(" -> ")}`);
 
+  const dirOf = (repo: string) => resolve(opts.workspaceRoot, opts.workspace.repos[repo] as string);
   const ctx: Ctx = {
     ...opts,
-    repo,
+    dirOf,
+    repoOf: (t) => opts.workspace.projects[t.project]?.repo as string,
     hash: configHash(
       opts.config,
       opts.gates.map((g) => g.name),
     ),
   };
   const { ledger, runId } = opts;
-  const git = createGit(opts.repoDir);
+  const gits = new Map(repos.map((r) => [r, createGit(dirOf(r))]));
   const branch = runBranch(runId);
-  const base = { run_id: runId, changeset_id: opts.changesetId, config_hash: ctx.hash, repo };
+  // Run-level events span repos, so they carry no `repo`; unit events do.
+  const base = { run_id: runId, changeset_id: opts.changesetId, config_hash: ctx.hash };
   const engine = { ...base, actor: "engine" as const };
 
   const tiers = new Map<string, Complexity>(opts.plan.tasks.map((t) => [t.id, t.complexity]));
@@ -115,8 +127,14 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
   });
   for (const b of sanity.bumps) tiers.set(b.task, b.to);
 
-  const baseSha = await git.revParse(opts.baseRef);
-  await git.branchForce(branch, baseSha);
+  // One changeset branch per touched repo, from its target (SPEC section 4).
+  for (const [repo, git] of gits) {
+    await git.branchForce(branch, await git.revParse(opts.targets?.[repo] ?? "main"));
+  }
+  const heads = async () =>
+    Object.fromEntries(
+      await Promise.all([...gits].map(async ([r, g]) => [r, await g.revParse(branch)])),
+    );
   ledger.appendMany([
     {
       ...engine,
@@ -151,18 +169,16 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
       return {
         status: "paused",
         runBranch: branch,
-        runBranchSha: await git.revParse(branch),
+        heads: await heads(),
         reason: `${id}: ${result.reason}`,
       };
     }
     accepted.set(id, result.files);
   }
 
-  ledger.appendMany([
-    { ...engine, type: "node.finished", graph_node: "build", data: { outcome: "ok" } },
-    { ...engine, type: "run.finished", data: {} },
-  ]);
-  return { status: "finished", runBranch: branch, runBranchSha: await git.revParse(branch) };
+  // Landing (staging, PRs or fast-forward) is a separate step: see land.ts.
+  ledger.append({ ...engine, type: "node.finished", graph_node: "build", data: { outcome: "ok" } });
+  return { status: "built", runBranch: branch, heads: await heads() };
 }
 
 type UnitResult = { status: "accepted"; files: string[] } | { status: "paused"; reason: string };
@@ -175,7 +191,8 @@ async function runUnit(
   locked: string[],
 ): Promise<UnitResult> {
   const { ledger, config } = ctx;
-  const git = createGit(ctx.repoDir);
+  const repo = ctx.repoOf(t);
+  const git = createGit(ctx.dirOf(repo));
   const branch = runBranch(ctx.runId);
   const role = ROLE_BY_KIND[t.kind];
   const route = resolveRoute(config, role, tier);
@@ -190,7 +207,7 @@ async function runUnit(
     run_id: ctx.runId,
     changeset_id: ctx.changesetId,
     config_hash: ctx.hash,
-    repo: ctx.repo,
+    repo,
     project: t.project,
     unit_id: t.id,
   };

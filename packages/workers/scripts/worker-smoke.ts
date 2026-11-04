@@ -115,8 +115,7 @@ const started = Date.now();
 const outcome = await runPlan({
   ledger,
   workspace,
-  repoDir,
-  baseRef: "main",
+  workspaceRoot: repoDir,
   brief,
   plan,
   runId: "R1",
@@ -149,11 +148,11 @@ for (const s of ledger.read({ types: ["gate.result", "unit.returned", "unit.esca
   );
 }
 
-const changed = (await createGit(repoDir).diff("main", outcome.runBranchSha)).files;
+const head = outcome.heads.demo as string;
+const changed = (await createGit(repoDir).diff("main", head)).files;
 console.log(`\nrun branch heph/R1 changes: ${changed.join(", ") || "(none)"}`);
 console.log(`outside calc/: ${changed.filter((f) => !f.startsWith("calc/")).join(", ") || "none"}`);
-for (const f of changed)
-  console.log(`\n--- ${f}\n${await git("show", `${outcome.runBranchSha}:${f}`)}`);
+for (const f of changed) console.log(`\n--- ${f}\n${await git("show", `${head}:${f}`)}`);
 
 // Containment probe: what the agent's sandbox can and cannot reach.
 const probe = await openSandbox(sandboxFor(join(repoDir, "calc")));
@@ -168,4 +167,4 @@ try {
 
 ledger.close();
 if (!values.keep) rmSync(root, { recursive: true, force: true });
-process.exit(outcome.status === "finished" ? 0 : 1);
+process.exit(outcome.status === "built" ? 0 : 1);

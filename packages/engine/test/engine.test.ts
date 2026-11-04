@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Brief, GateResult, Plan, Task, Workspace } from "@hephaestus/core";
 import { briefHash } from "@hephaestus/core";
@@ -414,11 +414,13 @@ describe("runPlan", () => {
 
   test("a plan across repos: one run branch per touched repo, each with only its own commits", async () => {
     const root = dir();
-    for (const [name, files] of Object.entries({
+    const fixtures: Record<string, Record<string, string>> = {
       proto: { "messages.txt": "base\n" },
       server: { "README.md": "server\n" },
       web: { "index.html": "web\n" },
-    })) {
+    };
+    for (const [name, files] of Object.entries(fixtures)) {
+      mkdirSync(join(root, name));
       await initRepo(join(root, name), files);
     }
     const ws: Workspace = {
