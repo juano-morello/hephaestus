@@ -21,7 +21,7 @@ import {
   type WorkspaceDescription,
 } from "@hephaestus/node";
 import { type HomeConfig, loadConfig } from "./config.ts";
-import { type Deps, openRuntime, type Runtime } from "./runtime.ts";
+import { type Deps, openRuntime } from "./runtime.ts";
 
 /** Run commands that change the run: only its owner may carry them out. */
 const OWNER_ONLY = new Set([
@@ -70,40 +70,30 @@ export function openHost(o: HostOptions) {
     nodeId: me,
     ...(o.onAppend ? { onAppend: o.onAppend } : {}),
   });
-  const runtimes = new Map<
-    string,
-    Promise<{
-      rt: Runtime;
-      workspace: Awaited<ReturnType<typeof loadConfig>>["config"]["workspace"];
-    }>
-  >();
   const jobs = new Map<string, Job>();
-
-  const runtimeFor = (workspaceDir: string) => {
-    let r = runtimes.get(workspaceDir);
-    if (!r) {
-      r = (async () => {
-        const loaded = await loadConfig({
-          workspaceDir,
-          home: o.home,
-          nodeId: me,
-          ...(o.overrides ? { overrides: o.overrides } : {}),
-        });
-        return {
-          rt: openRuntime({
-            loaded,
-            workspaceDir,
-            home: o.home,
-            ledger,
-            ...(o.deps ? { deps: o.deps } : {}),
-            ...(o.notify ? { notify: o.notify } : {}),
-          }),
-          workspace: loaded.config.workspace,
-        };
-      })();
-      runtimes.set(workspaceDir, r);
-    }
-    return r;
+  /**
+   * A runtime on a workspace's current config: loaded for every command, so a long-running
+   * daemon sees edits to the config files (they are small; loading is cheap). Runtimes share
+   * the node's ledger and hold nothing else that needs closing.
+   */
+  const runtimeFor = async (workspaceDir: string) => {
+    const loaded = await loadConfig({
+      workspaceDir,
+      home: o.home,
+      nodeId: me,
+      ...(o.overrides ? { overrides: o.overrides } : {}),
+    });
+    return {
+      rt: openRuntime({
+        loaded,
+        workspaceDir,
+        home: o.home,
+        ledger,
+        ...(o.deps ? { deps: o.deps } : {}),
+        ...(o.notify ? { notify: o.notify } : {}),
+      }),
+      workspace: loaded.config.workspace,
+    };
   };
 
   const checkoutOf = (name: string) =>
@@ -450,7 +440,6 @@ export function openHost(o: HostOptions) {
     jobs,
     async close() {
       for (const j of jobs.values()) if (!j.done) await j.promise;
-      for (const r of runtimes.values()) (await r).rt.close();
       ledger.close();
     },
   };
