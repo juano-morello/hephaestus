@@ -8,6 +8,7 @@ import {
   nodeIdFrom,
   systemdUnit,
   withApproveDenied,
+  withHephUnsandboxed,
 } from "../src/install-files.ts";
 
 describe("installer files", () => {
@@ -79,6 +80,19 @@ describe("installer files", () => {
       permissions: { allow: ["Bash(git status)"], deny: ["Bash(rm -rf:*)", APPROVE_DENY] },
     });
     expect(withApproveDenied(once)).toEqual(once);
+  });
+});
+
+describe("Claude Code's Bash sandbox", () => {
+  test("heph runs outside it (it writes ~/.heph and talks to the daemon), keeping the rest", () => {
+    expect(withHephUnsandboxed(undefined)).toEqual({ sandbox: { excludedCommands: ["heph"] } });
+    const mine = { sandbox: { enabled: true, excludedCommands: ["docker"] }, model: "opus" };
+    const once = withHephUnsandboxed(mine);
+    expect(once).toEqual({
+      sandbox: { enabled: true, excludedCommands: ["docker", "heph"] },
+      model: "opus",
+    });
+    expect(withHephUnsandboxed(once)).toBe(once);
   });
 });
 

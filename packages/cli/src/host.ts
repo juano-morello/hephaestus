@@ -204,8 +204,7 @@ export function openHost(o: HostOptions) {
     const last = ledger.read({ run_id: runId }).at(-1)?.event.id;
     const after = last ? { after: last } : {};
     const running = jobs.get(runId);
-    if (running && !running.done)
-      return { run_id: runId, started: false, running: true, ...after };
+    if (running && !running.done) return { run_id: runId, started: false, running: true, ...after };
     const { rt } = await runtimeFor(workspaceOf(runId));
     const controller = new AbortController();
     const job: Job = { controller, done: false, promise: Promise.resolve() };

@@ -86,7 +86,23 @@ WantedBy=default.target
 `;
 }
 
-type Settings = { permissions?: { deny?: string[]; [k: string]: unknown }; [k: string]: unknown };
+type Settings = {
+  permissions?: { deny?: string[]; [k: string]: unknown };
+  sandbox?: { excludedCommands?: string[]; [k: string]: unknown };
+  [k: string]: unknown;
+};
+
+/**
+ * Claude Code settings with heph run outside its Bash sandbox: heph writes its ledger in
+ * ~/.heph and talks to the daemon's socket, which the sandbox refuses ("attempt to write a
+ * readonly database"). heph confines its own commands; approvals stay denied.
+ */
+export function withHephUnsandboxed(settings: Settings | undefined): Settings {
+  const s = settings ?? {};
+  const excluded = s.sandbox?.excludedCommands ?? [];
+  if (excluded.includes("heph")) return s;
+  return { ...s, sandbox: { ...s.sandbox, excludedCommands: [...excluded, "heph"] } };
+}
 
 /** Claude Code settings with `heph approve` denied; everything else kept as it was. */
 export function withApproveDenied(settings: Settings | undefined): Settings {

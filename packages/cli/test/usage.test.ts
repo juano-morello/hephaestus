@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
-import { mergeText, run } from "../src/main.ts";
+import { explainError, mergeText, run } from "../src/main.ts";
 
 function io() {
   const out: string[] = [];
@@ -77,4 +77,11 @@ describe("merge output", () => {
       "R1: aborted: x\n",
     );
   });
+});
+
+test("a refused write to heph's home says it is probably a sandbox, and what to do", () => {
+  expect(explainError("attempt to write a readonly database")).toContain(
+    "If it runs inside a sandbox (Claude Code's Bash sandbox, say), run it outside",
+  );
+  expect(explainError("run R1 is failed")).toBe("run R1 is failed");
 });

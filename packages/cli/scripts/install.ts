@@ -34,6 +34,7 @@ import {
   nodeIdFrom,
   systemdUnit,
   withApproveDenied,
+  withHephUnsandboxed,
 } from "../src/install-files.ts";
 
 const REPO = join(import.meta.dir, "..", "..", "..");
@@ -181,9 +182,11 @@ async function installHere() {
     const settings = existsSync(settingsFile)
       ? JSON.parse(readFileSync(settingsFile, "utf8"))
       : undefined;
-    const next = withApproveDenied(settings);
+    const next = withHephUnsandboxed(withApproveDenied(settings));
     if (next !== settings) writeFileSync(settingsFile, `${JSON.stringify(next, null, 2)}\n`);
-    say(`Claude Code: skill in ${skill}; heph approve denied in ${settingsFile}`);
+    say(
+      `Claude Code: skill in ${skill}; in ${settingsFile}, heph approve denied and heph run outside the Bash sandbox`,
+    );
   }
 
   say(sh([heph, "--version"]).trim());

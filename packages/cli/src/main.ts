@@ -579,6 +579,13 @@ function match(positionals: string[]): { name: string; args: string[] } | undefi
   return undefined;
 }
 
+/** Errors whose cause isn't heph's: say what to do about them. */
+export function explainError(message: string): string {
+  if (/readonly database|unable to open database/i.test(message))
+    return `${message}: heph can't write its home (~/.heph). If it runs inside a sandbox (Claude Code's Bash sandbox, say), run it outside: the installer adds heph to sandbox.excludedCommands in ~/.claude/settings.json`;
+  return message;
+}
+
 export async function run(argv: string[], io: Io): Promise<number> {
   let json = argv.includes("--json");
   let name = argv.filter((a) => !a.startsWith("-")).join(" ");
@@ -646,7 +653,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
     return cmd.exitCode?.(data) ?? 0;
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+    const message = explainError(e instanceof Error ? e.message : String(e));
     if (json) {
       io.stdout(
         `${JSON.stringify({ schema: JSON_SCHEMA, command: name, ok: false, error: { message } })}\n`,
