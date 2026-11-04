@@ -215,7 +215,7 @@ Interpretations and limits:
 2. **Fixed 2026-11-03:** mixed repos land: remote ones as PRs, local ones staged and fast-forwarded once the PRs merge (in `mergeChangeset` or `checkChangeset`).
 3. **The re-gate after a rebase runs only what each project configures.** During a unit, a missing test command fails the `tests` gate; after a rebase it is a regression check, so an unconfigured project simply isn't re-run.
 4. **Rebased commits are rewritten.** Attempt branches keep the original commits; the run branch points at the rebased ones.
-5. **Verified live 2026-11-03** (`packages/engine/scripts/pr-smoke.ts`): two private sandbox repos (`juano-morello/heph-sandbox-proto`, `-server`, now archived; delete them when convenient), branches pushed, two PRs opened with sibling links, both merged by the engine, files on `main`, run finished.
+5. **Verified live 2026-11-03** (`packages/engine/scripts/pr-smoke.ts`): two private sandbox repos (`juano-morello/heph-sandbox-proto`, `-server`, since deleted), branches pushed, two PRs opened with sibling links, both merged by the engine, files on `main`, run finished.
 6. **Run status** gains `built` (clean build node) and `staged` (`merge.staged`); `PROJECTION_VERSION` is 2, so older ledgers rebuild on open.
 
 ## The heph CLI (v0 step 2.6)
@@ -307,12 +307,20 @@ How it works and what I interpreted:
 - **R2, built by this Mac's daemon and handed to denver once T1 was accepted:**
   - The Mac interrupted T2's first attempt (reason `handoff`), pushed `heph/R2`, and wrote `run.handed_off` 9 s after the handoff began.
   - Denver took the run 5 s later (`run.resumed`, reason `handoff`). It did not redo T1, took T2 red then green on attempts 2 and 3, and finished `built` 2 minutes after the handoff.
-- **Findings, still open:**
-  - **A node that lands needs `gh`.** A node without it builds and pushes, but can't open the pull requests.
-  - **One remote URL for every node.** This Mac pushes over HTTPS (gh's credentials) and denver over SSH; denver's heph needed a `url.<ssh>.insteadOf <https>` rewrite (given through `GIT_CONFIG_*` in its environment) to clone and fetch. Any node of a run must be able to use the URL the run's checkout reports.
-  - **The planner isn't held to the project's test command.** It named a test file the configured command didn't run. A plan gate could check test-unit scopes against the configured command.
-  - **After a handoff, `heph run` on the old node ends with "paused (T2: handoff)".** It could say where the run went and follow it there.
-- **Cleanup:** `~/heph-test` on denver and the Mac's test home are removed, no containers are left on either machine, and both daemons are stopped. The GitHub repo is still up for you to delete.
+- **Findings:**
+  - **A node that lands needs `gh`.** A node without it builds and pushes, but can't open the pull requests. Fixed on denver by installing gh and logging it in (HTTPS, gh as git's credential helper). heph now checks for it before giving a node a run (below).
+  - **One remote URL for every node.** This Mac pushes over HTTPS (gh's credentials) and denver over SSH; denver's heph needed a `url.<ssh>.insteadOf <https>` rewrite (given through `GIT_CONFIG_*` in its environment) to clone and fetch. Any node of a run must be able to use the URL the run's checkout reports. On denver, gh as git's credential helper makes the HTTPS URLs work without the rewrite. heph doesn't translate URLs between nodes; the check below catches a node that can't use them.
+  - **The planner isn't held to the project's test command (still open).** It named a test file the configured command didn't run. A plan gate could check test-unit scopes against the configured command.
+  - **After a handoff, `heph run` on the old node ended with "paused (T2: handoff)".** Fixed: it now says where the run went and follows it there (below).
+- **Cleanup:** `~/heph-test` on denver and the Mac's test home are removed, no containers are left on either machine, and both daemons are stopped. You deleted the GitHub repos (`heph-node-test` and the two sandbox repos from 2.5).
+
+**Follow-ups to the live run (2026-11-04):**
+
+1. **A node checks it could land a run before taking it.** `workspace.ensure` (a peer method) makes the node's checkout, then checks each repo: a `git push --dry-run` to `origin` (with `GIT_TERMINAL_PROMPT=0`, so missing credentials fail instead of prompting), and `PullRequests.preflight`, which for gh is `gh repo view --json viewerPermission` (needs WRITE, MAINTAIN or ADMIN). Problems come back one per line: `denver can't take workspace calc:` then `calc: gh can't reach the repo: ...`.
+   - `heph new --on <node>` (and a preferred node picked for you) runs it before creating the run; when the preferred node refuses, the error says `heph new --on local` keeps the run here.
+   - `heph handoff` asks for it before stopping the build, so a refused handoff leaves the build running on the old owner. Making the checkout first also shortens the time the run is stopped.
+   - The dry-run push proves credentials and write access on GitHub (receive-pack needs both); a remote that accepts the ref advertisement but rejects the actual push would still pass.
+2. **`heph run` follows a run across a handoff.** While a daemon is handing a run off, its `follow` answers "not done" (the old job's end is not the run's end); once the run is handed off, `follow` is forwarded to the new owner as for any remote run. The follower prints `handed off to denver`, `following it there`, then the new owner's events. The follow cursor is the last event id, which assumes the nodes' clocks are roughly in step (ULIDs start with a timestamp).
 
 Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
 
