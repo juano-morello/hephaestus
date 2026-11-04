@@ -12,6 +12,11 @@ export interface PullRequests {
     title: string;
     body: string;
   }): Promise<{ url: string }>;
+  /** The pull request whose head is `head`, in any state, if there is one. */
+  find(p: {
+    repoDir: string;
+    head: string;
+  }): Promise<{ url: string; state: PrState["state"] } | undefined>;
   edit(p: { repoDir: string; url: string; body: string }): Promise<void>;
   status(p: { repoDir: string; url: string }): Promise<PrState>;
   /** Open, not a draft, mergeable and with every check green. */
@@ -52,6 +57,17 @@ export function ghPullRequests(run: Runner = runOk): PullRequests {
       const url = out.trim().split("\n").at(-1) ?? "";
       if (!/^https?:\/\//.test(url)) throw new Error(`gh pr create returned no url: ${out.trim()}`);
       return { url };
+    },
+    async find({ repoDir, head }) {
+      const list = JSON.parse(
+        await run(["gh", "pr", "list", "--head", head, "--state", "all", "--json", "url,state"], {
+          cwd: repoDir,
+        }),
+      ) as { url: string; state: string }[];
+      const pr = list.find((p) => p.state === "OPEN") ?? list[0];
+      if (!pr) return undefined;
+      const state = pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open";
+      return { url: pr.url, state };
     },
     async edit({ repoDir, url, body }) {
       await run(["gh", "pr", "edit", url, "--body", body], { cwd: repoDir });

@@ -27,7 +27,13 @@ function fakePrs() {
       bodies.set(url, body);
       states.set(url, { state: "open" });
       heads.set(url, await createGit(repoDir).revParse(head));
+      opened.set(`${repoDir} ${head}`, url);
       return { url };
+    },
+    async find({ repoDir, head }) {
+      const url = opened.get(`${repoDir} ${head}`);
+      calls.push(`find ${head}${url ? ` ${url}` : ""}`);
+      return url ? { url, state: (states.get(url) ?? { state: "open" }).state } : undefined;
     },
     async edit({ url, body }) {
       calls.push(`edit ${url}`);
@@ -49,6 +55,7 @@ function fakePrs() {
     },
   };
   const heads = new Map<string, string>();
+  const opened = new Map<string, string>();
   return { prs, calls, bodies, states, notReady, failMerge, heads };
 }
 

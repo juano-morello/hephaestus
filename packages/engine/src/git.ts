@@ -7,6 +7,10 @@ export type Diff = { files: string[]; text: string };
 
 export type Git = {
   revParse(ref: string): Promise<string>;
+  /** The commit a ref points at, or undefined when it doesn't exist. */
+  refSha(ref: string): Promise<string | undefined>;
+  /** Forgets worktrees whose directories are gone. */
+  prune(): Promise<void>;
   /** Creates the branch at `at`, or resets it there. */
   branchForce(branch: string, at: string): Promise<void>;
   /** Checks out `branch` reset to `at` in a new worktree. */
@@ -47,6 +51,13 @@ export function createGit(repoDir: string): Git {
   const git = (args: string[], cwd = repoDir) => runOk(["git", ...args], { cwd });
   return {
     revParse: async (ref) => (await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim(),
+    async refSha(ref) {
+      const r = await run(["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+        cwd: repoDir,
+      });
+      return r.code === 0 ? r.stdout.trim() : undefined;
+    },
+    prune: async () => void (await git(["worktree", "prune"])),
     branchForce: async (branch, at) => void (await git(["branch", "-f", branch, at])),
     worktreeAdd: async (path, branch, at) =>
       void (await git(["worktree", "add", "-q", "-f", "-B", branch, path, at])),
