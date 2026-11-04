@@ -10,6 +10,26 @@ import type { PullRequests } from "./prs.ts";
  */
 export type Chaos = (point: string) => void | Promise<void>;
 
+/**
+ * A simulated kill. Whatever a chaos hook throws becomes one, and code that turns failures
+ * into ledger events (an abort, a half-landed merge) lets it through: a killed process
+ * writes nothing.
+ */
+export class Stopped extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Stopped";
+  }
+}
+
+async function point(scope: EffectScope, p: string) {
+  try {
+    await scope.chaos?.(p);
+  } catch (e) {
+    throw e instanceof Stopped ? e : new Stopped(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** The envelope every event of a run shares. */
 export type RunBase = { run_id: string; changeset_id: string; config_hash: string };
 
@@ -47,9 +67,19 @@ export async function effect<T extends Applied | undefined>(
     ...(opts.with ?? []),
     { ...env, type: "effect.intended", data: clean({ effect: kind, key, target, before, after }) },
   ]);
-  await scope.chaos?.(`before:${key}`);
-  const result = await apply();
-  await scope.chaos?.(`after:${key}`);
+  await point(scope, `before:${key}`);
+  let result: T;
+  try {
+    result = await apply();
+  } catch (e) {
+    if (e instanceof Stopped) throw e;
+    // It failed rather than stopped: say so, so nothing is left pending.
+    scope.ledger.appendMany([
+      { ...env, type: "effect.done", data: { effect: kind, key, state: "abandoned" } },
+    ]);
+    throw e;
+  }
+  await point(scope, `after:${key}`);
   scope.ledger.appendMany([
     {
       ...env,

@@ -3,7 +3,15 @@ import type { GateResult, Task, Workspace } from "@hephaestus/core";
 import type { EventDraft, Ledger } from "@hephaestus/ledger";
 import { lintGate, testsGate, typecheckGate } from "./builtin-gates.ts";
 import { configHash } from "./config.ts";
-import { integrationGate, type RunPlanOptions, runBranch, touchedRepos } from "./engine.ts";
+import { clearWorktrees, type EffectScope, effect, reconcile, Stopped } from "./effects.ts";
+import {
+  integrationGate,
+  type RunPlanOptions,
+  realityOf,
+  runBranch,
+  sinceLatestPlan,
+  touchedRepos,
+} from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import type { PullRequests } from "./prs.ts";
 
@@ -53,13 +61,18 @@ function context(opts: LandOptions) {
   const repos = repoOrder(opts.workspace, touchedRepos(opts.workspace, opts.plan));
   const dirOf = (r: string) => resolve(opts.workspaceRoot, opts.workspace.repos[r] as string);
   const gits = new Map<string, Git>(repos.map((r) => [r, createGit(dirOf(r))]));
+  const remote = opts.remote ?? "origin";
+  const scope: EffectScope = { ledger: opts.ledger, base, chaos: opts.chaos };
   return {
     base,
     repos,
     gits,
     dirOf,
-    remote: opts.remote ?? "origin",
+    remote,
+    scope,
     target: (r: string) => opts.targets?.[r] ?? "main",
+    /** Closes effects a stopped landing left pending, so this one starts from what is true. */
+    reconcile: () => reconcile(opts.ledger, opts.runId, realityOf(opts, dirOf, remote)),
   };
 }
 
@@ -84,8 +97,15 @@ function abort(
  */
 export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   const { ledger } = opts;
-  const { base, repos, gits, dirOf, remote, target } = context(opts);
+  const c = context(opts);
+  const { base, repos, gits, dirOf, remote, target, scope } = c;
   const branch = runBranch(opts.runId);
+  await clearWorktrees(
+    opts.worktreesDir,
+    opts.runId,
+    Object.keys(opts.workspace.repos).map((r) => createGit(dirOf(r))),
+  );
+  await c.reconcile();
 
   const remotes = new Map<string, boolean>();
   for (const r of repos) remotes.set(r, (await gits.get(r)?.remoteUrl(remote)) !== undefined);
@@ -104,14 +124,35 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
     const tip = await git.revParse(hasRemote ? `${remote}/${target(r)}` : target(r));
     tips.set(r, tip);
     if ((await git.mergeBase(branch, tip)) === tip) continue;
-    const res = await git.rebase(join(opts.worktreesDir, opts.runId, `_rebase-${r}`), branch, tip);
-    if (!res.ok)
+    const res = await effect(
+      scope,
+      {
+        effect: "rebase",
+        key: `rebase:${r}`,
+        target: branch,
+        before: await git.revParse(branch),
+        on: { repo: r },
+      },
+      async () => {
+        const out = await git.rebase(
+          join(opts.worktreesDir, opts.runId, `_rebase-${r}`),
+          branch,
+          tip,
+        );
+        return out.ok ? { sha: out.sha } : { conflicts: out.conflicts };
+      },
+    );
+    if (res.conflicts)
       return abort(ledger, base, `rebase conflict in ${r}: ${res.conflicts.join(", ")}`, {});
     rebased.push(r);
   }
+  // A landing stopped after its rebase still owes the re-gate.
+  const rebasedBefore = sinceLatestPlan(ledger, opts.runId).some(
+    (e) => e.type === "effect.done" && e.data.effect === "rebase" && e.data.sha !== undefined,
+  );
 
   // 2. Re-gate the rebased changeset: configured project commands, then the integration gate.
-  if (rebased.length) {
+  if (rebased.length || rebasedBefore) {
     const failed = await regate(opts, repos, gits, base);
     if (failed) return abort(ledger, base, `re-gate after rebase failed: ${failed}`, {});
   }
@@ -124,44 +165,87 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   if (viaPrs) {
     const prs = opts.prs as PullRequests;
     const urls: Record<string, string> = {};
-    for (const r of repos) {
-      await (gits.get(r) as Git).setRef(`refs/heph/staging/${opts.runId}`, refs[r] as string);
-    }
+    await stage(opts, c, refs);
     for (const r of withRemote) {
       const git = gits.get(r) as Git;
-      await git.pushWithLease(
-        remote,
-        refs[r] as string,
-        branch,
-        await git.remoteRef(remote, branch),
+      const sha = refs[r] as string;
+      const current = await git.remoteRef(remote, branch);
+      await effect(
+        scope,
+        {
+          effect: "push",
+          key: `push:${r}`,
+          target: branch,
+          before: current,
+          after: sha,
+          on: { repo: r },
+        },
+        async () => {
+          // The lease is the remote's value now, so pushing again after a stop is safe.
+          if (current !== sha) await git.pushWithLease(remote, sha, branch, current);
+          return { sha };
+        },
       );
     }
     for (const r of withRemote) {
-      const { url } = await prs.open({
-        repoDir: dirOf(r),
-        head: branch,
-        base: target(r),
-        title: prTitle(opts),
-        body: prBody(opts, r, withRemote, {}),
-      });
+      const { url } = await effect(
+        scope,
+        { effect: "pr_open", key: `pr_open:${r}`, target: branch, on: { repo: r } },
+        async () => {
+          // A pull request a stopped landing opened is reused, never opened twice.
+          const found = await prs.find({ repoDir: dirOf(r), head: branch });
+          if (found?.state === "open") return { url: found.url };
+          return prs.open({
+            repoDir: dirOf(r),
+            head: branch,
+            base: target(r),
+            title: prTitle(opts),
+            body: prBody(opts, r, withRemote, {}),
+          });
+        },
+      );
       urls[r] = url;
     }
-    for (const r of withRemote)
-      await prs.edit({
-        repoDir: dirOf(r),
-        url: urls[r] as string,
-        body: prBody(opts, r, withRemote, urls),
-      });
+    for (const r of withRemote) {
+      const url = urls[r] as string;
+      await effect(
+        scope,
+        { effect: "pr_edit", key: `pr_edit:${r}`, target: url, on: { repo: r } },
+        async () => {
+          await prs.edit({ repoDir: dirOf(r), url, body: prBody(opts, r, withRemote, urls) });
+          return { url };
+        },
+      );
+    }
     ledger.append({ ...engine, type: "merge.staged", data: { refs, prs: urls } });
     return { status: "staged", refs, prs: urls };
   }
 
   // 3b. Local: staging refs only; mergeChangeset fast-forwards the targets (heph approve merge).
-  for (const r of repos) {
-    await (gits.get(r) as Git).setRef(`refs/heph/staging/${opts.runId}`, refs[r] as string);
-  }
+  await stage(opts, c, refs);
   ledger.append({ ...engine, type: "merge.staged", data: { refs } });
   return { status: "staged", refs };
+}
+
+/** `refs/heph/staging/<run>` in every touched repo: what was staged, for audit and recovery. */
+async function stage(
+  opts: LandOptions,
+  c: ReturnType<typeof context>,
+  refs: Record<string, string>,
+) {
+  const ref = `refs/heph/staging/${opts.runId}`;
+  for (const r of c.repos) {
+    const git = c.gits.get(r) as Git;
+    const sha = refs[r] as string;
+    await effect(
+      c.scope,
+      { effect: "staging_ref", key: `staging_ref:${r}`, target: ref, after: sha, on: { repo: r } },
+      async () => {
+        await git.setRef(ref, sha);
+        return { sha };
+      },
+    );
+  }
 }
 
 async function regate(
@@ -276,22 +360,41 @@ function lastStaged(opts: LandOptions, needPrs = false): Staged {
 
 /** Repos staged without a PR (no remote): fast-forward their targets, all or none. */
 async function finishLocal(opts: LandOptions, staged: Staged): Promise<Record<string, string>> {
-  const { repos, gits, target } = context(opts);
+  const { repos, gits, target, scope } = context(opts);
   const local = repos.filter((r) => staged.refs[r] && !staged.prs?.[r]);
   const moved: { r: string; from: string }[] = [];
+  const move = (r: string, key: string, from: string, to: string) =>
+    effect(
+      scope,
+      {
+        effect: "target_advance",
+        key,
+        target: target(r),
+        before: from,
+        after: to,
+        on: { repo: r },
+      },
+      async () => {
+        await (gits.get(r) as Git).updateRef(target(r), to, from);
+        return { sha: to };
+      },
+    );
   try {
     for (const r of local) {
       const git = gits.get(r) as Git;
       const to = staged.refs[r] as string;
       const from = await git.revParse(target(r));
+      // Already there: a stopped merge got this far.
+      if (from === to) continue;
       if ((await git.mergeBase(to, from)) !== from)
         throw new Error(`${target(r)} in ${r} moved since staging`);
-      await git.updateRef(target(r), to, from);
+      await move(r, `target_advance:${r}`, from, to);
       moved.push({ r, from });
     }
   } catch (e) {
+    if (e instanceof Stopped) throw e;
     for (const { r, from } of moved.reverse()) {
-      await (gits.get(r) as Git).updateRef(target(r), from, staged.refs[r] as string);
+      await move(r, `target_rollback:${r}`, staged.refs[r] as string, from);
     }
     throw e;
   }
@@ -318,14 +421,28 @@ export type MergeOutcome =
  * A merged PR can't be undone, so a failure after the first merge is recorded as half-landed.
  */
 export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
-  const { base, repos, dirOf } = context(opts);
+  const c = context(opts);
+  const { base, repos, dirOf, scope } = c;
   const staged = lastStaged(opts);
   const order = repos.filter((r) => staged.prs?.[r]);
   if (order.length && !opts.prs) throw new Error("no pull request client configured");
   const prs = opts.prs as PullRequests;
+  await c.reconcile();
+
+  // A stopped merge may have merged some already: those count, and are not merged again.
+  const refs: Record<string, string> = {};
+  const merged: string[] = [];
+  for (const r of order) {
+    const s = await prs.status({ repoDir: dirOf(r), url: staged.prs?.[r] as string });
+    if (s.state === "merged" && s.mergeCommit) {
+      refs[r] = s.mergeCommit;
+      merged.push(r);
+    }
+  }
+  const pending = order.filter((r) => !merged.includes(r));
 
   const reasons: string[] = [];
-  for (const r of order) {
+  for (const r of pending) {
     const url = staged.prs?.[r] as string;
     const ready = await prs.readiness({ repoDir: dirOf(r), url });
     if (!ready.ready) reasons.push(`${r}: ${ready.reason} (${url})`);
@@ -337,18 +454,19 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   }
   if (reasons.length) return { status: "not_ready", reasons };
 
-  const refs: Record<string, string> = {};
-  const merged: string[] = [];
-  for (const r of order) {
+  for (const r of pending) {
     try {
-      const { mergeCommit } = await prs.merge({
-        repoDir: dirOf(r),
-        url: staged.prs?.[r] as string,
-        head: staged.refs[r] as string,
-      });
-      refs[r] = mergeCommit;
+      const url = staged.prs?.[r] as string;
+      const head = staged.refs[r] as string;
+      const { sha } = await effect(
+        scope,
+        { effect: "pr_merge", key: `pr_merge:${r}`, target: url, before: head, on: { repo: r } },
+        async () => ({ sha: (await prs.merge({ repoDir: dirOf(r), url, head })).mergeCommit, url }),
+      );
+      refs[r] = sha;
       merged.push(r);
     } catch (e) {
+      if (e instanceof Stopped) throw e;
       const why = `${r} failed: ${e instanceof Error ? e.message : e}`;
       if (!merged.length) {
         abort(opts.ledger, base, `merge failed: ${why}`, staged.refs);
@@ -362,6 +480,7 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   try {
     Object.assign(refs, await finishLocal(opts, staged));
   } catch (e) {
+    if (e instanceof Stopped) throw e;
     const why = `local fast-forward failed: ${e instanceof Error ? e.message : e}`;
     // finishLocal rolls its own moves back, so with no PR merged nothing has landed.
     if (!merged.length) {
@@ -384,9 +503,11 @@ export type CheckOutcome =
 
 /** For a changeset staged as pull requests: finish the run once all are merged, abort if one closed. */
 export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
-  const { base, dirOf } = context(opts);
+  const c = context(opts);
+  const { base, dirOf } = c;
   const staged = lastStaged(opts, true);
   if (!opts.prs) throw new Error("no pull request client configured");
+  await c.reconcile();
 
   const states = await Promise.all(
     Object.entries(staged.prs ?? {}).map(async ([r, url]) => ({
@@ -409,6 +530,7 @@ export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
   try {
     Object.assign(refs, await finishLocal(opts, staged));
   } catch (e) {
+    if (e instanceof Stopped) throw e;
     abort(
       opts.ledger,
       base,

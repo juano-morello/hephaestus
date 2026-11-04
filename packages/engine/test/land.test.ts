@@ -97,7 +97,19 @@ async function commitToMain(repoDir: string, files: Record<string, string>) {
   await runOk(["git", "commit", "-qm", "upstream change"], { cwd: repoDir });
 }
 
-const types = (ledger: ReturnType<typeof openLedger>) => ledger.read().map((e) => e.event.type);
+/** Event types without the effect bookkeeping around them. */
+const types = (ledger: ReturnType<typeof openLedger>) =>
+  ledger
+    .read()
+    .map((e) => e.event.type)
+    .filter((t) => !t.startsWith("effect."));
+const effects = (ledger: ReturnType<typeof openLedger>) =>
+  ledger
+    .read({ types: ["effect.done"] })
+    .map(
+      (e) =>
+        `${(e.event.data as { key: string }).key} ${(e.event.data as { state: string }).state}`,
+    );
 
 describe("landing without remotes", () => {
   test("stages first, then fast-forwards every touched target in depends_on order", async () => {
@@ -211,7 +223,9 @@ describe("landChangeset with remotes", () => {
       server: "https://github.com/acme/server/pull/2",
     });
     expect(fake.calls).toEqual([
+      "find heph/R1",
       "open https://github.com/acme/proto/pull/1 heph/R1->main heph R1: loot drops reach the server",
+      "find heph/R1",
       "open https://github.com/acme/server/pull/2 heph/R1->main heph R1: loot drops reach the server",
       "edit https://github.com/acme/proto/pull/1",
       "edit https://github.com/acme/server/pull/2",
@@ -464,6 +478,98 @@ describe("mergeChangeset locally", () => {
     const r = await mergeChangeset(options);
     expect(r).toMatchObject({ status: "aborted" });
     expect(await git("proto").revParse("main")).toBe(protoMain);
+    ledger.close();
+  });
+});
+
+describe("landing again after a stop", () => {
+  const stopAt = (point: string) => (p: string) => {
+    if (p === point) throw new Error(`stopped at ${p}`);
+  };
+
+  async function withOrigins(repos: string[]) {
+    const b = await built();
+    for (const r of repos) {
+      const origin = join(dir(), `${r}.git`);
+      await runOk(["git", "clone", "-q", "--bare", join(b.root, r), origin]);
+      await runOk(["git", "remote", "add", "origin", origin], { cwd: join(b.root, r) });
+    }
+    await runPlan(b.options);
+    return b;
+  }
+
+  test("staging twice stages the same refs", async () => {
+    const { ledger, options } = await built();
+    await runPlan(options);
+    const first = await landChangeset(options);
+    expect(await landChangeset(options)).toEqual(first);
+    ledger.close();
+  });
+
+  test("a merge stopped after one target moved finishes the rest", async () => {
+    const { ledger, options, git } = await built();
+    await runPlan(options);
+    await landChangeset(options);
+    await expect(
+      mergeChangeset({ ...options, chaos: stopAt("after:target_advance:proto") }),
+    ).rejects.toThrow("stopped");
+    expect(await mergeChangeset(options)).toEqual({ status: "merged" });
+    expect(await git("proto").revParse("main")).toBe(await git("proto").revParse("heph/R1"));
+    expect(await git("server").revParse("main")).toBe(await git("server").revParse("heph/R1"));
+    expect(effects(ledger).filter((e) => e.startsWith("target_advance"))).toEqual([
+      "target_advance:proto confirmed",
+      "target_advance:server applied",
+    ]);
+    ledger.close();
+  });
+
+  test("a pull request opened before a stop is reused", async () => {
+    const { ledger, options } = await withOrigins(["proto", "server"]);
+    const fake = fakePrs();
+    await expect(
+      landChangeset({ ...options, prs: fake.prs, chaos: stopAt("after:pr_open:proto") }),
+    ).rejects.toThrow("stopped");
+    const out = await landChangeset({ ...options, prs: fake.prs });
+    expect(out.status).toBe("staged");
+    expect(fake.calls.filter((c) => c.startsWith("open"))).toHaveLength(2);
+    expect(out.prs?.proto).toBe("https://github.com/acme/proto/pull/1");
+    expect(effects(ledger)).toContain("pr_open:proto confirmed");
+    ledger.close();
+  });
+
+  test("a pull request merged before a stop counts as merged and is not merged again", async () => {
+    const { ledger, options } = await withOrigins(["proto", "server"]);
+    const fake = fakePrs();
+    const staged = await landChangeset({ ...options, prs: fake.prs });
+    await expect(
+      mergeChangeset({ ...options, prs: fake.prs, chaos: stopAt("after:pr_merge:proto") }),
+    ).rejects.toThrow("stopped");
+    expect(await mergeChangeset({ ...options, prs: fake.prs })).toEqual({ status: "merged" });
+    expect(fake.calls.filter((c) => c.startsWith("merge")).map((c) => c.split(" ")[1])).toEqual([
+      staged.prs?.proto,
+      staged.prs?.server,
+    ]);
+    expect(ledger.run("R1")?.status).toBe("finished");
+    ledger.close();
+  });
+
+  test("a landing stopped after its rebase still re-gates before staging", async () => {
+    const { root, ledger, options } = await built({
+      commands: { server: { test: "sh check.sh" } },
+    });
+    await runPlan(options);
+    await commitToMain(join(root, "server"), { "NEWS.md": "upstream\n" });
+    await expect(
+      landChangeset({ ...options, chaos: stopAt("after:rebase:server") }),
+    ).rejects.toThrow("stopped");
+    const gatesBefore = ledger.read({ types: ["gate.result"] }).length;
+    expect((await landChangeset(options)).status).toBe("staged");
+    const regate = ledger
+      .read({ types: ["gate.result"] })
+      .slice(gatesBefore)
+      .map((e) => (e.event.data as { gate: string }).gate);
+    expect(regate).toEqual(["tests", "integration"]);
+    expect(effects(ledger)).toContain("rebase:server confirmed");
     ledger.close();
   });
 });

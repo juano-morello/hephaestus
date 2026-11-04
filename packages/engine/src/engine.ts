@@ -20,7 +20,7 @@ import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
 import { buildContextPack } from "./context.ts";
-import { type Chaos, clearWorktrees, effect, type Reality, reconcile } from "./effects.ts";
+import { type Chaos, clearWorktrees, effect, type Reality, reconcile, Stopped } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
@@ -605,6 +605,7 @@ async function runUnit(
           ...(route.effort ? { effort: route.effort } : {}),
         });
       } catch (e) {
+        if (e instanceof Stopped) throw e;
         out = {
           output: undefined,
           transcript: `worker threw: ${e}`,
@@ -685,6 +686,7 @@ async function runUnit(
                 ...(sandbox ? { sandbox } : {}),
               });
             } catch (e) {
+              if (e instanceof Stopped) throw e;
               r = {
                 gate: gate.name,
                 verdict: "fail",
