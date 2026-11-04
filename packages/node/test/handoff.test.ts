@@ -21,7 +21,8 @@ import { adopt, handOff, takeMethods } from "../src/handoff.ts";
 import { syncMethods } from "../src/protocol.ts";
 import { syncWith } from "../src/sync.ts";
 import { localTransport } from "../src/transport.ts";
-import { describeWorkspace } from "../src/workspace.ts";
+import type { Preflight } from "../src/workspace.ts";
+import { describeWorkspace, workspaceMethods } from "../src/workspace.ts";
 import { tempDir } from "./helpers.ts";
 import { git, put, repoWithOrigin } from "./repos.ts";
 
@@ -157,10 +158,11 @@ async function twoNodes() {
   };
   createRun({ ...opts(a, ws, homeA, worker().w), brief, workspaceName: "game" });
   recordPlan({ ...opts(a, ws, homeA, worker().w), brief, workspace }, plan);
-  const toB = () =>
+  const toB = (prs?: Preflight) =>
     localTransport({
       ...syncMethods(b),
       ...takeMethods({ ledger: b, home: homeB, workspaces: {} }),
+      ...workspaceMethods({ node: "denver", home: homeB, workspaces: {}, ...(prs ? { prs } : {}) }),
     });
   return { ws, homeA, homeB, a, b, opts, toB, description: await describeWorkspace(ws, workspace) };
 }
@@ -297,6 +299,33 @@ describe("handoff", () => {
       }),
     ).rejects.toThrow("server has no origin remote");
     expect(n.a.run("R1")?.owner_node).toBe("mbp");
+    n.a.close();
+    n.b.close();
+  });
+});
+
+describe("handoff to a node that can't land", () => {
+  test("is refused before the build stops, and the run stays here", async () => {
+    const n = await twoNodes();
+    const { handoff } = await buildingOnA(n);
+    let stopped = false;
+    const noGh: Preflight = { preflight: async () => "gh can't reach the repo: not logged in" };
+    await expect(
+      handOff({
+        ...handoff,
+        transport: n.toB(noGh),
+        stopBuild: async () => {
+          stopped = true;
+          await handoff.stopBuild();
+        },
+      }),
+    ).rejects.toThrow(
+      "denver can't take workspace game:\n  proto: gh can't reach the repo: not logged in\n  server: gh can't reach the repo: not logged in",
+    );
+    expect(stopped).toBe(false);
+    expect(n.a.run("R1")).toMatchObject({ owner_node: "mbp", status: "running" });
+    expect(n.a.read({ run_id: "R1", types: ["run.handed_off"] })).toHaveLength(0);
+    await handoff.stopBuild();
     n.a.close();
     n.b.close();
   });

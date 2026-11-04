@@ -573,3 +573,39 @@ describe("landing again after a stop", () => {
     ledger.close();
   });
 });
+
+describe("ghPullRequests preflight", () => {
+  test("says why gh can't open pull requests for a repo, or nothing when it can", async () => {
+    const answer = new Map<string, string | Error>([
+      ["/w", "WRITE\n"],
+      ["/r", "READ\n"],
+      [
+        "/x",
+        new Error(
+          "gh repo view exited 4: To get started with GitHub CLI, please run: gh auth login",
+        ),
+      ],
+    ]);
+    const prs = ghPullRequests(async (cmd, opts) => {
+      expect(cmd).toEqual([
+        "gh",
+        "repo",
+        "view",
+        "--json",
+        "viewerPermission",
+        "-q",
+        ".viewerPermission",
+      ]);
+      const a = answer.get(opts?.cwd ?? "");
+      if (a instanceof Error) throw a;
+      return a ?? "";
+    });
+    expect(await prs.preflight?.({ repoDir: "/w" })).toBeUndefined();
+    expect(await prs.preflight?.({ repoDir: "/r" })).toBe(
+      "gh's account has READ access, and opening pull requests needs WRITE",
+    );
+    expect(await prs.preflight?.({ repoDir: "/x" })).toBe(
+      "gh can't reach the repo: gh repo view exited 4: To get started with GitHub CLI, please run: gh auth login",
+    );
+  });
+});

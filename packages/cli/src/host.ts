@@ -3,16 +3,17 @@
 // daemon the CLI opens one in-process.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { ghPullRequests } from "@hephaestus/engine";
 import { type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
 import {
   adopt,
   describeWorkspace,
-  ensureWorkspace,
   fetchRunBranches,
   handOff,
   hello,
   type Methods,
   PeerError,
+  prepareWorkspace,
   sshTransport,
   syncMethods,
   syncWith,
@@ -193,6 +194,9 @@ export function openHost(o: HostOptions) {
     jobs.set(runId, job);
     return { run_id: runId, started: true };
   };
+  /** Runs this node is handing off right now: their followers wait for the new owner. */
+  const handingOff = new Set<string>();
+
   const stopJob = async (runId: string, reason: string) => {
     const job = jobs.get(runId);
     if (!job || job.done) return;
@@ -211,9 +215,19 @@ export function openHost(o: HostOptions) {
     }
   };
 
+  /** What this node needs to take a workspace's runs: its checkout, and a way to land them. */
+  const prepare = (workspace: WorkspaceDescription) =>
+    prepareWorkspace(workspace, {
+      node: me,
+      home: o.home,
+      workspaces: o.config.workspaces,
+      prs: o.deps?.prs ?? ghPullRequests(),
+    });
+
   /** Everything this node answers for its peers (`heph peer`). */
   const peerMethods = (): Methods => ({
     ...syncMethods(ledger),
+    "workspace.ensure": (p: { workspace: WorkspaceDescription }) => prepare(p.workspace),
     ...takeMethods({
       ledger,
       home: o.home,
@@ -232,10 +246,7 @@ export function openHost(o: HostOptions) {
       return api.call(p.method, p.args, undefined);
     },
     "run.new": async (p: { workspace: WorkspaceDescription; brief: unknown; runId?: string }) => {
-      const { dir } = await ensureWorkspace(p.workspace, {
-        home: o.home,
-        workspaces: o.config.workspaces,
-      });
+      const { dir } = await prepare(p.workspace);
       const { rt } = await runtimeFor(dir);
       return rt.newRun(p.brief, p.runId ? { runId: p.runId } : {});
     },
@@ -275,6 +286,10 @@ export function openHost(o: HostOptions) {
             });
             await syncWith(ledger, t);
             return r;
+          }).catch((e: unknown) => {
+            if (opts?.on || !(e instanceof Error)) throw e;
+            // The preferred node, picked for you: say how to keep the run here instead.
+            throw new Error(`${e.message}\n(heph new --on local keeps the run on ${me})`);
           });
           return { ...result, node };
         }
@@ -309,6 +324,7 @@ export function openHost(o: HostOptions) {
             return forward(owner, "handoff", args);
           const dir = workspaceOf(runId);
           const { workspace } = await runtimeFor(dir);
+          handingOff.add(runId);
           return withPeer(to, async (t) => {
             const out = await handOff({
               ledger,
@@ -321,7 +337,7 @@ export function openHost(o: HostOptions) {
               stopBuild: () => stopJob(runId, "handoff"),
             });
             return { run_id: runId, to, pushed: out.pushed, dir: out.taken.dir };
-          });
+          }).finally(() => handingOff.delete(runId));
         }
         case "adopt": {
           const [runId, opts] = args as [string, { force?: boolean }];
@@ -352,10 +368,12 @@ export function openHost(o: HostOptions) {
           return startJob(args[0] as string);
         case "follow": {
           // One step of following a build job: events after `after`, and whether it is over.
-          // The job lives in the owner's daemon, so that is who answers.
+          // The job lives in the owner's daemon, so that is who answers. A run handed off while
+          // followed is followed at its new owner (once it has taken the run) to the end.
           const [runId, after] = args as [string, string | undefined];
+          const moving = handingOff.has(runId);
           const owner = ownerOf(runId);
-          if (owner !== me) return forward(owner, "follow", args);
+          if (owner !== me && !moving) return forward(owner, "follow", args);
           if (!o.daemon) {
             const d = await o.localDaemon?.();
             if (d) return d.call("follow", args);
@@ -367,7 +385,7 @@ export function openHost(o: HostOptions) {
           return {
             events,
             status: ledger.run(runId)?.status ?? "unknown",
-            done: job ? job.done : true,
+            done: moving ? false : job ? job.done : true,
             ...(job?.result ? { result: job.result } : {}),
             ...(job?.error ? { error: job.error } : {}),
           };

@@ -7,6 +7,7 @@ import { localTransport } from "@hephaestus/node";
 import { loadHomeConfig } from "../src/config.ts";
 import { type Host, openHost } from "../src/host.ts";
 import { type Io, run } from "../src/main.ts";
+import { describe as line } from "../src/runtime.ts";
 import { deps } from "./fixtures/deps.ts";
 
 let root: string;
@@ -25,8 +26,14 @@ const sh = (cmd: string[], cwd: string) => {
   return r.stdout.toString().trim();
 };
 
+/** Set by a test: why denver can't open pull requests. */
+let cantLand: string | undefined;
+
 /** Pull requests that open and stay open: enough to stage. */
 const prs: PullRequests = {
+  async preflight() {
+    return cantLand;
+  },
   async open({ head }) {
     return { url: `https://github.com/acme/calc/pull/${head.length}` };
   },
@@ -46,6 +53,7 @@ const prs: PullRequests = {
 };
 
 beforeEach(async () => {
+  cantLand = undefined;
   root = mkdtempSync(join(tmpdir(), "heph-nodes-"));
   ws = join(root, "calc");
   homeA = join(root, "mbp");
@@ -159,6 +167,18 @@ describe("a run on another node", () => {
     expect(denver.ledger.run("R2")).toBeUndefined();
   });
 
+  test("is refused by a node that couldn't land it, before anything is created", async () => {
+    await heph(["init", "--force"]);
+    cantLand = "gh can't reach the repo: not logged in";
+    const created = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R4"]);
+    expect(created.ok).toBe(false);
+    expect(created.error?.message).toContain(
+      "denver can't take workspace calc:\n  calc: gh can't reach the repo: not logged in",
+    );
+    expect(created.error?.message).toContain("heph new --on local keeps the run on mbp");
+    expect(denver.ledger.run("R4")).toBeUndefined();
+  });
+
   test("status says possibly stale when the owner can't be reached", async () => {
     await heph(["init", "--force"]);
     await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3"]);
@@ -228,6 +248,77 @@ describe("the daemon as scheduler", () => {
       expect(resumed.map((e) => (e.event.data as { reason: string }).reason)).toEqual([
         "rate_limit",
       ]);
+    } finally {
+      await mbp.close();
+    }
+  }, 60_000);
+});
+
+describe("a run handed off while heph run follows it", () => {
+  test("the old node keeps following it at the new owner until it is done there", async () => {
+    await heph(["init", "--force"]);
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh }\n",
+    );
+    // mbp's worker holds T2 until the handoff interrupts it; denver's finishes it.
+    let reached: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      reached = r;
+    });
+    const scripted = deps.worker as Worker;
+    const worker: Worker = {
+      async spawn(input) {
+        if (input.brief.task.id !== "T2") return scripted.spawn(input);
+        reached();
+        while (!input.signal?.aborted) await Bun.sleep(5);
+        return {
+          output: undefined,
+          transcript: "",
+          usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+          exit: "interrupted",
+        };
+      },
+    };
+    const mbp = openHost({
+      home: homeA,
+      config: await loadHomeConfig(homeA),
+      deps: { ...deps, worker, prs },
+      daemon: true,
+      connect: () => localTransport(denver.peerMethods()),
+    });
+    try {
+      await mbp.api.call("newRun", [Bun.YAML.parse(BRIEF), { runId: "R5", on: "local" }], ws);
+      await mbp.api.call("approvePlan", ["R5"], ws);
+      await mbp.api.call("run", ["R5", {}], ws);
+      await held;
+
+      // Follow as heph run does, polling throughout the handoff.
+      type Step = { events: { id: string; type: string; node_id: string }[]; done: boolean };
+      const steps: Step[] = [];
+      const following = (async () => {
+        let after: string | undefined;
+        for (;;) {
+          const f = (await mbp.api.call("follow", ["R5", after], ws)) as Step & {
+            status: string;
+          };
+          steps.push(f);
+          after = f.events.at(-1)?.id ?? after;
+          if (f.done) return f;
+          await Bun.sleep(5);
+        }
+      })();
+      await mbp.api.call("handoff", ["R5", "denver"], ws);
+      const end = await following;
+
+      expect(end.status).toBe("staged");
+      const seen = steps.flatMap((s) => s.events);
+      expect(seen.some((e) => e.type === "run.handed_off" && e.node_id === "mbp")).toBe(true);
+      expect(seen.some((e) => e.type === "run.resumed" && e.node_id === "denver")).toBe(true);
+      expect(seen.some((e) => e.type === "merge.staged" && e.node_id === "denver")).toBe(true);
+      expect(line({ type: "run.handed_off", data: { to: "denver" } })).toBe("handed off to denver");
+      // Only the last step says done: none while the run was between nodes.
+      expect(steps.filter((s) => s.done)).toHaveLength(1);
     } finally {
       await mbp.close();
     }

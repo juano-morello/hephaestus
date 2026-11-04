@@ -102,6 +102,7 @@ function remote(api: Api, follow: (line: string) => void) {
         };
         for (const e of f.events) {
           follow(line(e));
+          if (e.type === "run.handed_off") follow("  following it there\n");
           after = e.id;
         }
         if (f.done) {

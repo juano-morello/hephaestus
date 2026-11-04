@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkspaceConfig } from "@hephaestus/core";
-import { describeWorkspace, ensureWorkspace, fetchRunBranches } from "../src/workspace.ts";
+import { runOk } from "@hephaestus/sandbox";
+import {
+  checkWorkspace,
+  describeWorkspace,
+  ensureWorkspace,
+  fetchRunBranches,
+} from "../src/workspace.ts";
 import { tempDir } from "./helpers.ts";
 import { git, put, repoWithOrigin } from "./repos.ts";
 
@@ -106,5 +112,24 @@ describe("a workspace on another node", () => {
     expect(await fetchRunBranches(other.dir, WS, "R1")).toEqual(["server"]);
     const sha = (cwd: string) => git(cwd, "rev-parse", "heph/R1");
     expect(await sha(join(other.dir, "server"))).toBe(await sha(join(ws, "server")));
+  });
+
+  test("a checkout is checked for what a run there needs: pushing, and opening pull requests", async () => {
+    const { ws, origins } = await mbp();
+    const desc = await describeWorkspace(ws, WS);
+    const home = dir();
+    const { dir: there } = await ensureWorkspace(desc, { home, workspaces: {} });
+    expect(await checkWorkspace(there, desc)).toEqual([]);
+
+    // The proto remote goes away; gh is not logged in for server.
+    await runOk(["rm", "-rf", join(origins, "proto.git")]);
+    const prs = {
+      preflight: async ({ repoDir }: { repoDir: string }) =>
+        repoDir.endsWith("server") ? "gh can't reach the repo: not logged in" : undefined,
+    };
+    const problems = await checkWorkspace(there, desc, { prs });
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toStartWith(`proto: can't push to ${join(origins, "proto.git")}`);
+    expect(problems[1]).toBe("server: gh can't reach the repo: not logged in");
   });
 });

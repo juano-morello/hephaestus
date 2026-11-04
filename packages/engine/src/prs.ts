@@ -23,7 +23,11 @@ export interface PullRequests {
   readiness(p: { repoDir: string; url: string }): Promise<PrReadiness>;
   /** Merges only if the PR head is still `head`. */
   merge(p: { repoDir: string; url: string; head: string }): Promise<{ mergeCommit: string }>;
+  /** Why this node couldn't open pull requests for the repo, or undefined when it can. */
+  preflight?(p: { repoDir: string }): Promise<string | undefined>;
 }
+
+const CAN_OPEN = new Set(["ADMIN", "MAINTAIN", "WRITE"]);
 
 type Check = {
   name?: string;
@@ -120,6 +124,21 @@ export function ghPullRequests(run: Runner = runOk): PullRequests {
       if (pending.length)
         return { ready: false, reason: `checks still running: ${pending.join(", ")}` };
       return { ready: true, head: pr.headRefOid };
+    },
+    async preflight({ repoDir }) {
+      let permission: string;
+      try {
+        permission = (
+          await run(
+            ["gh", "repo", "view", "--json", "viewerPermission", "-q", ".viewerPermission"],
+            { cwd: repoDir },
+          )
+        ).trim();
+      } catch (e) {
+        return `gh can't reach the repo: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      if (CAN_OPEN.has(permission)) return undefined;
+      return `gh's account has ${permission || "no"} access, and opening pull requests needs WRITE`;
     },
     async merge({ repoDir, url, head }) {
       await run(["gh", "pr", "merge", url, "--merge", "--match-head-commit", head], {

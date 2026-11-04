@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { WorkspaceConfig } from "@hephaestus/core";
-import { createGit, runBranch } from "@hephaestus/engine";
-import { runOk } from "@hephaestus/sandbox";
+import { createGit, type PullRequests, runBranch } from "@hephaestus/engine";
+import { run, runOk } from "@hephaestus/sandbox";
+import { type Methods, PeerError } from "./protocol.ts";
 
 const REMOTE = "origin";
 
@@ -75,6 +76,65 @@ export async function ensureWorkspace(
   for (const r of Object.values(desc.repos))
     put(join(resolve(dir, r.path), ".heph", "config.yaml"), r.config);
   return { dir, cloned };
+}
+
+/** What a node checks about pull requests before it takes a run (only `preflight` is used). */
+export type Preflight = Pick<PullRequests, "preflight">;
+
+/**
+ * What would stop a run on this checkout from landing, one line per problem: each repo's
+ * remote must take a push (checked with a dry run, which asks for credentials), and the pull
+ * request client must be able to open pull requests there. Empty when nothing would.
+ */
+export async function checkWorkspace(
+  dir: string,
+  desc: WorkspaceDescription,
+  opts: { prs?: Preflight | undefined } = {},
+): Promise<string[]> {
+  const problems: string[] = [];
+  for (const [repo, r] of Object.entries(desc.repos)) {
+    const cwd = resolve(dir, r.path);
+    const url = (await createGit(cwd).remoteUrl(REMOTE)) ?? r.url;
+    const head = (await run(["git", "rev-parse", "HEAD"], { cwd })).stdout.trim();
+    const push = await run(
+      ["git", "push", "--dry-run", "-q", REMOTE, `${head}:refs/heads/heph/preflight`],
+      { cwd, env: { GIT_TERMINAL_PROMPT: "0" }, timeoutMs: 60_000 },
+    );
+    if (push.code !== 0)
+      problems.push(
+        `${repo}: can't push to ${url}: ${push.timedOut ? "timed out" : push.stderr.trim().split("\n").at(-1)}`,
+      );
+    const pr = await opts.prs?.preflight?.({ repoDir: cwd });
+    if (pr) problems.push(`${repo}: ${pr}`);
+  }
+  return problems;
+}
+
+/** Makes this node's checkout of a workspace, then refuses it if a run there couldn't land. */
+export async function prepareWorkspace(
+  desc: WorkspaceDescription,
+  opts: {
+    node: string;
+    home: string;
+    workspaces: Record<string, string>;
+    prs?: Preflight | undefined;
+  },
+): Promise<{ dir: string; cloned: string[] }> {
+  const out = await ensureWorkspace(desc, opts);
+  const problems = await checkWorkspace(out.dir, desc, opts);
+  if (problems.length)
+    throw new PeerError(
+      `${opts.node} can't take workspace ${desc.name}:\n  ${problems.join("\n  ")}`,
+    );
+  return out;
+}
+
+/** `workspace.ensure` for a node's peer methods: asked before a run is given to this node. */
+export function workspaceMethods(opts: Parameters<typeof prepareWorkspace>[1]): Methods {
+  return {
+    "workspace.ensure": (p: { workspace: WorkspaceDescription }) =>
+      prepareWorkspace(p.workspace, opts),
+  };
 }
 
 /**

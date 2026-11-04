@@ -82,6 +82,10 @@ export async function handOff(
       );
   }
 
+  // The new owner makes its checkout first and says if a run there couldn't land; refused
+  // here, nothing has happened yet and the build goes on.
+  await o.transport.request("workspace.ensure", { workspace: o.description });
+
   await o.stopBuild?.();
   // A handoff stopped halfway left its push pending; close it before going on.
   await reconcile(o.ledger, o.runId, realityOf({}, dirOf));
