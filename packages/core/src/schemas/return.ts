@@ -10,7 +10,11 @@ export const Return = z
     reasons: z
       .array(
         z
-          .object({ gate: z.string().min(1), reason: z.string().min(1), evidence: z.string() })
+          .object({
+            gate: z.string().min(1),
+            reason: z.string().min(1),
+            evidence: z.array(z.string()),
+          })
           .strict(),
       )
       .min(1),

@@ -461,7 +461,7 @@ async function runUnit(
         reasons: failures.map((f) => ({
           gate: f.gate,
           reason: f.reason,
-          evidence: f.evidence.join("\n"),
+          evidence: f.evidence,
         })),
         scope: t.scope,
         instruction: RETURN_INSTRUCTION,

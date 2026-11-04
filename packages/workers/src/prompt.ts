@@ -37,7 +37,10 @@ export function renderUnitPrompt(brief: UnitBrief): string {
 
   if (brief.feedback) {
     const reasons = brief.feedback.reasons
-      .map((r) => `- ${r.gate}: ${r.reason}${r.evidence ? `\n\n${fence(r.evidence)}` : ""}`)
+      .map(
+        (r) =>
+          `- ${r.gate}: ${r.reason}${r.evidence.length ? `\n\n${fence(r.evidence.join("\n"))}` : ""}`,
+      )
       .join("\n\n");
     sections.push(
       `## Feedback from attempt ${brief.feedback.attempt}\n\nThe checks failed. Instruction: ${brief.feedback.instruction}.\n\n${reasons}`,
