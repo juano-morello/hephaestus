@@ -22,6 +22,8 @@ const TaskSummary = z
     project: z.string(),
     lane: z.string(),
     complexity: z.string(),
+    scope: z.array(z.string()),
+    covers: z.array(z.string()),
   })
   .strict();
 

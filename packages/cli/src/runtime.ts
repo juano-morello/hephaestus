@@ -66,6 +66,8 @@ export type TaskSummary = {
   project: string;
   lane: string;
   complexity: string;
+  scope: string[];
+  covers: string[];
 };
 export type PlanResult = {
   run_id: string;
@@ -85,6 +87,8 @@ const summary = (plan: Plan): TaskSummary[] =>
     project: t.project,
     lane: t.lane,
     complexity: t.complexity,
+    scope: t.scope,
+    covers: t.covers,
   }));
 
 export function newRunId(now = new Date()): string {

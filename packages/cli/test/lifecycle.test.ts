@@ -190,6 +190,12 @@ describe("heph lifecycle", () => {
 
     const shown = await heph(["plan", "show", "R1"], deps);
     expect(shown.data).toMatchObject({ approved: false, order: ["T1", "T2"] });
+    // The scope and criteria are what the user reviews a plan by.
+    expect((shown.data as { tasks: unknown[] }).tasks[0]).toMatchObject({
+      id: "T1",
+      scope: ["test_add.sh"],
+      covers: ["AC1"],
+    });
 
     // heph run before the approval waits for it (an agent starts it right after showing the
     // plan), then builds.

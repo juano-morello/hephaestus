@@ -235,8 +235,22 @@ export function mergeText({ run_id, result: r }: MergeView): string {
 }
 
 const tasksText = (
-  tasks: { id: string; kind: string; project: string; lane: string; title: string }[] = [],
-) => tasks.map((t) => `  ${t.id} ${t.kind} ${t.project} (${t.lane}): ${t.title}`).join("\n");
+  tasks: {
+    id: string;
+    kind: string;
+    project: string;
+    lane: string;
+    title: string;
+    scope?: string[];
+    covers?: string[];
+  }[] = [],
+) =>
+  tasks
+    .map(
+      (t) =>
+        `  ${t.id} ${t.kind} ${t.project} (${t.lane}): ${t.title}${t.scope ? `\n      changes ${t.scope.join(", ")}${t.covers?.length ? `; covers ${t.covers.join(", ")}` : ""}` : ""}`,
+    )
+    .join("\n");
 
 const planText = (r: Awaited<ReturnType<Runtime["newRun"]>> & { node?: string; placed?: string }) =>
   `${[
