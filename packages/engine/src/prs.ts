@@ -1,6 +1,7 @@
 import { runOk } from "@hephaestus/sandbox";
 
 export type PrState = { state: "open" | "merged" | "closed"; mergeCommit?: string };
+export type PrReadiness = { ready: true; head: string } | { ready: false; reason: string };
 
 /** Where a changeset lands when its repos have a remote: one pull request per repo. */
 export interface PullRequests {
@@ -13,7 +14,28 @@ export interface PullRequests {
   }): Promise<{ url: string }>;
   edit(p: { repoDir: string; url: string; body: string }): Promise<void>;
   status(p: { repoDir: string; url: string }): Promise<PrState>;
+  /** Open, not a draft, mergeable and with every check green. */
+  readiness(p: { repoDir: string; url: string }): Promise<PrReadiness>;
+  /** Merges only if the PR head is still `head`. */
+  merge(p: { repoDir: string; url: string; head: string }): Promise<{ mergeCommit: string }>;
 }
+
+type Check = {
+  name?: string;
+  context?: string;
+  status?: string;
+  conclusion?: string | null;
+  state?: string;
+};
+const FAILED = new Set([
+  "FAILURE",
+  "CANCELLED",
+  "TIMED_OUT",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+  "ERROR",
+]);
+const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 type Runner = (cmd: string[], opts?: { cwd?: string }) => Promise<string>;
 
@@ -43,6 +65,54 @@ export function ghPullRequests(run: Runner = runOk): PullRequests {
       };
       const state = raw.state === "MERGED" ? "merged" : raw.state === "CLOSED" ? "closed" : "open";
       return { state, ...(raw.mergeCommit?.oid ? { mergeCommit: raw.mergeCommit.oid } : {}) };
+    },
+    async readiness({ repoDir, url }) {
+      const pr = JSON.parse(
+        await run(
+          [
+            "gh",
+            "pr",
+            "view",
+            url,
+            "--json",
+            "state,isDraft,mergeable,headRefOid,statusCheckRollup",
+          ],
+          {
+            cwd: repoDir,
+          },
+        ),
+      ) as {
+        state: string;
+        isDraft: boolean;
+        mergeable: string;
+        headRefOid: string;
+        statusCheckRollup?: Check[];
+      };
+      if (pr.state !== "OPEN")
+        return { ready: false, reason: `pull request is ${pr.state.toLowerCase()}` };
+      if (pr.isDraft) return { ready: false, reason: "pull request is a draft" };
+      if (pr.mergeable === "CONFLICTING")
+        return { ready: false, reason: "pull request has merge conflicts" };
+      if (pr.mergeable !== "MERGEABLE")
+        return { ready: false, reason: "mergeability not computed yet, try again" };
+      const checks = pr.statusCheckRollup ?? [];
+      const name = (c: Check) => c.name ?? c.context ?? "check";
+      const verdict = (c: Check) => (c.conclusion || c.state || "").toUpperCase();
+      const failing = checks.filter((c) => FAILED.has(verdict(c))).map(name);
+      if (failing.length) return { ready: false, reason: `checks failing: ${failing.join(", ")}` };
+      const pending = checks.filter((c) => !PASSED.has(verdict(c))).map(name);
+      if (pending.length)
+        return { ready: false, reason: `checks still running: ${pending.join(", ")}` };
+      return { ready: true, head: pr.headRefOid };
+    },
+    async merge({ repoDir, url, head }) {
+      await run(["gh", "pr", "merge", url, "--merge", "--match-head-commit", head], {
+        cwd: repoDir,
+      });
+      const after = await this.status({ repoDir, url });
+      if (after.state !== "merged" || !after.mergeCommit)
+        throw new Error(`gh pr merge did not merge ${url}`);
+      return { mergeCommit: after.mergeCommit };
     },
   };
 }

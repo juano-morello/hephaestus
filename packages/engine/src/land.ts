@@ -90,15 +90,7 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   const remotes = new Map<string, boolean>();
   for (const r of repos) remotes.set(r, (await gits.get(r)?.remoteUrl(remote)) !== undefined);
   const withRemote = repos.filter((r) => remotes.get(r));
-  if (withRemote.length && withRemote.length < repos.length) {
-    const without = repos.filter((r) => !remotes.get(r));
-    return abort(
-      ledger,
-      base,
-      `mixed local and remote repos: ${withRemote.join(", ")} has ${remote}, ${without.join(", ")} does not`,
-      {},
-    );
-  }
+  // Repos with a remote land as pull requests; any without one fast-forward once those merge.
   const viaPrs = withRemote.length > 0;
   if (viaPrs && !opts.prs) return abort(ledger, base, "no pull request client configured", {});
 
@@ -107,8 +99,9 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   const rebased: string[] = [];
   for (const r of repos) {
     const git = gits.get(r) as Git;
-    if (viaPrs) await git.fetch(remote, target(r));
-    const tip = await git.revParse(viaPrs ? `${remote}/${target(r)}` : target(r));
+    const hasRemote = remotes.get(r) === true;
+    if (hasRemote) await git.fetch(remote, target(r));
+    const tip = await git.revParse(hasRemote ? `${remote}/${target(r)}` : target(r));
     tips.set(r, tip);
     if ((await git.mergeBase(branch, tip)) === tip) continue;
     const res = await git.rebase(join(opts.worktreesDir, opts.runId, `_rebase-${r}`), branch, tip);
@@ -132,6 +125,9 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
     const prs = opts.prs as PullRequests;
     const urls: Record<string, string> = {};
     for (const r of repos) {
+      await (gits.get(r) as Git).setRef(`refs/heph/staging/${opts.runId}`, refs[r] as string);
+    }
+    for (const r of withRemote) {
       const git = gits.get(r) as Git;
       await git.pushWithLease(
         remote,
@@ -140,21 +136,21 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
         await git.remoteRef(remote, branch),
       );
     }
-    for (const r of repos) {
+    for (const r of withRemote) {
       const { url } = await prs.open({
         repoDir: dirOf(r),
         head: branch,
         base: target(r),
         title: prTitle(opts),
-        body: prBody(opts, r, repos, {}),
+        body: prBody(opts, r, withRemote, {}),
       });
       urls[r] = url;
     }
-    for (const r of repos)
+    for (const r of withRemote)
       await prs.edit({
         repoDir: dirOf(r),
         url: urls[r] as string,
-        body: prBody(opts, r, repos, urls),
+        body: prBody(opts, r, withRemote, urls),
       });
     ledger.append({ ...engine, type: "merge.staged", data: { refs, prs: urls } });
     return { status: "staged", refs, prs: urls };
@@ -287,21 +283,125 @@ function prBody(
   return `${lines.join("\n")}\n`;
 }
 
+type Staged = { refs: Record<string, string>; prs?: Record<string, string> };
+
+function lastStaged(opts: LandOptions): Staged {
+  const staged = opts.ledger.read({ run_id: opts.runId, types: ["merge.staged"] }).at(-1)?.event
+    .data as Staged | undefined;
+  if (!staged?.prs) throw new Error(`run ${opts.runId} has no pull requests staged`);
+  return staged;
+}
+
+/** Repos staged without a PR (no remote): fast-forward their targets, all or none. */
+async function finishLocal(opts: LandOptions, staged: Staged): Promise<Record<string, string>> {
+  const { repos, gits, target } = context(opts);
+  const local = repos.filter((r) => staged.refs[r] && !staged.prs?.[r]);
+  const moved: { r: string; from: string }[] = [];
+  try {
+    for (const r of local) {
+      const git = gits.get(r) as Git;
+      const to = staged.refs[r] as string;
+      const from = await git.revParse(target(r));
+      if ((await git.mergeBase(to, from)) !== from)
+        throw new Error(`${target(r)} in ${r} moved since staging`);
+      await git.updateRef(target(r), to, from);
+      moved.push({ r, from });
+    }
+  } catch (e) {
+    for (const { r, from } of moved.reverse()) {
+      await (gits.get(r) as Git).updateRef(target(r), from, staged.refs[r] as string);
+    }
+    throw e;
+  }
+  return Object.fromEntries(local.map((r) => [r, staged.refs[r] as string]));
+}
+
+function committed(opts: LandOptions, base: object, refs: Record<string, string>) {
+  const engine = { ...base, actor: "engine" as const };
+  opts.ledger.appendMany([
+    { ...engine, type: "merge.committed", data: { refs } },
+    { ...engine, type: "run.finished", data: {} },
+  ] as EventDraft[]);
+}
+
+export type MergeOutcome =
+  | { status: "merged" }
+  | { status: "not_ready"; reasons: string[] }
+  | { status: "half_landed"; merged: string[]; reason: string }
+  | { status: "aborted"; reason: string };
+
+/**
+ * `heph approve merge` for a changeset staged as pull requests: merges nothing unless every PR
+ * is ready, then merges them in depends_on order, then fast-forwards any local-only repos.
+ * A merged PR can't be undone, so a failure after the first merge is recorded as half-landed.
+ */
+export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
+  const { base, repos, dirOf } = context(opts);
+  const staged = lastStaged(opts);
+  if (!opts.prs) throw new Error("no pull request client configured");
+  const prs = opts.prs;
+  const order = repos.filter((r) => staged.prs?.[r]);
+
+  const reasons: string[] = [];
+  for (const r of order) {
+    const url = staged.prs?.[r] as string;
+    const ready = await prs.readiness({ repoDir: dirOf(r), url });
+    if (!ready.ready) reasons.push(`${r}: ${ready.reason} (${url})`);
+    else if (ready.head !== staged.refs[r]) {
+      reasons.push(
+        `${r}: head moved to ${ready.head.slice(0, 7)}, staged ${staged.refs[r]?.slice(0, 7)} (${url})`,
+      );
+    }
+  }
+  if (reasons.length) return { status: "not_ready", reasons };
+
+  const refs: Record<string, string> = {};
+  const merged: string[] = [];
+  for (const r of order) {
+    try {
+      const { mergeCommit } = await prs.merge({
+        repoDir: dirOf(r),
+        url: staged.prs?.[r] as string,
+        head: staged.refs[r] as string,
+      });
+      refs[r] = mergeCommit;
+      merged.push(r);
+    } catch (e) {
+      const why = `${r} failed: ${e instanceof Error ? e.message : e}`;
+      if (!merged.length) {
+        abort(opts.ledger, base, `merge failed: ${why}`, staged.refs);
+        return { status: "aborted", reason: `merge failed: ${why}` };
+      }
+      const reason = `half-landed: merged ${merged.join(", ")}; ${why}`;
+      abort(opts.ledger, base, reason, staged.refs);
+      return { status: "half_landed", merged, reason };
+    }
+  }
+  try {
+    Object.assign(refs, await finishLocal(opts, staged));
+  } catch (e) {
+    const reason = `half-landed: merged ${merged.join(", ")}; local fast-forward failed: ${e instanceof Error ? e.message : e}`;
+    abort(opts.ledger, base, reason, staged.refs);
+    return { status: "half_landed", merged, reason };
+  }
+  committed(opts, base, refs);
+  return { status: "merged" };
+}
+
 export type CheckOutcome =
   | { status: "merged" }
   | { status: "closed" }
-  | { status: "open"; open: string[] };
+  | { status: "open"; open: string[] }
+  | { status: "half_landed"; reason: string };
 
 /** For a changeset staged as pull requests: finish the run once all are merged, abort if one closed. */
 export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
   const { base, dirOf } = context(opts);
-  const staged = opts.ledger.read({ run_id: opts.runId, types: ["merge.staged"] }).at(-1)?.event
-    .data as { refs: Record<string, string>; prs?: Record<string, string> } | undefined;
-  if (!staged?.prs) throw new Error(`run ${opts.runId} has no pull requests staged`);
+  const staged = lastStaged(opts);
   if (!opts.prs) throw new Error("no pull request client configured");
 
   const states = await Promise.all(
-    Object.entries(staged.prs).map(async ([r, url]) => ({
+    Object.entries(staged.prs ?? {}).map(async ([r, url]) => ({
       r,
       url,
       ...(await (opts.prs as PullRequests).status({ repoDir: dirOf(r), url })),
@@ -315,13 +415,20 @@ export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
   const open = states.filter((s) => s.state === "open").map((s) => s.url);
   if (open.length) return { status: "open", open };
 
-  const refs = Object.fromEntries(
+  const refs: Record<string, string> = Object.fromEntries(
     states.map((s) => [s.r, s.mergeCommit ?? (staged.refs[s.r] as string)]),
   );
-  const engine = { ...base, actor: "engine" as const };
-  opts.ledger.appendMany([
-    { ...engine, type: "merge.committed", data: { refs } },
-    { ...engine, type: "run.finished", data: {} },
-  ]);
+  try {
+    Object.assign(refs, await finishLocal(opts, staged));
+  } catch (e) {
+    abort(
+      opts.ledger,
+      base,
+      `half-landed: PRs merged; local fast-forward failed: ${e instanceof Error ? e.message : e}`,
+      staged.refs,
+    );
+    return { status: "half_landed", reason: "PRs merged; local fast-forward failed" };
+  }
+  committed(opts, base, refs);
   return { status: "merged" };
 }
