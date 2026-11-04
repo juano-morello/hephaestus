@@ -259,7 +259,7 @@ describe("runPlan", () => {
         {
           gate: "impl",
           reason: "inventory/stack.go lacks capped",
-          evidence: 'inventory/stack.go: missing "capped"',
+          evidence: ['inventory/stack.go: missing "capped"'],
         },
       ],
       scope: ["inventory/stack.go"],
@@ -584,7 +584,7 @@ describe("runPlan with the built-in gates", () => {
       {
         gate: "tests",
         reason: "tests must fail after a test unit (red before green)",
-        evidence: "exit 0",
+        evidence: ["exit 0"],
       },
     ]);
     ledger.close();
@@ -608,12 +608,12 @@ describe("runPlan with the built-in gates", () => {
       {
         gate: "diff_scope",
         reason: "changes outside the task scope",
-        evidence: "out of scope: extra.sh",
+        evidence: ["out of scope: extra.sh"],
       },
       {
         gate: "touched_vs_diff",
         reason: "touched does not match the diff",
-        evidence: "changed but not in touched: extra.sh",
+        evidence: ["changed but not in touched: extra.sh"],
       },
     ]);
     ledger.close();
@@ -633,7 +633,7 @@ describe("runPlan with the built-in gates", () => {
 
     const feedback = calls.filter((c) => c.input.brief.task.id === "T2")[1]?.input.brief.feedback;
     expect(feedback?.reasons.map((r) => [r.gate, r.evidence])).toEqual([
-      ["locked_paths", "modified locked file: check.sh"],
+      ["locked_paths", ["modified locked file: check.sh"]],
     ]);
     ledger.close();
   });

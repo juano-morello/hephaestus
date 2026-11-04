@@ -96,7 +96,7 @@ describe("buildContextPack", () => {
       unit_id: "T2",
       attempt: 1,
       verdict: "red",
-      reasons: [{ gate: "tests", reason: "failed", evidence: "x" }],
+      reasons: [{ gate: "tests", reason: "failed", evidence: ["x"] }],
       scope: ["inventory/stack.go"],
       instruction: "fix only the listed failures; do not modify locked paths",
     };

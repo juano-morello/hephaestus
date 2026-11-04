@@ -109,7 +109,7 @@ export const samples: { [K in EventType]: EventDraft<K> } = {
       unit_id: "T2",
       attempt: 1,
       verdict: "red",
-      reasons: [{ gate: "tests", reason: "1 failed", evidence: "a_test.go:12" }],
+      reasons: [{ gate: "tests", reason: "1 failed", evidence: ["a_test.go:12"] }],
       scope: ["a.go"],
       instruction: "fix only the listed failures; do not modify locked paths",
     },

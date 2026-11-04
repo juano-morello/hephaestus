@@ -8,7 +8,7 @@ const ret = (): Return => ({
   attempt: 1,
   verdict: "red",
   reasons: [
-    { gate: "tests", reason: "2 tests failed", evidence: "stack_test.go:41 want 50 got 51" },
+    { gate: "tests", reason: "2 tests failed", evidence: ["stack_test.go:41 want 50 got 51"] },
   ],
   scope: ["internal/inventory/inventory.go"],
   instruction: "fix only the listed failures; do not modify locked paths",
@@ -17,6 +17,22 @@ const ret = (): Return => ({
 describe("Return", () => {
   test("accepts a red return with reasons", () => {
     expect(Return.safeParse(ret()).success).toBe(true);
+  });
+
+  test("evidence is a list, one finding per entry", () => {
+    const r = {
+      ...ret(),
+      reasons: [
+        {
+          gate: "diff_scope",
+          reason: "out of scope",
+          evidence: ["out of scope: a.go", "out of scope: b.go"],
+        },
+      ],
+    };
+    expect(Return.safeParse(r).success).toBe(true);
+    const old = { ...ret(), reasons: [{ gate: "g", reason: "r", evidence: "a string" }] };
+    expect(Return.safeParse(old).success).toBe(false);
   });
 
   test("rejects any verdict but red", () => {

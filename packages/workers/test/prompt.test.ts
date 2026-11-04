@@ -71,7 +71,11 @@ describe("renderUnitPrompt", () => {
           attempt: 1,
           verdict: "red",
           reasons: [
-            { gate: "tests", reason: "1 test failed", evidence: "stack_test.go:12 want 50 got 51" },
+            {
+              gate: "tests",
+              reason: "1 test failed",
+              evidence: ["stack_test.go:12 want 50 got 51"],
+            },
           ],
           scope: ["inventory/stack.go"],
           instruction: "fix only the listed failures; do not modify locked paths",
