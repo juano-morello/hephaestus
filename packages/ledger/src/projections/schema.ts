@@ -1,7 +1,7 @@
 import type { Db } from "../db.ts";
 
 /** Bump when a table or reducer changes; open() then rebuilds every projection from events. */
-export const PROJECTION_VERSION = 2;
+export const PROJECTION_VERSION = 3;
 
 const TABLES = ["runs", "units", "attempts", "gate_stats", "usage"] as const;
 

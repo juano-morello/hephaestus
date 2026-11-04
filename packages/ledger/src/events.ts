@@ -1,4 +1,4 @@
-import { Complexity, GateResult, Plan, Return } from "@hephaestus/core";
+import { Brief, Complexity, GateResult, Plan, Return } from "@hephaestus/core";
 import { z } from "zod";
 
 const Id = z.string().min(1);
@@ -67,7 +67,18 @@ const ATTEMPT = ["unit_id", "attempt"] as EnvelopeField[];
 
 /** Every v0 event type (SPEC section 6) with its data schema and required envelope fields. */
 export const EVENT_TYPES = {
-  "run.created": def(z.object({ owner_node: Id, brief_hash: Id, eval: z.boolean() }).strict()),
+  "run.created": def(
+    z
+      .object({
+        owner_node: Id,
+        brief_hash: Id,
+        eval: z.boolean(),
+        /** The Brief itself and the workspace root, so later commands can rebuild the run. */
+        brief: Brief.optional(),
+        workspace_root: z.string().min(1).optional(),
+      })
+      .strict(),
+  ),
   "run.plan_ready": def(z.object({ plan: Plan }).strict()),
   "run.plan_escalated": def(z.object({ reasons: z.array(z.string().min(1)).min(1) }).strict()),
   "run.paused": def(
@@ -115,11 +126,24 @@ export const EVENT_TYPES = {
   "human.input": def(
     z
       .object({
-        kind: z.enum(["hint", "plan_edit", "budget_override"]),
+        kind: z.enum(["hint", "plan_edit", "budget_override", "approve"]),
         text: z.string().optional(),
         budget_tokens: z.number().int().positive().optional(),
+        /** approve only: what is approved; a plan approval names the run.plan_ready event id. */
+        target: z.enum(["plan", "merge"]).optional(),
+        plan: Id.optional(),
       })
-      .strict(),
+      .strict()
+      .superRefine((d, ctx) => {
+        if (d.kind === "approve" && !d.target)
+          ctx.addIssue({ code: "custom", message: "an approval needs a target" });
+        if (d.kind === "approve" && d.target === "plan" && !d.plan) {
+          ctx.addIssue({ code: "custom", message: "a plan approval names the plan it approves" });
+        }
+        if (d.kind !== "approve" && (d.target || d.plan)) {
+          ctx.addIssue({ code: "custom", message: "target and plan are only for approvals" });
+        }
+      }),
   ),
   "context.pack_built": def(
     z

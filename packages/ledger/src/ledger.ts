@@ -22,6 +22,8 @@ export type LedgerOptions = {
   nodeId: string;
   now?: () => number;
   random?: (bytes: number) => Uint8Array;
+  /** Called with each batch after it is committed (e.g. progress output). */
+  onAppend?: (events: LedgerEvent[]) => void;
 };
 
 export type Ledger = {
@@ -73,16 +75,19 @@ export function openLedger(dir: string, opts: LedgerOptions): Ledger {
   };
 
   // Insert and project in one transaction: a projection error rolls the events back too.
-  const appendMany = (drafts: EventDraft[]) =>
-    db.transaction(() => {
-      const events = drafts.map((d) => {
+  const appendMany = (drafts: EventDraft[]) => {
+    const events = db.transaction(() => {
+      const stamped = drafts.map((d) => {
         const e = stamp(d);
         insertEvent(db, e);
         return e;
       });
       projectAppended(db);
-      return events;
+      return stamped;
     });
+    opts.onAppend?.(events);
+    return events;
+  };
 
   return {
     nodeId: opts.nodeId,

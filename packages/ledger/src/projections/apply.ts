@@ -56,6 +56,8 @@ export function applyEvent(db: Db, e: LedgerEvent): void {
       return;
     case "run.plan_ready": {
       setRunStatus(db, e, "planned");
+      // A revised plan replaces the units of the one before it.
+      db.prepare("DELETE FROM units WHERE run_id = ?").run(e.run_id);
       const insert = db.prepare(
         `INSERT OR IGNORE INTO units (run_id, unit_id, project, kind, lane, complexity, status, attempts)
          VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)`,
