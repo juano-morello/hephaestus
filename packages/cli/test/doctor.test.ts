@@ -144,6 +144,22 @@ describe("heph doctor", () => {
     ).toHaveLength(1);
   }, 60_000);
 
+  test("--tests reports a project missing from the target branch instead of crashing", async () => {
+    put(
+      join(ws, ".heph", "workspace.yaml"),
+      "name: calc\nrepos: { calc: . }\nprojects:\n  calc: { repo: calc, path: ., stack: sh }\n  extra: { repo: calc, path: extra, stack: sh }\n",
+    );
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh }\n  extra:\n    commands: { test: 'true' }\n",
+    );
+    put(join(ws, "extra", "x.sh"), "true\n"); // in the working tree only, not on main
+    const c = byArea(await doctor({ home, cwd: ws, tests: true, env: env() }));
+    expect(c.tests).toMatchObject({ state: "fail" });
+    expect(c.tests?.detail).toContain("calc: passes");
+    expect(c.tests?.detail).toContain("extra: extra is not on main");
+  }, 60_000);
+
   test("outside a workspace it says how to make one", async () => {
     const elsewhere = mkdtempSync(join(tmpdir(), "heph-nows-"));
     const c = byArea(await doctor({ home, cwd: elsewhere, tests: false, env: env() }));
@@ -174,8 +190,10 @@ describe("heph doctor", () => {
     const text = doctorText(r);
     expect(text).toStartWith("heph 0.1.0");
     expect(text).toContain("on node mbp\n");
-    expect(text).toMatch(/\n {2}ok {3}config {5}node mbp/);
-    expect(text).toMatch(/\n {2}warn {1}daemon {5}not running/);
-    expect(text).toMatch(/\n {18}fix: /);
+    // The name column fits the longest name ("node denver"), one space after it.
+    expect(text).toMatch(/\n {2}ok {3}config {6}node mbp/);
+    expect(text).toMatch(/\n {2}warn {1}daemon {6}not running/);
+    expect(text).toMatch(/\n {2}ok {3}node denver heph 0\.1\.0/);
+    expect(text).toMatch(/\n {19}fix: /);
   });
 });

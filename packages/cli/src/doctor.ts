@@ -319,7 +319,17 @@ async function testInSandbox(a: {
     };
   }
   try {
-    const sb = await openSandbox(a.spec(resolve(wt, a.path)));
+    const dir = resolve(wt, a.path);
+    if (!existsSync(dir)) return { ok: false, line: `${a.path} is not on ${a.target}` };
+    let sb: Awaited<ReturnType<typeof openSandbox>>;
+    try {
+      sb = await openSandbox(a.spec(dir));
+    } catch (e) {
+      return {
+        ok: false,
+        line: `no sandbox: ${(e instanceof Error ? e.message : String(e)).split("\n")[0]}`,
+      };
+    }
     try {
       const t = Date.now();
       const r = await sb.exec(a.test, { timeoutMs: TEST_TIMEOUT_MS });
@@ -343,11 +353,13 @@ const MARK: Record<CheckState, string> = { ok: "ok", warn: "warn", fail: "FAIL",
 
 export function doctorText(r: DoctorReport): string {
   const lines = [`heph ${r.version} (${r.build}) on node ${r.node}`];
+  const width = Math.max(10, ...r.checks.map((c) => c.area.length)) + 1;
+  const indent = " ".repeat(2 + 5 + width);
   for (const c of r.checks) {
     const [first, ...rest] = c.detail.split("\n");
-    lines.push(`  ${MARK[c.state].padEnd(5)}${c.area.padEnd(11)}${first}`);
-    for (const l of rest) lines.push(`${" ".repeat(18)}${l}`);
-    if (c.fix && c.state !== "ok") lines.push(`${" ".repeat(18)}fix: ${c.fix}`);
+    lines.push(`  ${MARK[c.state].padEnd(5)}${c.area.padEnd(width)}${first}`);
+    for (const l of rest) lines.push(`${indent}${l}`);
+    if (c.fix && c.state !== "ok") lines.push(`${indent}fix: ${c.fix}`);
   }
   lines.push(r.ok ? "ready" : "not ready: fix the FAIL lines above");
   return `${lines.join("\n")}\n`;
