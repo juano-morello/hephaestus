@@ -513,6 +513,8 @@ roles:
 diversify: false   # true: test_author and implementer on different providers
 ```
 
+As built, the defaults name exact model ids (`claude/claude-opus-5-5`, `claude/claude-sonnet-5-5`, `claude/claude-haiku-5-5`): OMP matches a bare `opus` or `sonnet` to an older model in its catalog. `heph doctor` shows what each routed model resolves to.
+
 ### Complexity
 
 - Planner assigns `complexity` with a reason.
@@ -561,6 +563,8 @@ Principles:
 
 - `container` mode by default (OrbStack or Colima).
 - `native` mode for label-locked tasks (Godot editor, Metal) with a restricted profile (`sandbox-exec` or dedicated user) and diff-scope as backstop. Native tasks may be restricted to lane `contained`.
+
+As built in v0, native mode: commands see only `PATH`, `LANG` and a scratch `HOME` (never the project, so tool caches stay out of the diff); writes only in the project and temp; no network except loopback (bwrap gives a private loopback; macOS allows the host's); credential paths unreadable. Go reads the host's module cache with the proxy off and builds in a shared temp cache. **The installer currently writes `sandbox: { mode: native }` on every node, against the container default above:** container mode can't build a real project yet (no per-project images, no network allowlist, no dependency caches). See NOTES.
 
 ### Secrets
 
@@ -721,10 +725,17 @@ heph eval ...
 heph retro
 heph config explain
 heph init
+heph doctor [--tests]
+heph help | --help
+heph version | --version
 heph ui
 ```
 
 Every command supports `--json` with stable, versioned output schemas: `{ schema: 1, command, ok, data }` or `{ schema: 1, command, ok: false, error: { message } }` with a non-zero exit.
+
+`heph doctor` checks what this node needs to plan, build and land, one line per check with the command that fixes a problem: the node's config, the workspace and its test commands, every routed model (one tiny call each), the sandbox, gh where repos land as pull requests, the daemon, and every configured node (reachable, same version). `--tests` runs each project's test command in the sandbox on a clean checkout of its target branch. It exits 1 when a check fails.
+
+Installing (as built): `bun run install:heph` in a checkout of this repo builds the binary (stamped with its commit), installs it in `~/.local/share/heph` with a `~/.local/bin/heph` link, writes `~/.heph/config.yaml` if there is none (native sandbox; `--peer`/`--preferred` add nodes), runs the daemon under launchd (macOS) or systemd `--user` (Linux) with the installing shell's PATH, installs the Claude Code skill and its deny rule, and ends with `heph doctor`. `--remote <ssh host>` installs on another machine. Rerunning it upgrades in place; the daemon restarts and running builds resume.
 
 The CLI works on the node's ledger (`$HEPH_HOME`, default `~/.heph`): through the daemon when one answers, else in-process. `heph run` builds and then stages the changeset (pull requests where repos have a remote, staging refs otherwise). In-process it builds in the foreground; through a daemon, or on another node, it follows the job's events until it is done. `heph approve merge` merges it. `heph merge status` follows pull requests merged on GitHub directly.
 
@@ -733,6 +744,7 @@ The CLI works on the node's ledger (`$HEPH_HOME`, default `~/.heph`): through th
 - v0: CLI-first. A skill (Claude Code) and the same content in AGENTS.md (Codex) teach the agent to distill the conversation into a Brief, submit with `heph new --brief`, report plans and status, and never run `approve`.
 - "With everything we've discussed, let's tackle this" maps to: agent writes `brief.yaml`, runs `heph new`, shows the plan, iterates via `heph plan revise`.
 - `heph approve` added to host permission deny lists.
+- As built: the skill is `integrations/claude/skills/heph/SKILL.md`, the Codex copy `integrations/codex/AGENTS.md` (a test keeps them identical). The installer puts the skill in `~/.claude/skills/heph/` and adds `Bash(heph approve:*)` to `permissions.deny` in `~/.claude/settings.json`.
 
 ### MCP server
 

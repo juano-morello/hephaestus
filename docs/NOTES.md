@@ -336,6 +336,22 @@ How it works and what I interpreted:
 
 Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
 
+## Ready to use: install, doctor, the skill, and the first real repo (2026-11-04)
+
+Goal set by you: use heph on real work without rough edges, starting with LegendsAO (Go server, Godot client). Built and checked against that repo, on this Mac and denver.
+
+1. **`bun run install:heph`** installs heph here or, with `--remote <host>`, on another machine (SPEC section 16): binary in `~/.local/share/heph` with a `~/.local/bin/heph` link, `~/.heph/config.yaml` if missing, the daemon as a launchd agent or systemd user unit (with the installing shell's PATH, so it finds git, gh, go, docker, godot), the Claude Code skill and deny rule, then `heph doctor`. Rerunning upgrades in place: files are renamed into place (a running binary can't be overwritten on Linux) and the daemon restarts. A peer added with `--peer` gets `heph: ~/.local/bin/heph`, because a non-login ssh shell doesn't have `~/.local/bin` on its PATH.
+2. **`heph doctor`** (SPEC section 16) found four real problems on its first runs:
+   - **Every run used the 4.5 models.** OMP matches a bare `opus`, `sonnet`, `haiku` to claude-*-4-5. The default routing now names `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` (SPEC section 10 notes it). The live runs earlier today ran on haiku 4.5.
+   - **From the home directory, the node's config was read as a repo's** (`~/.heph` is both). Fixed.
+   - **OMP sessions can't start concurrently in one process** ("Agent Main was replaced"), so doctor probes models one at a time.
+   - **A project missing from the target branch crashed `--tests`.** It is now that project's FAIL line.
+3. **Native mode could not run a real Go test suite.** HOME was the project directory, so Go looked for modules there (and the network is off) and wrote its caches into the worktree, where they'd land in every diff; and macOS blocked loopback, which the server's tests use. Fixed (SPEC section 12, as built): a scratch HOME, Go on the host's module cache with the proxy off and a shared temp build cache, loopback allowed. The LegendsAO server suite (`go test ./...`) then passed in the sandbox on a clean clone in about 2 minutes. On macOS, loopback includes the host's own services; bwrap's is private.
+4. **Pushback: the installer writes `sandbox: { mode: native }`, against SPEC section 12's container default.** Container mode can't build a real project yet: there are no per-project images, the network is off with no allowlist, and dependency caches aren't mounted (a `golang` image can't fetch LegendsAO's modules). Native is what works today. Options: keep native as the default until images, an allowlist and caches exist (my recommendation), or build those first. Your call; the SPEC text is unchanged apart from saying what the installer does.
+5. **A run that can't leave this node stays here** unless you named one: with a preferred node, `heph new` in a workspace without remotes (LegendsAO) used to fail. It now plans here and says why.
+6. **The skill** (`integrations/claude/skills/heph/SKILL.md`, Codex copy in `integrations/codex/AGENTS.md`): workspace setup, writing the Brief (acceptance as testable behavior, where tests live, no open questions), submitting and showing the plan, revising, running in the background, reading escalations with `explain` and passing your guidance with `hint`, and never approving. It tells the agent to name where tests live in the Brief's decisions, which works around the open finding that the planner isn't held to the project's test command.
+7. **CLI polish:** `heph`, `heph help`, `--help`, `-h` print usage; `heph --version` prints the version and commit; merge results read as words.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
