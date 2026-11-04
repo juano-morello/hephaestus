@@ -7,10 +7,12 @@ import {
   parallelScopesDisjoint,
   projectsExist,
   runPlanGates,
+  scopePaths,
   sizeLimits,
   testPrecedesImplement,
 } from "../src/gates/plan.ts";
 import { DEFAULT_LIMITS, type GateContext } from "../src/gates/types.ts";
+import type { Workspace } from "../src/schemas/workspace.ts";
 import { brief, gates, plan, task, workspace } from "./helpers.ts";
 
 const ctx = (overrides: Partial<GateContext> = {}): GateContext => ({
@@ -52,6 +54,7 @@ describe("runPlanGates", () => {
       "migration_irreversible",
       "complexity_sanity",
       "size_limits",
+      "scope_paths",
     ]);
   });
 });
@@ -278,7 +281,7 @@ describe("parallel_scope_disjoint", () => {
       task("T1", { scope: ["inventory/**"], produces: ["fn:A"] }),
       task("T2", { scope: ["inventory/stack.go"], consumes: ["fn:A"] }),
     ]);
-    expect(parallelScopesDisjoint(p).verdict).toBe("pass");
+    expect(parallelScopesDisjoint(p, ctx()).verdict).toBe("pass");
   });
 
   test("passes when parallel tasks are in different projects", () => {
@@ -286,7 +289,7 @@ describe("parallel_scope_disjoint", () => {
       task("T1", { project: "server", scope: ["net/**"] }),
       task("T2", { project: "client", scope: ["net/**"] }),
     ]);
-    expect(parallelScopesDisjoint(p).verdict).toBe("pass");
+    expect(parallelScopesDisjoint(p, ctx()).verdict).toBe("pass");
   });
 
   test("fails when parallel tasks in one project overlap and names the globs", () => {
@@ -294,7 +297,7 @@ describe("parallel_scope_disjoint", () => {
       task("T1", { scope: ["inventory/**/*.go"] }),
       task("T2", { scope: ["loot/drop.go", "inventory/stack.go"] }),
     ]);
-    const result = parallelScopesDisjoint(p);
+    const result = parallelScopesDisjoint(p, ctx());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(["T1 x T2: inventory/**/*.go overlaps inventory/stack.go"]);
   });
@@ -375,5 +378,95 @@ describe("size_limits", () => {
     const result = sizeLimits(p, ctx());
     expect(result.verdict).toBe("fail");
     expect(result.evidence).toEqual(['T1: unbounded scope "**"', "T2: empty scope"]);
+  });
+});
+
+describe("parallel_scope_disjoint across projects and with real files", () => {
+  const mono: Workspace = {
+    repos: { mono: "." },
+    projects: {
+      app: { repo: "mono", path: ".", stack: "go" },
+      lib: { repo: "mono", path: "pkg/a", stack: "go" },
+    },
+  };
+
+  test("projects with nested roots in one repo are compared repo-relative", () => {
+    const p = plan([
+      task("A", { project: "app", scope: ["pkg/a/x.go"] }),
+      task("B", { project: "lib", scope: ["x.go"] }),
+    ]);
+    const r = parallelScopesDisjoint(p, ctx({ workspace: mono }));
+    expect(r).toMatchObject({
+      verdict: "fail",
+      evidence: ["A x B: pkg/a/x.go overlaps pkg/a/x.go"],
+    });
+    const apart = plan([
+      task("A", { project: "app", scope: ["cmd/*.go"] }),
+      task("B", { project: "lib", scope: ["x.go"] }),
+    ]);
+    expect(parallelScopesDisjoint(apart, ctx({ workspace: mono })).verdict).toBe("pass");
+  });
+
+  test("with the file list, two globs that only look alike are disjoint", () => {
+    const p = plan([task("A", { scope: ["a/foo*"] }), task("B", { scope: ["a/*bar"] })]);
+    expect(parallelScopesDisjoint(p, ctx()).verdict).toBe("fail");
+    const files = { server: ["a/foo.txt", "a/xbar"] };
+    expect(parallelScopesDisjoint(p, ctx({ files })).verdict).toBe("pass");
+  });
+
+  test("with the file list, a shared existing file is named", () => {
+    const p = plan([
+      task("A", { scope: ["inventory/**"] }),
+      task("B", { scope: ["inventory/*.go"] }),
+    ]);
+    const r = parallelScopesDisjoint(p, ctx({ files: { server: ["inventory/stack.go"] } }));
+    expect(r.evidence).toEqual([
+      "A x B: inventory/** and inventory/*.go both match inventory/stack.go",
+    ]);
+  });
+
+  test("a glob that matches only new files still counts as a possible overlap", () => {
+    const p = plan([
+      task("A", { scope: ["inventory/*_test.go"] }),
+      task("B", { scope: ["inventory/*.go"] }),
+    ]);
+    const r = parallelScopesDisjoint(p, ctx({ files: { server: ["inventory/stack.go"] } }));
+    expect(r.evidence).toEqual(["A x B: inventory/*_test.go overlaps inventory/*.go"]);
+  });
+});
+
+describe("scope_paths", () => {
+  const files = { server: ["inventory/stack.go", "inventory/stack_test.go", "go.mod"] };
+
+  test("is skipped without a file list", () => {
+    expect(scopePaths(goodPlan(), ctx())).toMatchObject({
+      verdict: "pass",
+      reason: "skipped: no file list",
+    });
+  });
+
+  test("existing paths, new files in existing directories and matching globs pass; new files are listed", () => {
+    const p = plan([
+      task("T1", {
+        scope: ["inventory/stack.go", "inventory/cap.go", "inventory/*.go", "README.md"],
+      }),
+    ]);
+    expect(scopePaths(p, ctx({ files }))).toEqual({
+      gate: "scope_paths",
+      verdict: "pass",
+      reason: "scopes match the repo",
+      evidence: ["T1: new file inventory/cap.go", "T1: new file README.md"],
+    });
+  });
+
+  test("paths and globs in directories that do not exist fail", () => {
+    const p = plan([task("T1", { scope: ["internal/game/boot.go", "net/**/*.go"] })]);
+    expect(scopePaths(p, ctx({ files }))).toMatchObject({
+      verdict: "fail",
+      evidence: [
+        "T1: internal/game/boot.go is in a directory that does not exist (internal/game/)",
+        "T1: net/**/*.go matches no files and net/ does not exist",
+      ],
+    });
   });
 });
