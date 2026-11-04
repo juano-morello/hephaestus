@@ -1,5 +1,5 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, mkdtempSync, realpathSync, statSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveInside } from "./paths.ts";
@@ -47,6 +47,9 @@ function macProfile(root: string, denyRead: string[]): string {
     "(allow default)",
     "(deny network-outbound)",
     "(allow network-outbound (remote unix-socket))",
+    // Loopback, for tests that start a server and connect to it. On macOS this also reaches
+    // the host's own loopback services; bwrap on Linux gives the command a private loopback.
+    '(allow network-outbound (remote ip "localhost:*"))',
     "(deny file-write*)",
     `(allow file-write* (subpath ${sbplString(root)}) (subpath ${sbplString(tmp)}) (subpath "/private/tmp") (subpath "/private/var/folders") (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random") (literal "/dev/urandom") (regex #"^/dev/fd/") (regex #"^/dev/tty"))`,
     ...(deny ? [`(deny file-read* ${deny})`] : []),
@@ -94,11 +97,46 @@ function confiner(root: string, denyRead: string[]): (cwd: string) => string[] {
   throw new Error("native sandbox needs sandbox-exec (macOS) or bwrap (Linux) to confine commands");
 }
 
+let goModCache: string | undefined | null = null;
+/** The host's Go module cache, if Go is installed: looked up once. */
+function hostGoModCache(): string | undefined {
+  if (goModCache === null) {
+    const go = which("go");
+    const out = go ? Bun.spawnSync([go, "env", "GOMODCACHE"]).stdout.toString().trim() : "";
+    goModCache = out && existsSync(out) ? out : undefined;
+  }
+  return goModCache;
+}
+
+/**
+ * Toolchain settings that let a confined command build offline. Go reads the host's module
+ * cache (readable, never written: writes outside the project and temp are denied) with the
+ * proxy off, so a missing module fails at once instead of on the blocked network; its build
+ * cache lives in temp, shared by attempts.
+ */
+function toolchainEnv(): Record<string, string> {
+  const modcache = hostGoModCache();
+  if (!modcache) return {};
+  return {
+    GOMODCACHE: modcache,
+    GOPROXY: "off",
+    GOTOOLCHAIN: "local",
+    GOCACHE: join(tmpdir(), "heph-go-build"),
+  };
+}
+
 export function openNative(spec: NativeSpec): Sandbox {
   const root = realpathSync(spec.hostDir);
   const prefix = confiner(root, spec.denyRead ?? defaultDenyRead());
-  // Commands get no credentials: only these variables reach them.
-  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8", HOME: root };
+  // Commands get no credentials: only these variables reach them. HOME is a scratch directory,
+  // so caches tools keep there don't land in the project (and in the unit's diff).
+  const home = mkdtempSync(join(tmpdir(), "heph-home-"));
+  const env = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    LANG: "C.UTF-8",
+    HOME: home,
+    ...toolchainEnv(),
+  };
   return {
     kind: "native",
     root,
@@ -119,6 +157,8 @@ export function openNative(spec: NativeSpec): Sandbox {
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, content);
     },
-    dispose: async () => {},
+    dispose: async () => {
+      await rm(home, { recursive: true, force: true });
+    },
   };
 }

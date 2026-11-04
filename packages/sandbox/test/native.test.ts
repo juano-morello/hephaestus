@@ -36,8 +36,31 @@ describe("native sandbox", () => {
     process.env.HEPH_TEST_SECRET = "s3cret";
     const r = await sb.exec('printf "%s|%s" "$HEPH_TEST_SECRET" "$HOME"');
     delete process.env.HEPH_TEST_SECRET;
-    expect(r.stdout).toBe(`|${root}`);
+    // HOME is a scratch directory, not the project: tools' caches must not land in the diff.
+    const [secret, home] = r.stdout.split("|");
+    expect(secret).toBe("");
+    expect(home).not.toStartWith(root);
+    await sb.exec('mkdir -p "$HOME/.cache/x" && echo y > "$HOME/.cache/x/f"');
+    expect((await sb.exec("ls -A")).stdout).toBe("");
+    await sb.dispose();
   });
+
+  test.skipIf(!Bun.which("go"))(
+    "Go uses the host's module cache, read-only and offline, with a build cache in temp",
+    async () => {
+      const { root, sb } = await native();
+      const host = Bun.spawnSync(["go", "env", "GOMODCACHE"]).stdout.toString().trim();
+      const r = await sb.exec("go env GOMODCACHE GOPROXY GOTOOLCHAIN GOCACHE");
+      const [modcache, proxy, toolchain, cache] = r.stdout.trim().split("\n");
+      expect({ modcache, proxy, toolchain }).toEqual({
+        modcache: host,
+        proxy: "off",
+        toolchain: "local",
+      });
+      expect(cache).not.toStartWith(root);
+      await sb.dispose();
+    },
+  );
 
   test("a command past its timeout is killed", async () => {
     const { sb } = await native();
@@ -105,6 +128,14 @@ describe("native sandbox confinement", () => {
     const { sb } = await native();
     const r = await sb.exec("curl -s -m 3 http://1.1.1.1 >/dev/null 2>&1; echo net=$?");
     expect(r.stdout).not.toBe("net=0\n");
+  });
+
+  test("commands can serve and connect on loopback, as tests that start a server do", async () => {
+    const { sb } = await native();
+    const r = await sb.exec(
+      `python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); socket.create_connection(s.getsockname()); print('loopback-ok')"`,
+    );
+    expect(r.stdout).toBe("loopback-ok\n");
   });
 
   test("the default deny list covers credentials in the home directory", async () => {
