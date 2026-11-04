@@ -1,0 +1,101 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { WorkspaceConfig } from "@hephaestus/core";
+import { createGit, runBranch } from "@hephaestus/engine";
+import { runOk } from "@hephaestus/sandbox";
+
+const REMOTE = "origin";
+
+/** What another node needs to make its own checkout of a workspace (SPEC section 7). */
+export type WorkspaceDescription = {
+  name: string;
+  /** `.heph/workspace.yaml` as written, or undefined for an implied single-repo workspace. */
+  workspaceYaml?: string | undefined;
+  repos: Record<string, { path: string; url: string; config?: string | undefined }>;
+};
+
+const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
+
+/** Describes this node's checkout. Git is the code transport, so every repo needs a remote. */
+export async function describeWorkspace(
+  workspaceDir: string,
+  workspace: WorkspaceConfig & { name?: string | undefined },
+): Promise<WorkspaceDescription> {
+  if (!workspace.name) throw new Error("the workspace has no name");
+  const repos: WorkspaceDescription["repos"] = {};
+  const missing: string[] = [];
+  for (const [repo, path] of Object.entries(workspace.repos)) {
+    const dir = resolve(workspaceDir, path);
+    const url = await createGit(dir).remoteUrl(REMOTE);
+    if (!url) {
+      missing.push(repo);
+      continue;
+    }
+    repos[repo] = { path, url, config: read(join(dir, ".heph", "config.yaml")) };
+  }
+  if (missing.length)
+    throw new Error(
+      `a run on another node needs every repo to have a remote named ${REMOTE}; missing in ${missing.join(", ")}`,
+    );
+  return {
+    name: workspace.name,
+    workspaceYaml: read(join(workspaceDir, ".heph", "workspace.yaml")),
+    repos,
+  };
+}
+
+/**
+ * This node's checkout of a named workspace: `workspaces.<name>` from its config, else
+ * `<home>/workspaces/<name>`. Repos it lacks are cloned from their remotes; the heph files that
+ * aren't committed (workspace.yaml, each repo's .heph/config.yaml) are written if missing.
+ */
+export async function ensureWorkspace(
+  desc: WorkspaceDescription,
+  opts: { home: string; workspaces: Record<string, string> },
+): Promise<{ dir: string; cloned: string[] }> {
+  const dir = resolve(opts.workspaces[desc.name] ?? join(opts.home, "workspaces", desc.name));
+  const cloned: string[] = [];
+  // Root repo first: git clone needs an empty directory.
+  const repos = Object.entries(desc.repos).sort(([, a], [, b]) =>
+    a.path === "." ? -1 : b.path === "." ? 1 : 0,
+  );
+  for (const [repo, r] of repos) {
+    const target = resolve(dir, r.path);
+    if (existsSync(join(target, ".git"))) continue;
+    mkdirSync(target, { recursive: true });
+    await runOk(["git", "clone", "-q", r.url, target]);
+    cloned.push(repo);
+  }
+  const put = (file: string, text: string | undefined) => {
+    if (text === undefined || existsSync(file)) return;
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, text);
+  };
+  put(join(dir, ".heph", "workspace.yaml"), desc.workspaceYaml);
+  for (const r of Object.values(desc.repos))
+    put(join(resolve(dir, r.path), ".heph", "config.yaml"), r.config);
+  return { dir, cloned };
+}
+
+/**
+ * Brings a run's branches from the remotes into this node's checkout, for a node taking the
+ * run over. Repos whose remote has no such branch (the run didn't touch them) are skipped.
+ */
+export async function fetchRunBranches(
+  workspaceDir: string,
+  workspace: Pick<WorkspaceConfig, "repos">,
+  runId: string,
+): Promise<string[]> {
+  const branch = runBranch(runId);
+  const fetched: string[] = [];
+  for (const [repo, path] of Object.entries(workspace.repos)) {
+    const git = createGit(resolve(workspaceDir, path));
+    if (!(await git.remoteUrl(REMOTE))) continue;
+    if (!(await git.remoteRef(REMOTE, branch))) continue;
+    await runOk(["git", "fetch", "-q", REMOTE, `+refs/heads/${branch}:refs/heads/${branch}`], {
+      cwd: resolve(workspaceDir, path),
+    });
+    fetched.push(repo);
+  }
+  return fetched;
+}

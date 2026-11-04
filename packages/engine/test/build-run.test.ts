@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openLedger } from "@hephaestus/ledger";
+import { runOk } from "@hephaestus/sandbox";
 import { buildRun, createRun, type RunPlanOptions, recordPlan, runPlan } from "../src/engine.ts";
 import type { SpawnInput, Worker } from "../src/worker.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
@@ -62,6 +63,31 @@ describe("createRun, recordPlan, buildRun", () => {
     const out = await buildRun(rest);
     expect(out.status).toBe("built");
     expect(inputs.map((i) => i.brief.task.id)).toEqual(["P1", "S1", "S2"]);
+    ledger.close();
+  });
+
+  test("a fresh build starts from origin/<target> when the repo has a remote, not a stale local branch", async () => {
+    const { worker } = recordingWorker();
+    const { ledger, options } = await setup(worker);
+    const server = join(options.workspaceRoot, "server");
+    const origin = join(dir(), "server.git");
+    const other = join(dir(), "other");
+    await runOk(["git", "clone", "-q", "--bare", server, origin]);
+    await runOk(["git", "remote", "add", "origin", origin], { cwd: server });
+    await runOk(["git", "clone", "-q", origin, other]);
+    writeFiles(other, { "NEWS.md": "pushed by someone else\n" });
+    const g = (...a: string[]) =>
+      runOk(["git", "-c", "user.name=T", "-c", "user.email=t@x", ...a], { cwd: other });
+    await g("add", "-A");
+    await g("commit", "-qm", "upstream");
+    await g("push", "-q", "origin", "main");
+
+    createRun(options);
+    recordPlan(options, options.plan);
+    const { brief: _b, plan: _p, ...rest } = options;
+    expect((await buildRun(rest)).status).toBe("built");
+    const files = await runOk(["git", "ls-tree", "--name-only", "heph/R1"], { cwd: server });
+    expect(files.split("\n")).toContain("NEWS.md");
     ledger.close();
   });
 

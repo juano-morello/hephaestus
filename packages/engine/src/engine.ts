@@ -383,7 +383,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   if (!resuming) {
     // One changeset branch per touched repo, from its target (SPEC section 4).
     for (const [repo, git] of gits) {
-      const at = await git.revParse(opts.targets?.[repo] ?? "main");
+      const at = await git.revParse(await targetBase(git, opts.targets?.[repo] ?? "main"));
       await effect(
         scope,
         {
@@ -508,7 +508,19 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
 }
 
 /** Integration gate over the changeset: touched repos at their run branch, the rest at target. */
-export function integrationGate(
+/**
+ * Where a repo's work starts from: `origin/<target>` when the repo has that remote (fetched
+ * first, since this node's local branch may be stale), else the local target branch.
+ */
+export async function targetBase(git: Git, target: string): Promise<string> {
+  if (await git.remoteUrl("origin")) {
+    await git.fetch("origin", target);
+    return `origin/${target}`;
+  }
+  return target;
+}
+
+export async function integrationGate(
   opts: Pick<
     RunPlanOptions,
     | "workspace"
@@ -521,12 +533,12 @@ export function integrationGate(
   >,
   touched: string[],
 ) {
-  const refs = Object.fromEntries(
-    Object.keys(opts.workspace.repos).map((r) => [
-      r,
-      touched.includes(r) ? runBranch(opts.runId) : (opts.targets?.[r] ?? "main"),
-    ]),
-  );
+  const refs: Record<string, string> = {};
+  for (const [r, path] of Object.entries(opts.workspace.repos)) {
+    refs[r] = touched.includes(r)
+      ? runBranch(opts.runId)
+      : await targetBase(createGit(resolve(opts.workspaceRoot, path)), opts.targets?.[r] ?? "main");
+  }
   return runIntegrationGate({
     workspace: opts.workspace,
     workspaceRoot: opts.workspaceRoot,
