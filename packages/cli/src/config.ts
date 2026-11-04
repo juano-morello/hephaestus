@@ -226,6 +226,8 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
 
   for (const [repo, repoPath] of Object.entries(workspace.repos)) {
     const file = join(resolve(opts.workspaceDir, repoPath), ".heph", "config.yaml");
+    // A repo at the home directory: its .heph is the node's home, already read above.
+    if (resolve(file) === resolve(opts.home, "config.yaml")) continue;
     const layer = await readLayer(file, RepoConfigLayer);
     if (!layer) continue;
     apply(merged, { projects: repoProjects(layer, repo, workspace) }, file, sources);

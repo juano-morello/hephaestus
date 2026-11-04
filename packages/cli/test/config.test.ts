@@ -357,3 +357,16 @@ describe("heph config explain", () => {
     expect(err.join("")).toContain("unknown command");
   });
 });
+
+describe("run from the home directory", () => {
+  test("~/.heph/config.yaml is the node's config, not a repo's", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "heph-homedir-"));
+    await put(
+      join(dir, ".heph", "config.yaml"),
+      "node: { id: denver }\nsandbox: { mode: native }\n",
+    );
+    const { config } = await loadConfig({ workspaceDir: dir, home: join(dir, ".heph") });
+    expect(config.node.id).toBe("denver");
+    expect(config.sandbox.mode).toBe("native");
+  });
+});
