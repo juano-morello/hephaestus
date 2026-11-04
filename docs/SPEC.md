@@ -365,13 +365,17 @@ Task = {
 
 Plan gates (pure code):
 
+- task ids are unique (schema); every task's project exists in the workspace
 - every Criterion covered: test-checked ones by at least one `test` task; gate-checked ones by a task in a project where that gate is configured, and never by a `test` task
-- every `consumes` resolves to a `produces`; graph is acyclic
-- every `implement` task has a matching `test` task that precedes it: same project, overlapping test-checked `covers`, and the test task produces a `test:<Name>` artifact the implement task consumes (directly or through a chain). An implement task covering only gate-checked criteria fails
-- parallel tasks in the same project have non-overlapping scopes
+- every `consumes` resolves to exactly one `produces` (an artifact produced twice is ambiguous and fails); graph is acyclic
+- every test-checked criterion an `implement` task covers is covered by a `test` task in the same project that precedes it: the test task produces a `test:<Name>` artifact the implement task consumes (directly or through a chain). An implement task with empty `covers`, or covering only gate-checked criteria, fails
+- parallel tasks (no path between them) in the same repo have non-overlapping scopes, compared repo-relative so projects with nested roots are covered; with the repo's file list, globs are compared on the files they match
+- scopes point at directories that exist (needs the file list); new files in existing directories are listed for review
 - `migration` forces lane `irreversible`
-- complexity sanity: `wide` cannot be `trivial`; mismatches bump up, never down
-- task count and scope size under limits (too big means replan)
+- complexity sanity, bumps up, never down: lane `wide` or `irreversible` is at least `standard`; consuming another project's artifact is at least `standard`; more than 5 scope globs is `complex`
+- size limits (too big means replan), configurable under `limits`: at most 12 tasks, at most 8 scope globs per task, no empty scope, never `**` or `**/*` alone
+
+Editing protocol definitions in a schema project is task kind `codegen` (test-before-implement does not apply to it). The brief gate also rejects duplicate criterion ids.
 
 ### UnitBrief (engine -> worker, built by code only)
 
@@ -413,7 +417,7 @@ Return = {
   schema: 1,
   unit_id, attempt,
   verdict: "red",
-  reasons: { gate: string, reason: string, evidence: string }[],
+  reasons: { gate: string, reason: string, evidence: string[] }[],
   scope: string[],              // narrowed, usually the failing files
   instruction: "fix only the listed failures; do not modify locked paths"
 }
