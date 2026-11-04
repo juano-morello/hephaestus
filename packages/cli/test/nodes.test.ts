@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { PullRequests } from "@hephaestus/engine";
+import type { PullRequests, Worker } from "@hephaestus/engine";
 import { localTransport } from "@hephaestus/node";
 import { loadHomeConfig } from "../src/config.ts";
 import { type Host, openHost } from "../src/host.ts";
@@ -181,4 +181,55 @@ describe("a run on another node", () => {
       stale: "possibly stale: denver is unreachable",
     });
   });
+});
+
+describe("the daemon as scheduler", () => {
+  test("a rate-limited build goes again on its own after retry_after", async () => {
+    await heph(["init", "--force"]);
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh }\n",
+    );
+    // mbp builds as a daemon would; its worker is rate limited once, on T2.
+    let limited = false;
+    const slept: number[] = [];
+    const scripted = deps.worker as Worker;
+    const worker: Worker = {
+      async spawn(input) {
+        if (input.brief.task.id === "T2" && !limited) {
+          limited = true;
+          return {
+            output: undefined,
+            transcript: "",
+            usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+            exit: "rate_limited",
+            retry_after: new Date(Date.now() + 60_000).toISOString(),
+          };
+        }
+        return scripted.spawn(input);
+      },
+    };
+    const mbp = openHost({
+      home: homeA,
+      config: { ...(await loadHomeConfig(homeA)), nodes: {} },
+      deps: { ...deps, worker, prs, sleep: async (ms) => void slept.push(ms) },
+      daemon: true,
+    });
+    try {
+      await mbp.api.call("newRun", [Bun.YAML.parse(BRIEF), { runId: "R9", on: "local" }], ws);
+      await mbp.api.call("approvePlan", ["R9"], ws);
+      await mbp.api.call("run", ["R9", {}], ws);
+      for (let i = 0; i < 200 && mbp.ledger.run("R9")?.status !== "staged"; i++)
+        await Bun.sleep(50);
+      expect(mbp.ledger.run("R9")?.status).toBe("staged");
+      expect(slept).toHaveLength(1);
+      expect(slept[0]).toBeGreaterThan(50_000);
+      const resumed = mbp.ledger.read({ run_id: "R9", types: ["run.resumed"] });
+      expect(resumed.map((e) => (e.event.data as { reason: string }).reason)).toEqual([
+        "rate_limit",
+      ]);
+    } finally {
+      await mbp.close();
+    }
+  }, 60_000);
 });

@@ -168,7 +168,18 @@ export function openHost(o: HostOptions) {
       return result;
     });
 
-  const startJob = async (runId: string, opts: { now?: boolean } = {}) => {
+  const rateLimited = (runId: string) => {
+    if (ledger.run(runId)?.status !== "paused") return false;
+    const p = ledger.read({ run_id: runId, types: ["run.paused"] }).at(-1)?.event.data as
+      | { reason: string }
+      | undefined;
+    return p?.reason === "rate_limit";
+  };
+
+  const startJob = async (
+    runId: string,
+    opts: { now?: boolean } = {},
+  ): Promise<{ run_id: string; started: boolean; running?: boolean }> => {
     const running = jobs.get(runId);
     if (running && !running.done) return { run_id: runId, started: false, running: true };
     const { rt } = await runtimeFor(workspaceOf(runId));
@@ -185,6 +196,9 @@ export function openHost(o: HostOptions) {
       })
       .finally(() => {
         job.done = true;
+        // A rate limit pauses the build; the daemon is the scheduler, so it goes again (the
+        // build itself waits for retry_after first). SPEC section 13.
+        if (o.daemon && !controller.signal.aborted && rateLimited(runId)) void startJob(runId);
       });
     jobs.set(runId, job);
     return { run_id: runId, started: true };
@@ -407,11 +421,15 @@ export function openHost(o: HostOptions) {
     return out;
   }
 
-  /** Daemon start: runs this node owns that a killed process left running are resumed. */
+  /**
+   * Daemon start: runs this node owns that a killed process left running are resumed, and
+   * rate-limited ones go again (each waits for its retry_after first).
+   */
   async function resumeOnStart(): Promise<string[]> {
     const resumed: string[] = [];
     for (const r of ledger.runs()) {
-      if (r.owner_node !== me || r.status !== "running") continue;
+      if (r.owner_node !== me) continue;
+      if (r.status !== "running" && !rateLimited(r.run_id)) continue;
       try {
         await startJob(r.run_id);
         resumed.push(r.run_id);
