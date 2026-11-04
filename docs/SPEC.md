@@ -551,9 +551,9 @@ Principles:
 - Injected only into gate runs that need them, never into worker sessions.
 - Never production credentials. Integration uses throwaway local services per run.
 
-### Open item
+### OMP integration
 
-Verify how cleanly OMP's execution backend can be pointed at a container or restricted user. This is the one OMP integration point the sandbox design depends on.
+OMP has no pluggable execution backend, and its built-in file tools run in the host process with no path limits. So the worker disables every OMP built-in tool and gives the model its own tools (`read`, `write`, `edit`, `bash`, `submit_result`), which act inside the sandbox. OMP, the credentials and model calls stay on the host. Settings are isolated: no MCP, LSP, extensions, skills, rules, context files or model fallback.
 
 ---
 
@@ -774,7 +774,6 @@ If fewer than half of runs reach merge without manual rewriting, or work keeps b
 
 ## 20. Open items
 
-- OMP execution backend swap for sandboxing (container / restricted user)
 - OMP SDK/RPC surface stability across versions
-- npm scope `@hephaestus` and GitHub org availability
+- npm scope: `@hephaestus` is taken; choose a publishable scope before publishing. GitHub: `juano-morello/hephaestus`
 - Exact MCP Apps rendering support in Claude Code and the Codex app
