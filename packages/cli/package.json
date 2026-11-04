@@ -8,6 +8,10 @@
   },
   "dependencies": {
     "@hephaestus/core": "workspace:*",
+    "@hephaestus/engine": "workspace:*",
+    "@hephaestus/ledger": "workspace:*",
+    "@hephaestus/sandbox": "workspace:*",
+    "@hephaestus/workers": "workspace:*",
     "zod": "4.6.7"
   }
 }
