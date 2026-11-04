@@ -218,3 +218,7 @@ project listed with that gate.
 ### Repo maps
 
 {{repo_maps}}
+
+{{revision}}
+
+{{feedback}}

@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { runPlanGates } from "../src/gates/plan.ts";
-import { DEFAULT_LIMITS } from "../src/gates/types.ts";
-import { Plan } from "../src/schemas/plan.ts";
-import { brief, gates, workspace } from "./helpers.ts";
+import { DEFAULT_LIMITS, Plan, runPlanGates } from "@hephaestus/core";
+import { brief, gates, workspace } from "./planner-fixtures.ts";
 
 // The worked example in the planner prompt must itself pass every gate.
 test("planner prompt example is a valid plan", async () => {
