@@ -332,7 +332,7 @@ How it works and what I interpreted:
     - **A checkout you configured** (`workspaces.<name>`) keeps its own files. Its files are yours to edit there, and heph writes only missing ones.
     - Not chosen: snapshotting the config into the run at creation. It would make a run reproducible, but a config fix mid-run (as on L1) would then need a way to change the run's snapshot.
   - **`heph approve merge` prints its result as JSON** (`merge of L1: {"status":"merged"}`) in human output. Cosmetic, from 2.6.
-- **Cleanup:** both daemons stopped, `~/heph-test` on denver and the Mac's test home removed, no heph containers on either machine. The repo `juano-morello/heph-land-test` is still up for you to delete.
+- **Cleanup:** both daemons stopped, `~/heph-test` on denver and the Mac's test home removed, no heph containers on either machine. You deleted the repo `juano-morello/heph-land-test`.
 
 Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
 
