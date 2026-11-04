@@ -6,28 +6,25 @@ import {
   complexitySanity,
   DEFAULT_LIMITS,
   deriveEdges,
-  type GateResult,
   type Plan,
   type Return,
   reachability,
   type Task,
   topoOrder,
-  type UnitBrief,
-  WorkerResult,
   type Workspace,
 } from "@hephaestus/core";
 import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
-import { buildContextPack } from "./context.ts";
-import { type Chaos, clearWorktrees, effect, type Reality, reconcile, Stopped } from "./effects.ts";
+import { type Chaos, clearWorktrees, effect, type Reality, reconcile } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
 import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
-import type { SpawnOutput, Worker } from "./worker.ts";
+import { localRunner, type Runner, stopReason } from "./runner.ts";
+import type { Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
@@ -72,6 +69,13 @@ export type RunPlanOptions = {
    * the process is killed). Called wherever leftover worktrees are cleared.
    */
   reapSandboxes?: () => Promise<void>;
+  /**
+   * Stops the build: before the next unit or attempt, and the worker in flight. Its reason is
+   * "handoff" for a handoff to another node, anything else means the user.
+   */
+  signal?: AbortSignal;
+  /** Who runs attempts. Default: in this process, with `worker` and `gates`. */
+  runner?: Runner;
   /** Tests only: called before and after every effect (see effects.ts). */
   chaos?: Chaos;
 };
@@ -87,6 +91,7 @@ export type RunOutcome = {
 };
 
 type Ctx = RunPlanOptions & {
+  runner: Runner;
   hash: string;
   base: { run_id: string; changeset_id: string; config_hash: string };
   repoOf: (t: Task) => string;
@@ -332,6 +337,16 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const base = { run_id: opts.runId, changeset_id: opts.changesetId, config_hash: hash };
   const ctx: Ctx = {
     ...opts,
+    runner:
+      opts.runner ??
+      localRunner({
+        worker: opts.worker,
+        gates: opts.gates,
+        gateSandbox: opts.gateSandbox,
+        worktreesDir: opts.worktreesDir,
+        tools: opts.config.tools,
+        gateTimeoutMs: opts.config.gateTimeoutMs,
+      }),
     base,
     dirOf,
     repoOf: (t) => opts.workspace.projects[t.project]?.repo as string,
@@ -394,6 +409,12 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
       await Promise.all([...gits].map(async ([r, g]) => [r, await g.revParse(branch)])),
     );
 
+  const stopped = async (): Promise<RunOutcome> => {
+    const reason = stopReason(opts.signal);
+    ledger.append({ ...engine, type: "run.paused", data: { reason } });
+    return { status: "paused", runBranch: branch, heads: await heads(), reason };
+  };
+
   const reach = reachability(ids, edges);
   const byId = new Map(opts.plan.tasks.map((t) => [t.id, t]));
   const history = unitHistory(ledger, runId);
@@ -420,6 +441,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
 
     const stop = cancelled(ledger, runId);
     if (stop) return { status: "cancelled", runBranch: branch, heads: await heads(), reason: stop };
+    if (opts.signal?.aborted) return stopped();
     const h = history.get(id) ?? { next: 1, used: 0 };
     const result = await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
     if (result.status === "cancelled") {
@@ -441,6 +463,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     accepted.set(id, result.files);
   }
 
+  if (opts.signal?.aborted) return stopped();
   // The whole changeset must pass the workspace integration gate before it can land.
   const integration = await integrationGate(ctx, repos);
   ledger.append({ ...base, actor: "gate", type: "gate.result", data: integration });
@@ -560,219 +583,127 @@ async function runUnit(
     if (stop) return { status: "cancelled", reason: stop };
     const at = { ...unit, attempt: n };
     const engine = { ...at, actor: "engine" as const };
+    if (ctx.signal?.aborted) {
+      const reason = stopReason(ctx.signal);
+      ledger.append({ ...engine, type: "run.paused", data: { reason } });
+      return { status: "paused", reason };
+    }
     const { constraints, budgetTokens } = humanInput(ctx, t);
     const tip = await git.revParse(branch);
-    const worktree = join(ctx.worktreesDir, ctx.runId, t.id, `a${n}`);
-    await git.worktreeAdd(worktree, attemptBranch(ctx.runId, t.id, n), tip);
-    try {
-      const workdir = join(worktree, projectPath === "." ? "" : projectPath);
-      const built = await buildContextPack({
-        git,
-        worktree,
-        projectPath,
-        project,
+    const result = await ctx.runner.runAttempt(
+      {
+        runId: ctx.runId,
         task: t,
+        attempt: n,
+        tier,
+        role,
+        model: route.model,
+        effort: route.effort,
+        repoDir: ctx.dirOf(repo),
+        projectPath,
+        branch: attemptBranch(ctx.runId, t.id, n),
+        tip,
         locked,
         constraints,
-        ...(feedback ? { feedback } : {}),
         budgetTokens,
-      });
-      const brief: UnitBrief = {
-        schema: 1,
-        task: t,
+        feedback,
         criteria: ctx.brief.acceptance.filter((c) => t.covers.includes(c.id)),
         decisions: ctx.brief.decisions,
-        role,
-        tier,
-        context: built.pack,
-        constraints,
-        locked_paths: locked,
-        ...(feedback ? { feedback } : {}),
-        output_schema: "WorkerResult",
-      };
+        project,
+        signal: ctx.signal,
+      },
+      {
+        started: (s) =>
+          ledger.appendMany([
+            {
+              ...engine,
+              type: "context.pack_built",
+              data: { size_tokens: s.sizeTokens, truncated: s.truncated, expansions: 0 },
+            },
+            { ...engine, type: "unit.attempt.started", data: info },
+          ]),
+      },
+    );
+    const prompt = result.promptHash ? { prompt_hash: result.promptHash } : {};
+
+    if (result.kind === "interrupted") {
+      const { reason } = result;
       ledger.appendMany([
+        { ...engine, ...prompt, type: "unit.attempt.interrupted", data: { reason } },
         {
           ...engine,
-          type: "context.pack_built",
-          data: { size_tokens: built.sizeTokens, truncated: built.truncated, expansions: 0 },
+          type: "run.paused",
+          data: { reason, ...(result.retryAfter ? { retry_after: result.retryAfter } : {}) },
         },
-        { ...engine, type: "unit.attempt.started", data: info },
       ]);
-
-      const started = Date.now();
-      let out: SpawnOutput;
-      try {
-        out = await ctx.worker.spawn({
-          role,
-          brief,
-          workdir,
-          tools: config.tools,
-          model: route.model,
-          ...(route.effort ? { effort: route.effort } : {}),
-        });
-      } catch (e) {
-        if (e instanceof Stopped) throw e;
-        out = {
-          output: undefined,
-          transcript: `worker threw: ${e}`,
-          usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-          exit: "error",
-        };
-      }
-      const prompt = out.prompt_hash ? { prompt_hash: out.prompt_hash } : {};
-
-      // Interrupted or rate-limited attempts never count and never escalate (SPEC sections 10, 13).
-      if (out.exit === "rate_limited" || out.exit === "interrupted") {
-        const reason = out.exit === "rate_limited" ? "rate_limit" : "user";
-        ledger.appendMany([
-          {
-            ...engine,
-            ...prompt,
-            type: "unit.attempt.interrupted",
-            data: { reason },
-          },
-          {
-            ...engine,
-            type: "run.paused",
-            data: { reason, ...(out.retry_after ? { retry_after: out.retry_after } : {}) },
-          },
-        ]);
-        return { status: "paused", reason };
-      }
-
-      const sha = await git.commitAll(worktree, `heph: ${ctx.runId} ${t.id} a${n}`);
-      const diff = await git.diff(tip, sha);
-      const blobs = {
-        diff: ledger.blobs.put(diff.text),
-        transcript: ledger.blobs.put(out.transcript),
-      };
-
-      const parsed = WorkerResult.safeParse(out.output);
-      const failures: GateResult[] = [];
-      let outcome: "green" | "red" | "blocked" | "error";
-      const gateEvents: EventDraft[] = [];
-      if (out.exit === "error" || !parsed.success) {
-        outcome = "error";
-        const evidence = parsed.success
-          ? [`worker exited with an error`]
-          : parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
-        const r: GateResult = {
-          gate: "worker_output",
-          verdict: "fail",
-          reason: parsed.success
-            ? "worker exited with an error"
-            : "worker output does not match WorkerResult",
-          evidence,
-        };
-        failures.push(r);
-        gateEvents.push({ ...at, actor: "gate", type: "gate.result", data: r });
-      } else if (parsed.data.blocked) {
-        outcome = "blocked";
-      } else {
-        // Gates run in a fresh sandbox over the attempt (SPEC section 11), opened only if needed.
-        const sandbox =
-          ctx.gateSandbox && ctx.gates.some((g) => g.needsSandbox)
-            ? await ctx.gateSandbox(workdir, t)
-            : undefined;
-        try {
-          for (const gate of ctx.gates) {
-            let r: GateResult;
-            try {
-              r = await gate.run({
-                task: t,
-                attempt: n,
-                project: t.project,
-                projectPath,
-                workdir,
-                diff,
-                lockedPaths: locked,
-                worker: parsed.data,
-                commands: config.commands[t.project] ?? {},
-                timeoutMs: config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
-                ...(sandbox ? { sandbox } : {}),
-              });
-            } catch (e) {
-              if (e instanceof Stopped) throw e;
-              r = {
-                gate: gate.name,
-                verdict: "fail",
-                reason: `gate crashed: ${e}`,
-                evidence: [String(e)],
-              };
-            }
-            gateEvents.push({ ...at, actor: "gate", type: "gate.result", data: r });
-            if (r.verdict === "fail") failures.push(r);
-          }
-        } finally {
-          await sandbox?.dispose();
-        }
-        outcome = failures.length ? "red" : "green";
-      }
-
-      // The attempt's verdict and what follows from it are written together, so a crash
-      // can't leave a finished attempt without its consequence.
-      const finished: EventDraft[] = [
-        ...gateEvents,
-        {
-          ...at,
-          ...prompt,
-          actor: "worker",
-          type: "unit.attempt.finished",
-          blobs,
-          data: { ...info, usage: out.usage, duration_ms: Date.now() - started, outcome },
-        },
-      ];
-
-      if (outcome === "blocked" && parsed.success) {
-        const reason = `blocked: ${parsed.data.blocked?.reason}`;
-        ledger.appendMany([
-          ...finished,
-          { ...engine, type: "unit.escalated", data: { reason } },
-          { ...engine, type: "run.paused", data: { reason: "user" } },
-        ]);
-        return { status: "paused", reason };
-      }
-
-      if (outcome === "green") {
-        await effect(
-          { ledger, base: ctx.base, chaos: ctx.chaos },
-          {
-            effect: "run_branch_advance",
-            key: `run_branch_advance:${repo}:${t.id}:a${n}`,
-            target: branch,
-            before: tip,
-            after: sha,
-            on: { repo, project: t.project, unit_id: t.id, attempt: n },
-          },
-          async () => {
-            await git.updateRef(branch, sha, tip);
-            return { sha };
-          },
-          {
-            with: finished,
-            followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
-          },
-        );
-        return { status: "accepted", files: diff.files };
-      }
-
-      feedback = {
-        schema: 1,
-        unit_id: t.id,
-        attempt: n,
-        verdict: "red",
-        reasons: failures.map((f) => ({
-          gate: f.gate,
-          reason: f.reason,
-          evidence: f.evidence,
-        })),
-        scope: t.scope,
-        instruction: RETURN_INSTRUCTION,
-      };
-      ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);
-    } finally {
-      await git.worktreeRemove(worktree);
+      return { status: "paused", reason };
     }
+
+    const { sha, diff, outcome } = result;
+    const blobs = {
+      diff: ledger.blobs.put(diff.text),
+      transcript: ledger.blobs.put(result.transcript),
+    };
+    const failures = result.gates.filter((g) => g.verdict === "fail");
+    // The attempt's verdict and what follows from it are written together, so a crash
+    // can't leave a finished attempt without its consequence.
+    const finished: EventDraft[] = [
+      ...result.gates.map(
+        (r): EventDraft => ({ ...at, actor: "gate", type: "gate.result", data: r }),
+      ),
+      {
+        ...at,
+        ...prompt,
+        actor: "worker",
+        type: "unit.attempt.finished",
+        blobs,
+        data: { ...info, usage: result.usage, duration_ms: result.durationMs, outcome },
+      },
+    ];
+
+    if (outcome === "blocked") {
+      const reason = `blocked: ${result.blocked}`;
+      ledger.appendMany([
+        ...finished,
+        { ...engine, type: "unit.escalated", data: { reason } },
+        { ...engine, type: "run.paused", data: { reason: "user" } },
+      ]);
+      return { status: "paused", reason };
+    }
+
+    if (outcome === "green") {
+      await effect(
+        { ledger, base: ctx.base, chaos: ctx.chaos },
+        {
+          effect: "run_branch_advance",
+          key: `run_branch_advance:${repo}:${t.id}:a${n}`,
+          target: branch,
+          before: tip,
+          after: sha,
+          on: { repo, project: t.project, unit_id: t.id, attempt: n },
+        },
+        async () => {
+          await git.updateRef(branch, sha, tip);
+          return { sha };
+        },
+        {
+          with: finished,
+          followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
+        },
+      );
+      return { status: "accepted", files: diff.files };
+    }
+
+    feedback = {
+      schema: 1,
+      unit_id: t.id,
+      attempt: n,
+      verdict: "red",
+      reasons: failures.map((f) => ({ gate: f.gate, reason: f.reason, evidence: f.evidence })),
+      scope: t.scope,
+      instruction: RETURN_INSTRUCTION,
+    };
+    ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);
   }
 
   const reason = `red after ${config.maxAttempts} attempts`;

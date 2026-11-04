@@ -10,6 +10,8 @@ export type SpawnInput = {
   tools: string[];
   model: string;
   effort?: string;
+  /** Aborted to stop the attempt (handoff, cancel): the worker stops and exits "interrupted". */
+  signal?: AbortSignal;
 };
 
 /**
