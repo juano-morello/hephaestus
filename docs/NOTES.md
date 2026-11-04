@@ -195,6 +195,29 @@ Known limits:
 
 **Live smoke on the built-ins (2026-11-03, sonnet, alpine container):** finished in 180 s, both units green on attempt 1, all 12 gate results recorded (T1: tests red as required; T2: tests green; typecheck and lint skipped as configured). 10.1k output tokens, 167k cache reads. The generated `test_add.sh` covered AC1-AC3 and `add.sh` validated its arguments.
 
+## Multi-repo changesets and landing (v0 step 2.5)
+
+Built 2026-11-03. `runPlan` now takes `workspaceRoot` and per-repo `targets`; every touched repo gets `heph/<run>` from its target, units run in worktrees of their own repo, and the run ends at `built` after the workspace integration gate. Landing is a separate call (`landChangeset`, exposed as `heph approve merge` in 2.6); `checkChangeset` follows pull requests.
+
+Decided with you: land as one ready-for-review PR per repo (you merge on GitHub), local fast-forward for repos without a remote, rebase and re-gate when a target moved, integration gate in a container over the assembled changeset, and `autoMerge` only for all-contained runs.
+
+How it works:
+
+- **Integration gate:** every workspace repo is checked out (detached) in the workspace layout, touched repos at `heph/<run>`, the rest at their target; the `integration.gate` script runs over it in a sandbox. Red pauses the run; none configured is recorded as skipped.
+- **Order:** repos land in `depends_on` order (a repo whose projects depend on another repo's projects goes after it).
+- **Moved target:** the run branch is rebased onto the new tip in a temp worktree. A conflict aborts (`merge.aborted` with the files, then `run.paused`); nothing has been pushed or merged at that point. After any rebase, each touched project's configured commands (test, typecheck, lint) run again, then the integration gate; red aborts.
+- **With remotes:** each `heph/<run>` is pushed with a lease on its previous remote value, one PR per repo is opened in order, then every PR body is edited to list all of them in merge order. `merge.staged` records the refs and PR urls; the run is `staged`. `checkChangeset` finishes the run when every PR is merged (recording the merge commits) and aborts when one is closed unmerged.
+- **Without remotes:** `refs/heph/staging/<run>` per repo, then each target is fast-forwarded with an expected old value; if one fails, the ones already moved are rolled back.
+
+Interpretations and limits:
+
+1. **"Never half-lands" is only as strong as the merging.** With PRs, nothing forces you to merge all of them; the PR bodies list them in order, and `checkChangeset` only reports. A GitHub merge queue or a bot would make it real.
+2. **Mixed local and remote repos are refused** for now.
+3. **The re-gate after a rebase runs only what each project configures.** During a unit, a missing test command fails the `tests` gate; after a rebase it is a regression check, so an unconfigured project simply isn't re-run.
+4. **Rebased commits are rewritten.** Attempt branches keep the original commits; the run branch points at the rebased ones.
+5. **`gh` has not been run for real.** `ghPullRequests` is covered by argument and parsing tests only; the first real PR against one of your repos should be a deliberate run.
+6. **Run status** gains `built` (clean build node) and `staged` (`merge.staged`); `PROJECTION_VERSION` is 2, so older ledgers rebuild on open.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
