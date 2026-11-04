@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { explainConfig, type LoadedConfig, loadConfig } from "./config.ts";
+import { type InitResult, initWorkspace } from "./init.ts";
 
 /** Output schema version of every `--json` envelope (SPEC section 16). */
 export const JSON_SCHEMA = 1;
@@ -15,7 +16,7 @@ export type Io = {
   stderr: (s: string) => void;
 };
 
-type Flags = { json: boolean; workspace?: string; set: string[] };
+type Flags = { json: boolean; workspace?: string; set: string[]; force: boolean };
 type Ctx = Io & { flags: Flags; args: string[] };
 
 type Command<T> = {
@@ -28,6 +29,23 @@ const command = <T>(c: Command<T>): Command<unknown> => c as Command<unknown>;
 
 /** Command name (its words joined by a space) -> handler. Add commands here. */
 const COMMANDS: Record<string, Command<unknown>> = {
+  init: command<InitResult>({
+    run: async (ctx) =>
+      initWorkspace(ctx.flags.workspace ? resolve(ctx.cwd, ctx.flags.workspace) : ctx.cwd, {
+        force: ctx.flags.force,
+      }),
+    render: (r) =>
+      [
+        `workspace ${r.workspaceDir}`,
+        ...Object.entries(r.projects).map(
+          ([n, p]) =>
+            `  ${n}: ${p.stack} in ${p.repo}${p.path === "." ? "" : `/${p.path}`} (${Object.keys(p.commands).join(", ") || "no commands"})`,
+        ),
+        "wrote:",
+        ...r.written.map((f) => `  ${f}`),
+        "",
+      ].join("\n"),
+  }),
   "config explain": command<LoadedConfig>({
     run: (ctx) =>
       loadConfig({
@@ -83,6 +101,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         json: { type: "boolean", default: false },
         workspace: { type: "string" },
         set: { type: "string", multiple: true, default: [] },
+        force: { type: "boolean", default: false },
       },
     });
     json = values.json ?? false;
@@ -96,6 +115,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     const flags: Flags = {
       json,
       set: values.set ?? [],
+      force: values.force ?? false,
       ...(values.workspace ? { workspace: values.workspace } : {}),
     };
     const data = await cmd.run({ ...io, flags, args: found.args });
