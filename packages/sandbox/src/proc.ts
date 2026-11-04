@@ -59,3 +59,6 @@ export async function runOk(cmd: string[], opts: ProcOptions = {}): Promise<stri
   if (r.code !== 0) throw new Error(`${cmd.join(" ")} exited ${r.code}: ${r.stderr.trim()}`);
   return r.stdout;
 }
+
+/** Absolute path of an executable on PATH, or undefined. */
+export const which = (name: string): string | undefined => Bun.which(name) ?? undefined;

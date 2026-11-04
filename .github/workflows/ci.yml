@@ -13,6 +13,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
+      # Native sandbox mode confines commands with bubblewrap; Ubuntu 24.04's AppArmor blocks the
+      # unprivileged user namespaces it needs unless this is relaxed.
+      - run: sudo apt-get install -y -q bubblewrap && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint

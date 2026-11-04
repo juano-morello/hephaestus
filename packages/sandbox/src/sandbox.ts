@@ -32,8 +32,12 @@ export type ContainerSpec = {
   memory?: string;
 };
 
-/** Weaker: file paths are confined, commands are not (SPEC section 12, native mode). */
-export type NativeSpec = { mode: "native"; hostDir: string };
+/**
+ * On the host (SPEC section 12, native mode): file paths are confined by the tools, and commands
+ * run under sandbox-exec (macOS) or bwrap (Linux): writes only in the project and temp, no
+ * network, and `denyRead` (credentials in the home directory by default) unreadable.
+ */
+export type NativeSpec = { mode: "native"; hostDir: string; denyRead?: string[] };
 
 export type SandboxSpec = ContainerSpec | NativeSpec;
 
