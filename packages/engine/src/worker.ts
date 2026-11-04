@@ -22,6 +22,8 @@ export type SpawnOutput = {
   usage: Usage;
   exit: "ok" | "error" | "rate_limited" | "interrupted";
   prompt_hash?: string;
+  /** With rate_limited: when the provider says to try again (ISO 8601), if it says. */
+  retry_after?: string;
 };
 
 export type Worker = { spawn(input: SpawnInput): Promise<SpawnOutput> };

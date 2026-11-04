@@ -16,12 +16,13 @@ import {
   WorkerResult,
   type Workspace,
 } from "@hephaestus/core";
-import type { EventDraft, Ledger } from "@hephaestus/ledger";
+import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
 import { buildContextPack } from "./context.ts";
+import { type Chaos, clearWorktrees, effect, type Reality, reconcile } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
-import { createGit } from "./git.ts";
+import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
 import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
@@ -66,6 +67,8 @@ export type RunPlanOptions = {
   /** Used when the touched repos have a remote: the changeset lands as pull requests. */
   prs?: PullRequests;
   eval?: boolean;
+  /** Tests only: called before and after every effect (see effects.ts). */
+  chaos?: Chaos;
 };
 
 export type RunOutcome = {
@@ -80,6 +83,7 @@ export type RunOutcome = {
 
 type Ctx = RunPlanOptions & {
   hash: string;
+  base: { run_id: string; changeset_id: string; config_hash: string };
   repoOf: (t: Task) => string;
   dirOf: (repo: string) => string;
 };
@@ -210,6 +214,103 @@ function cancelled(ledger: Ledger, runId: string): string | undefined {
   return failed?.reason ?? "cancelled";
 }
 
+/** What reconcile needs to look at: every workspace repo, and the pull request client. */
+export function realityOf(
+  opts: Pick<RunPlanOptions, "prs">,
+  dirOf: (repo: string) => string,
+  remote?: string,
+): Reality {
+  return { git: (r) => createGit(dirOf(r)), dirOf, prs: opts.prs, remote };
+}
+
+/** The run's events after its latest plan, in ledger order. */
+export function sinceLatestPlan(ledger: Ledger, runId: string): LedgerEvent[] {
+  const events = ledger.read({ run_id: runId }).flatMap((s) => (s.known ? [s.event] : []));
+  const at = events.findLastIndex((e) => e.type === "run.plan_ready");
+  return events.slice(at + 1);
+}
+
+type UnitHistory = {
+  /** The next attempt number: attempts are numbered across the whole run, never reused. */
+  next: number;
+  /** Finished attempts since the plan or the unit's last escalation; at most maxAttempts. */
+  used: number;
+  feedback?: Return;
+  accepted?: { attempt: number; before: string; after: string };
+};
+
+/** Per unit of the latest plan: where its attempts stand, from the ledger alone. */
+function unitHistory(ledger: Ledger, runId: string): Map<string, UnitHistory> {
+  const out = new Map<string, UnitHistory>();
+  const get = (id: string) => {
+    const h = out.get(id) ?? { next: 1, used: 0 };
+    out.set(id, h);
+    return h;
+  };
+  for (const { event: e } of ledger.read({ run_id: runId })) {
+    if (e.unit_id && e.attempt) get(e.unit_id).next = Math.max(get(e.unit_id).next, e.attempt + 1);
+  }
+  const advances = new Map<string, { before: string; after: string }>();
+  for (const e of sinceLatestPlan(ledger, runId)) {
+    if (!e.unit_id) continue;
+    const h = get(e.unit_id);
+    if (e.type === "unit.attempt.finished") h.used++;
+    else if (e.type === "unit.escalated") h.used = 0;
+    else if (e.type === "unit.returned") h.feedback = e.data;
+    else if (e.type === "effect.intended" && e.data.effect === "run_branch_advance") {
+      if (e.data.before && e.data.after)
+        advances.set(`${e.unit_id}/${e.attempt}`, { before: e.data.before, after: e.data.after });
+    } else if (e.type === "unit.accepted" && e.attempt) {
+      const a = advances.get(`${e.unit_id}/${e.attempt}`);
+      if (a) h.accepted = { attempt: e.attempt, ...a };
+    }
+  }
+  return out;
+}
+
+/**
+ * Picks a build up where it stopped: attempts the process never finished are interrupted
+ * (they don't count), then run.resumed says why the build is running again.
+ */
+function resume(
+  ledger: Ledger,
+  runId: string,
+  engine: Omit<EventDraft, "type" | "data">,
+  status: string | undefined,
+) {
+  const since = sinceLatestPlan(ledger, runId);
+  const open = new Map<string, LedgerEvent>();
+  for (const e of since) {
+    const key = `${e.unit_id}/${e.attempt}`;
+    if (e.type === "unit.attempt.started") open.set(key, e);
+    if (e.type === "unit.attempt.finished" || e.type === "unit.attempt.interrupted")
+      open.delete(key);
+  }
+  const lastPause = since.findLast((e) => e.type === "run.paused")?.data as
+    | { reason: "rate_limit" | "handoff" | "user" }
+    | undefined;
+  const reason =
+    status === "paused" ? (lastPause?.reason ?? "user") : status === "running" ? "crash" : "user";
+  ledger.appendMany([
+    ...[...open.values()].map(
+      (e) =>
+        ({
+          run_id: e.run_id,
+          changeset_id: e.changeset_id,
+          config_hash: e.config_hash,
+          ...(e.repo ? { repo: e.repo } : {}),
+          ...(e.project ? { project: e.project } : {}),
+          unit_id: e.unit_id,
+          attempt: e.attempt,
+          actor: "engine",
+          type: "unit.attempt.interrupted",
+          data: { reason: "crash" },
+        }) as EventDraft,
+    ),
+    { ...engine, type: "run.resumed", data: { reason } } as EventDraft,
+  ]);
+}
+
 async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const repos = touchedRepos(opts.workspace, opts.plan);
   const ids = opts.plan.tasks.map((t) => t.id);
@@ -218,20 +319,22 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   if (!order.ok) throw new Error(`plan has a cycle: ${order.cycle.join(" -> ")}`);
 
   const dirOf = (repo: string) => resolve(opts.workspaceRoot, opts.workspace.repos[repo] as string);
+  const hash = configHash(
+    opts.config,
+    opts.gates.map((g) => g.name),
+  );
+  // Run-level events span repos, so they carry no `repo`; unit events do.
+  const base = { run_id: opts.runId, changeset_id: opts.changesetId, config_hash: hash };
   const ctx: Ctx = {
     ...opts,
+    base,
     dirOf,
     repoOf: (t) => opts.workspace.projects[t.project]?.repo as string,
-    hash: configHash(
-      opts.config,
-      opts.gates.map((g) => g.name),
-    ),
+    hash,
   };
   const { ledger, runId } = opts;
   const gits = new Map(repos.map((r) => [r, createGit(dirOf(r))]));
   const branch = runBranch(runId);
-  // Run-level events span repos, so they carry no `repo`; unit events do.
-  const base = { run_id: runId, changeset_id: opts.changesetId, config_hash: ctx.hash };
   const engine = { ...base, actor: "engine" as const };
 
   const tiers = new Map<string, Complexity>(opts.plan.tasks.map((t) => [t.id, t.complexity]));
@@ -243,21 +346,62 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   });
   for (const b of sanity.bumps) tiers.set(b.task, b.to);
 
-  // One changeset branch per touched repo, from its target (SPEC section 4).
-  for (const [repo, git] of gits) {
-    await git.branchForce(branch, await git.revParse(opts.targets?.[repo] ?? "main"));
+  // SPEC section 13: a stopped process leaves worktrees and maybe effects it never confirmed.
+  const statusBefore = ledger.run(runId)?.status;
+  await clearWorktrees(
+    opts.worktreesDir,
+    runId,
+    Object.keys(opts.workspace.repos).map((r) => createGit(dirOf(r))),
+  );
+  await reconcile(ledger, runId, realityOf(opts, dirOf));
+
+  const resuming = sinceLatestPlan(ledger, runId).some(
+    (e) => e.type === "node.started" && e.graph_node === "build",
+  );
+  const scope = { ledger, base, chaos: opts.chaos };
+  if (!resuming) {
+    // One changeset branch per touched repo, from its target (SPEC section 4).
+    for (const [repo, git] of gits) {
+      const at = await git.revParse(opts.targets?.[repo] ?? "main");
+      await effect(
+        scope,
+        {
+          effect: "run_branch_reset",
+          key: `run_branch_reset:${repo}`,
+          target: branch,
+          before: await git.refSha(branch),
+          after: at,
+          on: { repo },
+        },
+        async () => {
+          await git.branchForce(branch, at);
+          return { sha: at };
+        },
+      );
+    }
+    ledger.append({ ...engine, type: "node.started", graph_node: "build", data: {} });
+  } else {
+    resume(ledger, runId, engine, statusBefore);
   }
   const heads = async () =>
     Object.fromEntries(
       await Promise.all([...gits].map(async ([r, g]) => [r, await g.revParse(branch)])),
     );
-  ledger.append({ ...engine, type: "node.started", graph_node: "build", data: {} });
 
   const reach = reachability(ids, edges);
-  const accepted = new Map<string, string[]>();
   const byId = new Map(opts.plan.tasks.map((t) => [t.id, t]));
+  const history = unitHistory(ledger, runId);
+  // Accepted units are never redone (SPEC section 13); their files still lock later units.
+  const accepted = new Map<string, string[]>();
+  for (const [id, h] of history) {
+    if (!h.accepted || !byId.has(id)) continue;
+    const t = byId.get(id) as Task;
+    const git = gits.get(ctx.repoOf(t)) as Git;
+    accepted.set(id, (await git.diff(h.accepted.before, h.accepted.after)).files);
+  }
 
   for (const id of order.order) {
+    if (accepted.has(id)) continue;
     const t = byId.get(id) as Task;
     const projectPath = opts.workspace.projects[t.project]?.path ?? ".";
     // Test locking (SPEC section 8): files from accepted test tasks that precede this one.
@@ -270,7 +414,8 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
 
     const stop = cancelled(ledger, runId);
     if (stop) return { status: "cancelled", runBranch: branch, heads: await heads(), reason: stop };
-    const result = await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked);
+    const h = history.get(id) ?? { next: 1, used: 0 };
+    const result = await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
     if (result.status === "cancelled") {
       return {
         status: "cancelled",
@@ -374,6 +519,7 @@ async function runUnit(
   tier: Complexity,
   projectPath: string,
   locked: string[],
+  history: UnitHistory,
 ): Promise<UnitResult> {
   const { ledger, config } = ctx;
   const repo = ctx.repoOf(t);
@@ -402,8 +548,8 @@ async function runUnit(
     commands: config.commands[t.project] ?? {},
   };
 
-  let feedback: Return | undefined;
-  for (let n = 1; n <= config.maxAttempts; n++) {
+  let feedback: Return | undefined = history.feedback;
+  for (let used = history.used, n = history.next; used < config.maxAttempts; used++, n++) {
     const stop = cancelled(ledger, ctx.runId);
     if (stop) return { status: "cancelled", reason: stop };
     const at = { ...unit, attempt: n };
@@ -478,7 +624,11 @@ async function runUnit(
             type: "unit.attempt.interrupted",
             data: { reason },
           },
-          { ...engine, type: "run.paused", data: { reason } },
+          {
+            ...engine,
+            type: "run.paused",
+            data: { reason, ...(out.retry_after ? { retry_after: out.retry_after } : {}) },
+          },
         ]);
         return { status: "paused", reason };
       }
@@ -551,7 +701,9 @@ async function runUnit(
         outcome = failures.length ? "red" : "green";
       }
 
-      ledger.appendMany([
+      // The attempt's verdict and what follows from it are written together, so a crash
+      // can't leave a finished attempt without its consequence.
+      const finished: EventDraft[] = [
         ...gateEvents,
         {
           ...at,
@@ -561,11 +713,12 @@ async function runUnit(
           blobs,
           data: { ...info, usage: out.usage, duration_ms: Date.now() - started, outcome },
         },
-      ]);
+      ];
 
       if (outcome === "blocked" && parsed.success) {
         const reason = `blocked: ${parsed.data.blocked?.reason}`;
         ledger.appendMany([
+          ...finished,
           { ...engine, type: "unit.escalated", data: { reason } },
           { ...engine, type: "run.paused", data: { reason: "user" } },
         ]);
@@ -573,8 +726,25 @@ async function runUnit(
       }
 
       if (outcome === "green") {
-        await git.updateRef(branch, sha, tip);
-        ledger.append({ ...engine, type: "unit.accepted", data: {} });
+        await effect(
+          { ledger, base: ctx.base, chaos: ctx.chaos },
+          {
+            effect: "run_branch_advance",
+            key: `run_branch_advance:${repo}:${t.id}:a${n}`,
+            target: branch,
+            before: tip,
+            after: sha,
+            on: { repo, project: t.project, unit_id: t.id, attempt: n },
+          },
+          async () => {
+            await git.updateRef(branch, sha, tip);
+            return { sha };
+          },
+          {
+            with: finished,
+            followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
+          },
+        );
         return { status: "accepted", files: diff.files };
       }
 
@@ -591,7 +761,7 @@ async function runUnit(
         scope: t.scope,
         instruction: RETURN_INSTRUCTION,
       };
-      ledger.append({ ...engine, type: "unit.returned", data: feedback });
+      ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);
     } finally {
       await git.worktreeRemove(worktree);
     }
