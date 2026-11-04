@@ -97,22 +97,28 @@ export function testPrecedesImplement(plan: Plan, ctx: GateContext): GateResult 
       );
       continue;
     }
-    const matching = tests.filter(
-      (t) => t.project === impl.project && t.covers.some((c) => testable.includes(c)),
-    );
-    if (matching.length === 0) {
+    // Strict (decided 2026-11-03): each test-checked criterion needs its own preceding test.
+    const sameProject = tests.filter((t) => t.project === impl.project);
+    const precedes = (t: (typeof tests)[number]) => reach.get(t.id)?.has(impl.id) === true;
+    const uncovered = testable.filter((c) => !sameProject.some((t) => t.covers.includes(c)));
+    if (uncovered.length) {
       evidence.push(
-        `${impl.id}: no test task in project ${impl.project} covers ${testable.join(", ")}`,
+        `${impl.id}: no test task in project ${impl.project} covers ${uncovered.join(", ")}`,
       );
-      continue;
     }
-    if (matching.some((t) => reach.get(t.id)?.has(impl.id))) continue;
-    for (const t of matching) {
-      const shared = t.covers.filter((c) => testable.includes(c)).join(", ");
+    const unordered = testable.filter(
+      (c) =>
+        !uncovered.includes(c) && !sameProject.some((t) => t.covers.includes(c) && precedes(t)),
+    );
+    for (const t of sameProject) {
+      const shared = t.covers.filter((c) => unordered.includes(c));
+      if (!shared.length) continue;
       const hint = t.produces?.length
         ? `consume one of: ${t.produces.join(", ")}`
         : `${t.id} produces nothing to consume`;
-      evidence.push(`${impl.id}: test ${t.id} covers ${shared} but does not precede it (${hint})`);
+      evidence.push(
+        `${impl.id}: test ${t.id} covers ${shared.join(", ")} but does not precede it (${hint})`,
+      );
     }
   }
 

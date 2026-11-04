@@ -84,10 +84,10 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    - there are no cycles.
    Do not consume things that already exist in the repo; only artifacts created in this Plan.
 4. **Test before implement.** Every `implement` task covers at least one criterion without
-   `check` (gate-checked criteria cannot lock an implementation), and there is a
-   `test` task in the same project that covers at least one of the same criteria and precedes
-   it in the derived order. To make it precede, the test task produces `test:<Name>` and the
-   implement task consumes it. Writing a test task alone is not enough; without the
+   `check` (gate-checked criteria cannot lock an implementation), and every such criterion it
+   covers is also covered by a `test` task in the same project that precedes it in the derived
+   order. To make a test precede, the test task produces `test:<Name>` and the implement task
+   consumes it (consume one artifact per test task it relies on). Writing a test task alone is not enough; without the
    `test:` artifact in `consumes` the implement task is unordered and the gate fails.
 5. **Parallel tasks do not overlap.** Two tasks in the same project with no produces/consumes
    path between them may run at the same time, so their scopes must not share any file. Put
