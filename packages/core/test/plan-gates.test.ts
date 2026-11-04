@@ -244,6 +244,28 @@ describe("test_precedes_implement", () => {
     ]);
   });
 
+  test("strict: every criterion the implement task covers needs a preceding test", () => {
+    const two = brief({
+      acceptance: [
+        { id: "AC1", text: "a", kind: "behavior" },
+        { id: "AC2", text: "b", kind: "behavior" },
+      ],
+    });
+    const p = plan([
+      task("T1", { kind: "test", covers: ["AC1"], produces: ["test:A"] }),
+      task("T3", { kind: "implement", covers: ["AC1", "AC2"], consumes: ["test:A"] }),
+    ]);
+    expect(testPrecedesImplement(p, ctx({ brief: two })).evidence).toEqual([
+      "T3: no test task in project server covers AC2",
+    ]);
+    p.tasks.push(task("T2", { kind: "test", covers: ["AC2"], produces: ["test:B"] }));
+    expect(testPrecedesImplement(p, ctx({ brief: two })).evidence).toEqual([
+      "T3: test T2 covers AC2 but does not precede it (consume one of: test:B)",
+    ]);
+    p.tasks[1]?.consumes?.push("test:B");
+    expect(testPrecedesImplement(p, ctx({ brief: two })).verdict).toBe("pass");
+  });
+
   test("ignores non-implement tasks", () => {
     const p = plan([task("T1", { kind: "docs" }), task("T2", { kind: "codegen" })]);
     expect(testPrecedesImplement(p, ctx()).verdict).toBe("pass");
