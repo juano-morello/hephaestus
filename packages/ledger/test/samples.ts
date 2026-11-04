@@ -126,6 +126,31 @@ export const samples: { [K in EventType]: EventDraft<K> } = {
     type: "human.input",
     data: { kind: "hint", text: "use the fake clock" },
   },
+  "effect.intended": {
+    ...base,
+    repo: "server",
+    unit_id: "T2",
+    attempt: 1,
+    type: "effect.intended",
+    data: {
+      effect: "run_branch_advance",
+      key: "run_branch_advance:server:T2:a1",
+      target: "heph/R1",
+      before: "a1b2c3d",
+      after: "b2c3d4e",
+    },
+  },
+  "effect.done": {
+    ...base,
+    repo: "server",
+    type: "effect.done",
+    data: {
+      effect: "pr_open",
+      key: "pr_open:server",
+      state: "confirmed",
+      url: "https://github.com/o/server/pull/7",
+    },
+  },
   "context.pack_built": {
     ...unit,
     type: "context.pack_built",

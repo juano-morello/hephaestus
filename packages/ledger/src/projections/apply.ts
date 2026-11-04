@@ -204,6 +204,8 @@ export function applyEvent(db: Db, e: LedgerEvent): void {
     case "merge.aborted":
     case "human.input":
     case "context.pack_built":
+    case "effect.intended":
+    case "effect.done":
       return;
   }
 }

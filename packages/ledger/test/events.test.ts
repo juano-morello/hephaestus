@@ -13,7 +13,7 @@ const stamp = <T extends object>(draft: T) => ({
 describe("event schemas", () => {
   test("every v0 type from SPEC section 6 has a schema and a sample", () => {
     expect(Object.keys(EVENT_TYPES).sort()).toEqual(Object.keys(samples).sort());
-    expect(Object.keys(EVENT_TYPES)).toHaveLength(24);
+    expect(Object.keys(EVENT_TYPES)).toHaveLength(26);
   });
 
   for (const [type, draft] of Object.entries(samples)) {
@@ -22,6 +22,23 @@ describe("event schemas", () => {
       expect(result).toMatchObject({ ok: true });
     });
   }
+
+  test("a run resumes after a crash; effects name a known kind and a final state", () => {
+    expect(
+      validateEvent(stamp({ ...samples["run.resumed"], data: { reason: "crash" } })),
+    ).toMatchObject({ ok: true });
+    const intended = samples["effect.intended"];
+    expect(
+      validateEvent(stamp({ ...intended, data: { ...intended.data, effect: "teleport" } })),
+    ).toMatchObject({ ok: false });
+    const done = samples["effect.done"];
+    expect(validateEvent(stamp({ ...done, data: { ...done.data, state: "maybe" } }))).toMatchObject(
+      { ok: false },
+    );
+    expect(
+      validateEvent(stamp({ ...intended, data: { ...intended.data, after: "not-a-sha" } })),
+    ).toMatchObject({ ok: false });
+  });
 
   test("rejects an unknown type on write", () => {
     const result = validateEvent(stamp({ ...samples["run.finished"], type: "run.exploded" }));

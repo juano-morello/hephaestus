@@ -59,6 +59,22 @@ export const Usage = z
 export type Usage = z.infer<typeof Usage>;
 
 const PauseReason = z.enum(["rate_limit", "handoff", "user"]);
+const ResumeReason = z.enum(["rate_limit", "handoff", "user", "crash"]);
+
+/** Every side effect outside the ledger goes intent, effect, confirm (SPEC section 13). */
+export const EffectKind = z.enum([
+  "run_branch_reset",
+  "run_branch_advance",
+  "rebase",
+  "push",
+  "staging_ref",
+  "pr_open",
+  "pr_edit",
+  "pr_merge",
+  "target_advance",
+]);
+export type EffectKind = z.infer<typeof EffectKind>;
+
 const Refs = z.object({ refs: z.record(z.string(), CommitSha) }).strict();
 
 const def = <S extends z.ZodType>(data: S, requires: EnvelopeField[] = []) => ({ data, requires });
@@ -84,7 +100,7 @@ export const EVENT_TYPES = {
   "run.paused": def(
     z.object({ reason: PauseReason, retry_after: z.iso.datetime().optional() }).strict(),
   ),
-  "run.resumed": def(z.object({ reason: PauseReason }).strict()),
+  "run.resumed": def(z.object({ reason: ResumeReason }).strict()),
   "run.handed_off": def(z.object({ to: Id }).strict()),
   "run.adopted": def(z.object({ from: Id, reason: z.string().min(1) }).strict()),
   "run.finished": def(Empty),
@@ -144,6 +160,34 @@ export const EVENT_TYPES = {
           ctx.addIssue({ code: "custom", message: "target and plan are only for approvals" });
         }
       }),
+  ),
+  /** Written before the effect; `key` names it, so a resume can find one that never finished. */
+  "effect.intended": def(
+    z
+      .object({
+        effect: EffectKind,
+        key: Id,
+        /** What the effect changes: a ref, a branch or a pull request. */
+        target: Id,
+        before: CommitSha.optional(),
+        after: CommitSha.optional(),
+      })
+      .strict(),
+  ),
+  /**
+   * applied: done now. confirmed: a resume found it had already happened. abandoned: a resume
+   * found it had not, and the step that wanted it runs again.
+   */
+  "effect.done": def(
+    z
+      .object({
+        effect: EffectKind,
+        key: Id,
+        state: z.enum(["applied", "confirmed", "abandoned"]),
+        sha: CommitSha.optional(),
+        url: z.url().optional(),
+      })
+      .strict(),
   ),
   "context.pack_built": def(
     z
