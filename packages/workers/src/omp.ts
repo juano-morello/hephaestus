@@ -197,6 +197,14 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
           },
           opts.timeoutMs ?? 20 * 60_000,
         );
+        // A handoff or cancel aborts the attempt; it then counts as interrupted, not failed.
+        let interrupted = false;
+        const onAbort = () => {
+          interrupted = true;
+          void s.abort({ reason: "hephaestus: attempt stopped" });
+        };
+        if (input.signal?.aborted) onAbort();
+        else input.signal?.addEventListener("abort", onAbort, { once: true });
         let threw: unknown;
         try {
           await s.prompt(renderUnitPrompt(input.brief));
@@ -204,6 +212,7 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
           threw = e;
         } finally {
           clearTimeout(timer);
+          input.signal?.removeEventListener("abort", onAbort);
         }
 
         const tokens = s.getSessionStats().tokens;
@@ -216,7 +225,7 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
             cache_read: tokens.cacheRead,
             cache_write: tokens.cacheWrite,
           },
-          exit: exitFrom({ last: s.getLastAssistantMessage(), threw, timedOut }),
+          exit: exitFrom({ last: s.getLastAssistantMessage(), threw, timedOut, interrupted }),
           prompt_hash: promptHash,
         };
       } finally {

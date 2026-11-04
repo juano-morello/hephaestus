@@ -198,6 +198,23 @@ describe("createOmpWorker", () => {
     expect(out).toMatchObject({ exit: "ok", output: undefined });
   });
 
+  test("an aborted signal stops the session and the attempt exits interrupted", async () => {
+    const work = dir();
+    const stop = new AbortController();
+    const { make, state } = fakeSession(async () => {
+      stop.abort("handoff");
+      while (!state.aborted) await Bun.sleep(5);
+    });
+    const worker = createOmpWorker({
+      sandbox: (i) => ({ mode: "native", hostDir: i.workdir }),
+      createSession: make,
+    });
+    const out = await worker.spawn({ ...input(work), signal: stop.signal });
+    expect(state.aborted).toBe(true);
+    expect(out.exit).toBe("interrupted");
+    expect(state.disposed).toBe(true);
+  });
+
   test("a session past its timeout is aborted and counts as an error", async () => {
     const work = dir();
     const { make, state } = fakeSession(() => new Promise((r) => setTimeout(r, 2000)));
