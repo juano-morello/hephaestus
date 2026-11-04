@@ -144,15 +144,19 @@ export const EVENT_TYPES = {
   "human.input": def(
     z
       .object({
-        kind: z.enum(["hint", "plan_edit", "budget_override", "approve"]),
+        kind: z.enum(["hint", "plan_edit", "budget_override", "approve", "scope"]),
         text: z.string().optional(),
         budget_tokens: z.number().int().positive().optional(),
+        /** scope only: project-relative paths or globs the unit may also change. */
+        scope: z.array(z.string().min(1)).min(1).optional(),
         /** approve only: what is approved; a plan approval names the run.plan_ready event id. */
         target: z.enum(["plan", "merge"]).optional(),
         plan: Id.optional(),
       })
       .strict()
       .superRefine((d, ctx) => {
+        if (d.kind === "scope" && !d.scope)
+          ctx.addIssue({ code: "custom", message: "a scope input names what it adds" });
         if (d.kind === "approve" && !d.target)
           ctx.addIssue({ code: "custom", message: "an approval needs a target" });
         if (d.kind === "approve" && d.target === "plan" && !d.plan) {

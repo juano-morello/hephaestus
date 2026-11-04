@@ -194,21 +194,31 @@ export async function buildRun(opts: Omit<RunPlanOptions, "brief" | "plan">): Pr
   return build({ ...opts, brief, plan });
 }
 
-/** Hints (`heph hint`) for this unit or the whole run, and a budget override for this unit. */
-function humanInput(ctx: Ctx, t: Task): { constraints: string[]; budgetTokens: number } {
+/**
+ * Hints (`heph hint`) for this unit or the whole run, a budget override for this unit, and
+ * files the user let this unit change beyond its planned scope (`heph hint --scope`).
+ */
+function humanInput(
+  ctx: Ctx,
+  t: Task,
+): { constraints: string[]; budgetTokens: number; scope: string[] } {
   const inputs = ctx.ledger
     .read({ run_id: ctx.runId, types: ["human.input"] })
     .map((s) => s.event)
     .filter((e) => !e.unit_id || e.unit_id === t.id);
   const data = (e: (typeof inputs)[number]) =>
-    e.data as { kind: string; text?: string; budget_tokens?: number };
+    e.data as { kind: string; text?: string; budget_tokens?: number; scope?: string[] };
   const hints = inputs
     .filter((e) => data(e).kind === "hint" && data(e).text)
     .map((e) => `Hint from the user: ${data(e).text}`);
   const budget = inputs
     .filter((e) => e.unit_id === t.id && data(e).kind === "budget_override")
     .at(-1);
+  const added = inputs
+    .filter((e) => e.unit_id === t.id && data(e).kind === "scope")
+    .flatMap((e) => data(e).scope ?? []);
   return {
+    scope: [...new Set([...t.scope, ...added])],
     constraints: [...ctx.brief.constraints, ...hints],
     budgetTokens: budget
       ? (data(budget).budget_tokens ?? ctx.config.budgetTokens)
@@ -601,12 +611,13 @@ async function runUnit(
       ledger.append({ ...engine, type: "run.paused", data: { reason } });
       return { status: "paused", reason };
     }
-    const { constraints, budgetTokens } = humanInput(ctx, t);
+    const { constraints, budgetTokens, scope } = humanInput(ctx, t);
+    const task = scope.length === t.scope.length ? t : { ...t, scope };
     const tip = await git.revParse(branch);
     const result = await ctx.runner.runAttempt(
       {
         runId: ctx.runId,
-        task: t,
+        task,
         attempt: n,
         tier,
         role,
@@ -713,7 +724,7 @@ async function runUnit(
       attempt: n,
       verdict: "red",
       reasons: failures.map((f) => ({ gate: f.gate, reason: f.reason, evidence: f.evidence })),
-      scope: t.scope,
+      scope: task.scope,
       instruction: RETURN_INSTRUCTION,
     };
     ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);

@@ -262,10 +262,26 @@ describe("heph lifecycle", () => {
 
     await heph(["approve", "plan", "R4"], deps);
     await heph(["hint", "R4", "T2", "use shell arithmetic", "--budget", "5000"], deps);
+    const widened = await heph([
+      "hint",
+      "R4",
+      "T2",
+      "--scope",
+      "NOTES.md",
+      "--scope",
+      "./doc/*.md",
+    ]);
+    expect(widened.data).toMatchObject({ recorded: ["scope"], scope: ["NOTES.md", "doc/*.md"] });
+    for (const bad of ["../x", "/etc/passwd", "**"])
+      expect((await heph(["hint", "R4", "T2", "--scope", bad])).error?.message).toContain(bad);
+    expect((await heph(["hint", "R4", "T2"])).error?.message).toBe(
+      "say something: a hint text, --scope or --budget",
+    );
     await heph(["run", "R4"], deps);
     const t2 = inputs.find((i) => i.brief.task.id === "T2");
     expect(t2?.brief.constraints).toContain("Hint from the user: use shell arithmetic");
     expect(t2?.brief.context.budget_tokens).toBe(5000);
+    expect(t2?.brief.task.scope).toEqual(["add.sh", "NOTES.md", "doc/*.md"]);
 
     const p5 = planner([PLAN]);
     await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R5"], { planner: p5.fn });

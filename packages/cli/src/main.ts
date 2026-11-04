@@ -53,6 +53,7 @@ type Flags = {
   brief?: string;
   runId?: string;
   budget?: number;
+  scope?: string[];
   now: boolean;
   home?: string;
   on?: string;
@@ -97,8 +98,8 @@ function remote(api: Api, follow: (line: string) => void) {
       c<ReturnType<Runtime["status"]> & { stale?: string }>("status", ...(id ? [id] : [])),
     explain: (id: string, unit?: string) =>
       c<ReturnType<Runtime["explain"]>>("explain", id, ...(unit ? [unit] : [])),
-    hint: (id: string, unit: string, text: string, budget?: number) =>
-      c<ReturnType<Runtime["hint"]>>("hint", id, unit, text, ...(budget ? [budget] : [])),
+    hint: (id: string, unit: string, text: string, o: { budget?: number; scope?: string[] }) =>
+      c<ReturnType<Runtime["hint"]>>("hint", id, unit, text, o),
     cancel: (id: string) => c<ReturnType<Runtime["cancel"]>>("cancel", id),
     approveMerge: (id: string) =>
       c<Awaited<ReturnType<Runtime["approveMerge"]>>>("approveMerge", id),
@@ -351,13 +352,17 @@ const COMMANDS: Record<string, Command<unknown>> = {
           need(ctx.args, 0, "run id"),
           need(ctx.args, 1, "unit"),
           ctx.args.slice(2).join(" "),
-          ctx.flags.budget,
+          {
+            ...(ctx.flags.budget ? { budget: ctx.flags.budget } : {}),
+            ...(ctx.flags.scope?.length ? { scope: ctx.flags.scope } : {}),
+          },
         ),
       ),
-    render: (h) => `recorded ${h.recorded.join(" and ")} for ${h.unit} in ${h.run_id}\n`,
+    render: (h) =>
+      `recorded ${h.recorded.join(" and ")} for ${h.unit} in ${h.run_id}${h.scope ? ` (it may also change ${h.scope.join(", ")})` : ""}\n`,
     usage: [
-      "hint <run> <unit> <text> [--budget <tokens>]",
-      "Guide a unit that escalated, then heph run again",
+      "hint <run> <unit> [<text>] [--scope <path>]... [--budget <tokens>]",
+      "Guide a unit that escalated (--scope lets it change more files), then heph run again",
     ],
   }),
   cancel: command({
@@ -566,6 +571,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         brief: { type: "string" },
         "run-id": { type: "string" },
         budget: { type: "string" },
+        scope: { type: "string", multiple: true, default: [] },
         now: { type: "boolean", default: false },
         home: { type: "string" },
         on: { type: "string" },
@@ -600,6 +606,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       ...(values.brief ? { brief: values.brief } : {}),
       ...(values["run-id"] ? { runId: values["run-id"] } : {}),
       ...(values.budget ? { budget: Number.parseInt(values.budget, 10) } : {}),
+      ...(values.scope?.length ? { scope: values.scope } : {}),
       ...(values.workspace ? { workspace: values.workspace } : {}),
     };
     // Tests that start heph processes inject a scripted planner and worker this way.

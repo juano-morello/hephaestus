@@ -139,6 +139,49 @@ describe("createRun, recordPlan, buildRun", () => {
     ledger.close();
   });
 
+  test("a scope hint lets its unit change more files, and the worker is told", async () => {
+    // S2 follows the hint: it also writes NOTES.md, and says so.
+    const inputs: SpawnInput[] = [];
+    const worker: Worker = {
+      async spawn(input) {
+        inputs.push(input);
+        const id = input.brief.task.id as keyof typeof crossRepoFiles;
+        const files: Record<string, string> = { ...(crossRepoFiles[id] ?? {}) };
+        if (id === "S2") files["NOTES.md"] = "loot\n";
+        writeFiles(input.workdir, files);
+        return {
+          output: { schema: 1, summary: "", claims: [], touched: Object.keys(files) },
+          transcript: "",
+          usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+          exit: "ok",
+        };
+      },
+    };
+    const { ledger, options } = await setup(worker);
+    createRun(options);
+    recordPlan(options, options.plan);
+    ledger.append({
+      run_id: "R1",
+      changeset_id: "C1",
+      config_hash: "cli",
+      actor: "human",
+      type: "human.input",
+      unit_id: "S2",
+      data: { kind: "scope", scope: ["NOTES.md"] },
+    });
+    const { brief: _b, plan: _p, ...rest } = options;
+    const out = await buildRun(rest);
+    expect(inputs.find((i) => i.brief.task.id === "S2")?.brief.task.scope).toEqual([
+      "impl.sh",
+      "NOTES.md",
+    ]);
+    expect(inputs.find((i) => i.brief.task.id === "S1")?.brief.task.scope).not.toContain(
+      "NOTES.md",
+    );
+    expect(out.status).toBe("built");
+    ledger.close();
+  });
+
   test("a cancelled run stops before its next attempt", async () => {
     let ledgerRef: ReturnType<typeof openLedger> | undefined;
     const { worker, inputs } = recordingWorker((input) => {

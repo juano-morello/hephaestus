@@ -104,7 +104,9 @@ minutes: run it in the background, and tell the user it's going. It ends in one 
 - `paused` with a unit that **escalated** (it ran out of attempts or reported it was blocked):
   run `heph explain <run> <unit>` and summarize why for the user (which gate failed, what the
   worker said). If they give direction, record it with
-  `heph hint <run> <unit> "<their guidance>"` and run `heph run <run>` again.
+  `heph hint <run> <unit> "<their guidance>"` and run `heph run <run>` again. If following it
+  means changing a file outside the unit's scope (the gate said `out of scope: <file>`), add
+  `--scope <file>` (relative to the project), and only for files the user agreed to.
 - `paused` on a **rate limit**: it resumes on its own after the limit passes (the daemon does
   this); tell the user and move on.
 

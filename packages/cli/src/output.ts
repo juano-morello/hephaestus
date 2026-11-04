@@ -106,7 +106,13 @@ export const Explain = z
   .strict();
 
 export const Hint = z
-  .object({ run_id: z.string(), unit: z.string(), recorded: z.array(z.string()) })
+  .object({
+    run_id: z.string(),
+    unit: z.string(),
+    recorded: z.array(z.string()),
+    /** --scope: what the unit may now change beyond its plan, project-relative. */
+    scope: z.array(z.string()).optional(),
+  })
   .strict();
 export const Cancelled = z.object({ run_id: z.string(), status: z.literal("failed") }).strict();
 export const Synced = z

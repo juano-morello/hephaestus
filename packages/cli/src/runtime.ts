@@ -24,6 +24,7 @@ import {
   type LandOptions,
   landChangeset,
   mergeChangeset,
+  normalizePath,
   type PullRequests,
   projectFiles,
   type RunPlanOptions,
@@ -526,11 +527,42 @@ export function openRuntime(opts: {
       return { run_id: runId, ...(unit ? { unit } : {}), events };
     },
 
-    hint(runId: string, unit: string, text: string, budget?: number) {
+    /**
+     * heph hint: guidance for a unit, a bigger token budget, and files it may change beyond its
+     * planned scope (project-relative; the project's own repo-relative paths are accepted).
+     */
+    hint(
+      runId: string,
+      unit: string,
+      text: string,
+      more: number | { budget?: number; scope?: string[] } = {},
+    ) {
+      const o = typeof more === "number" ? { budget: more } : more;
+      const budget = o.budget;
       const row = runRow(runId);
       if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is ${row.status}`);
       const { plan: p } = latestPlan(runId);
-      if (!p.tasks.some((t) => t.id === unit)) throw new Error(`run ${runId} has no unit ${unit}`);
+      const task = p.tasks.find((t) => t.id === unit);
+      if (!task) throw new Error(`run ${runId} has no unit ${unit}`);
+      if (!text && !budget && !o.scope?.length)
+        throw new Error("say something: a hint text, --scope or --budget");
+      const projectPath = workspace.projects[task.project]?.path ?? ".";
+      const prefix = projectPath === "." ? "" : `${normalizePath(projectPath)}/`;
+      const scope = (o.scope ?? []).map((raw) => {
+        let s = normalizePath(raw.trim());
+        if (prefix && s.startsWith(prefix)) s = s.slice(prefix.length);
+        if (
+          !s ||
+          s === "." ||
+          s.startsWith("/") ||
+          s.split("/").includes("..") ||
+          /^\*\*(\/\*)?$/.test(s)
+        )
+          throw new Error(
+            `--scope ${raw}: give files or a glob inside project ${task.project}, relative to it`,
+          );
+        return s;
+      });
       const c = created(runId);
       const recorded: string[] = [];
       if (text) {
@@ -549,7 +581,15 @@ export function openRuntime(opts: {
         });
         recorded.push("budget_override");
       }
-      return { run_id: runId, unit, recorded };
+      if (scope.length) {
+        human(runId, c.changesetId, {
+          type: "human.input",
+          unit_id: unit,
+          data: { kind: "scope", scope },
+        });
+        recorded.push("scope");
+      }
+      return { run_id: runId, unit, recorded, ...(scope.length ? { scope } : {}) };
     },
 
     cancel(runId: string) {
