@@ -47,7 +47,7 @@ describe("events for the CLI", () => {
 
 describe("ledger for the CLI", () => {
   test("a revised plan replaces the run's units", () => {
-    const ledger = openLedger(dir(), { nodeId: "n" });
+    const ledger = openLedger(dir(), { nodeId: "devserver" });
     ledger.appendMany([samples["run.created"], samples["run.plan_ready"]]);
     expect(ledger.units("R1").map((u) => u.unit_id)).toEqual(["T1", "T2"]);
     const revised: Plan = {
@@ -62,7 +62,7 @@ describe("ledger for the CLI", () => {
   test("onAppend sees every committed batch, and nothing from a failed one", () => {
     const seen: string[][] = [];
     const ledger = openLedger(join(dir(), "l"), {
-      nodeId: "n",
+      nodeId: "devserver",
       onAppend: (events: LedgerEvent[]) => seen.push(events.map((e) => e.type)),
     });
     ledger.appendMany([samples["run.created"], samples["run.plan_ready"]]);

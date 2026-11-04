@@ -54,7 +54,26 @@ export function migrateStore(db: Db): void {
       BEGIN SELECT RAISE(ABORT, 'ledger events are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
       BEGIN SELECT RAISE(ABORT, 'ledger events are append-only'); END;
+    -- Per peer: the last of the peer's own seq numbers this node has imported. Local state.
+    CREATE TABLE IF NOT EXISTS sync_cursors (
+      peer TEXT PRIMARY KEY,
+      seq INTEGER NOT NULL
+    );
   `);
+}
+
+export const hasEvent = (db: Db, id: string) =>
+  db.prepare("SELECT 1 AS x FROM events WHERE id = ?").get(id) !== undefined;
+
+/** Events after `seq` in local arrival order, and the seq of the last one returned. */
+export function readSince(db: Db, seq: number, limit: number): { seq: number; events: Envelope[] } {
+  const rows = db
+    .prepare(`SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ${Math.trunc(limit)}`)
+    .all<Record<string, unknown>>(seq);
+  return {
+    seq: (rows.at(-1)?.seq as number | undefined) ?? seq,
+    events: rows.map((r) => rowToEvent(r).event as Envelope),
+  };
 }
 
 export function insertEvent(db: Db, e: Envelope): void {
