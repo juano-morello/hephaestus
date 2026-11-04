@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   defaultConfig,
   HomeConfigLayer,
@@ -314,4 +314,15 @@ export function explainConfig({ config, sources }: LoadedConfig): string[] {
   return leaves(config).map(
     ([key, value]) => `${key} = ${show(value)}  (${sourceOf(sources, key)})`,
   );
+}
+
+/** The nearest directory at or above `cwd` with `.heph/workspace.yaml`, else `cwd` itself. */
+export function findWorkspace(cwd: string): string {
+  let dir = resolve(cwd);
+  for (;;) {
+    if (existsSync(join(dir, ".heph", "workspace.yaml"))) return dir;
+    const up = dirname(dir);
+    if (up === dir) return resolve(cwd);
+    dir = up;
+  }
 }

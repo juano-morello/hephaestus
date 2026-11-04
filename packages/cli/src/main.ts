@@ -4,12 +4,31 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { LedgerEvent } from "@hephaestus/ledger";
-import { servePeer, stdinLines, type Transport } from "@hephaestus/node";
-import { explainConfig, type LoadedConfig, loadConfig, loadHomeConfig } from "./config.ts";
+import {
+  type Hello,
+  PROTOCOL_VERSION,
+  servePeer,
+  sshTransport,
+  stdinLines,
+  type Transport,
+} from "@hephaestus/node";
+import { run as procRun } from "@hephaestus/sandbox";
+import {
+  explainConfig,
+  findWorkspace,
+  type LoadedConfig,
+  loadConfig,
+  loadHomeConfig,
+} from "./config.ts";
+import { type DoctorReport, doctor, doctorText } from "./doctor.ts";
+
+export { findWorkspace };
+
 import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
+import { hephVersion as heph_version } from "./version.ts";
 
 /** Output schema version of every `--json` envelope (SPEC section 16). */
 export const JSON_SCHEMA = 1;
@@ -38,6 +57,7 @@ type Flags = {
   now: boolean;
   home?: string;
   on?: string;
+  tests: boolean;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -45,6 +65,10 @@ type Command<T> = {
   run: (ctx: Ctx) => Promise<T>;
   /** Human output; `--json` prints `data` in the envelope instead. */
   render: (data: T) => string;
+  /** For heph help: the command with its arguments, and what it does. Unlisted without. */
+  usage?: [string, string];
+  /** The exit code for a command that ran: 0 unless given. */
+  exitCode?: (data: T) => number;
 };
 
 const command = <T>(c: Command<T>): Command<unknown> => c as Command<unknown>;
@@ -163,6 +187,34 @@ const need = (args: string[], i: number, what: string) => {
   return v;
 };
 
+type MergeView = {
+  run_id: string;
+  result:
+    | { status: "merged" | "closed" }
+    | { status: "not_ready"; reasons: string[] }
+    | { status: "open"; open: string[] }
+    | { status: "half_landed"; merged?: string[]; reason: string }
+    | { status: "aborted"; reason: string };
+};
+
+/** `heph approve merge` and `heph merge status`, in words. */
+export function mergeText({ run_id, result: r }: MergeView): string {
+  switch (r.status) {
+    case "merged":
+      return `${run_id}: merged\n`;
+    case "closed":
+      return `${run_id}: a pull request was closed without merging; the run is aborted\n`;
+    case "not_ready":
+      return `${run_id}: not merged yet\n${r.reasons.map((x) => `  ${x}\n`).join("")}next: heph approve merge ${run_id} again once that is fixed\n`;
+    case "open":
+      return `${run_id}: pull requests still open: ${r.open.join(", ")}\n`;
+    case "half_landed":
+      return `${run_id}: HALF LANDED${r.merged?.length ? ` (merged: ${r.merged.join(", ")})` : ""}: ${r.reason}\n`;
+    case "aborted":
+      return `${run_id}: aborted: ${r.reason}\n`;
+  }
+}
+
 const tasksText = (
   tasks: { id: string; kind: string; project: string; lane: string; title: string }[] = [],
 ) => tasks.map((t) => `  ${t.id} ${t.kind} ${t.project} (${t.lane}): ${t.title}`).join("\n");
@@ -214,22 +266,35 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ...r.written.map((f) => `  ${f}`),
         "",
       ].join("\n"),
+    usage: [
+      "init [--force]",
+      "Set up .heph/ in this workspace (finds projects and their commands)",
+    ],
   }),
-  new: newCommand,
+  new: {
+    ...newCommand,
+    usage: [
+      "new --brief <file> [--on <node>]",
+      "Plan a run from a brief (--on local keeps it here); it waits for your approval",
+    ],
+  },
   "new feature": newCommand,
   "plan show": command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.planShow(need(ctx.args, 0, "run id"))),
     render: (p) =>
       `plan ${p.plan_id} of ${p.run_id} (${p.approved ? "approved" : "not approved"})\n${tasksText(p.tasks)}\norder: ${p.order.join(" -> ")}\n${p.risks.map((r) => `risk: ${r}`).join("\n")}\n`,
+    usage: ["plan show <run>", "Show a run's plan"],
   }),
   "plan revise": command({
     run: (ctx) =>
       withRuntime(ctx, (rt) => rt.revise(need(ctx.args, 0, "run id"), ctx.args.slice(1).join(" "))),
     render: planText,
+    usage: ["plan revise <run> <feedback>", "Plan again with your feedback"],
   }),
   "approve plan": command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.approvePlan(need(ctx.args, 0, "run id"))),
     render: (a) => `approved plan ${a.plan_id} of ${a.run_id}; next: heph run ${a.run_id}\n`,
+    usage: ["approve plan <run>", "Approve the plan, so the run can build"],
   }),
   run: command({
     run: (ctx) =>
@@ -247,6 +312,10 @@ const COMMANDS: Record<string, Command<unknown>> = {
       ]
         .filter(Boolean)
         .join("\n")}\n`,
+    usage: [
+      "run <run> [--now]",
+      "Build the plan, then stage it (pull requests where repos have a remote)",
+    ],
   }),
   status: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.status(ctx.args[0])),
@@ -263,11 +332,13 @@ const COMMANDS: Record<string, Command<unknown>> = {
         "",
       ].join("\n");
     },
+    usage: ["status [<run>]", "List runs, or show one"],
   }),
   explain: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.explain(need(ctx.args, 0, "run id"), ctx.args[1])),
     render: (x) =>
       `${x.events.map((e) => `${e.ts.slice(11, 19)} ${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${e.summary}`).join("\n")}\n`,
+    usage: ["explain <run> [<unit>]", "What happened in a run, one line per event"],
   }),
   hint: command({
     run: (ctx) =>
@@ -280,18 +351,25 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ),
       ),
     render: (h) => `recorded ${h.recorded.join(" and ")} for ${h.unit} in ${h.run_id}\n`,
+    usage: [
+      "hint <run> <unit> <text> [--budget <tokens>]",
+      "Guide a unit that escalated, then heph run again",
+    ],
   }),
   cancel: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.cancel(need(ctx.args, 0, "run id"))),
     render: (c) => `cancelled ${c.run_id}\n`,
+    usage: ["cancel <run>", "Stop a run for good"],
   }),
   "approve merge": command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.approveMerge(need(ctx.args, 0, "run id"))),
-    render: (m) => `merge of ${m.run_id}: ${JSON.stringify(m.result)}\n`,
+    render: (m) => mergeText(m as MergeView),
+    usage: ["approve merge <run>", "Merge a staged run (only you run this, never an agent)"],
   }),
   "merge status": command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.mergeStatus(need(ctx.args, 0, "run id"))),
-    render: (m) => `merge of ${m.run_id}: ${JSON.stringify(m.result)}\n`,
+    render: (m) => mergeText(m as MergeView),
+    usage: ["merge status <run>", "Check pull requests merged on GitHub directly"],
   }),
   /**
    * The far side of node-to-node traffic (SPEC section 7), run through `ssh <host> heph peer`:
@@ -345,21 +423,31 @@ const COMMANDS: Record<string, Command<unknown>> = {
       process.exit(0);
     },
     render: () => "",
+    usage: [
+      "daemon",
+      "Run this node's daemon in the foreground (the installer runs it as a service)",
+    ],
   }),
   sync: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.sync()),
     render: (r) =>
       `${r.peers.map((p) => (p.ok ? `${p.node}: pulled ${p.pulled}, pushed ${p.pushed}` : `${p.node}: ${p.error}`)).join("\n") || "no nodes configured"}\n`,
+    usage: ["sync", "Exchange run events with the other nodes now"],
   }),
   handoff: command({
     run: (ctx) =>
       withRuntime(ctx, (rt) => rt.handoff(need(ctx.args, 0, "run id"), need(ctx.args, 1, "node"))),
     render: (h) => `handed ${h.run_id} to ${h.to}; it continues there (${h.dir})\n`,
+    usage: [
+      "handoff <run> <node>",
+      "Move a run to another node; a build in progress continues there",
+    ],
   }),
   adopt: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.adopt(need(ctx.args, 0, "run id"), ctx.flags.force)),
     render: (a) =>
       `ADOPTED ${a.run_id} from ${a.from}: this node now owns it. If ${a.from} comes back, it must not write this run.\n`,
+    usage: ["adopt <run> [--force]", "Take over a run whose node is gone"],
   }),
   "config explain": command<LoadedConfig>({
     run: (ctx) =>
@@ -371,18 +459,72 @@ const COMMANDS: Record<string, Command<unknown>> = {
         overrides: parseSets(ctx.flags.set),
       }),
     render: (loaded) => `${explainConfig(loaded).join("\n")}\n`,
+    usage: ["config explain", "Every config value and where it comes from"],
+  }),
+  doctor: command<DoctorReport>({
+    run: async (ctx) => {
+      const home = homeOf(ctx);
+      const config = await loadHomeConfig(home);
+      return doctor({
+        home,
+        cwd: ctx.flags.workspace ? resolve(ctx.cwd, ctx.flags.workspace) : ctx.cwd,
+        tests: ctx.flags.tests,
+        env: {
+          probeModel: async (pattern, cwd) =>
+            (await import("@hephaestus/workers")).probeModel(pattern, cwd),
+          daemonUp: async () => !!(await daemonAt(home)),
+          helloNode: async (node) => {
+            const peer = config.nodes[node];
+            const t = ctx.connect ? ctx.connect(node) : sshTransport(peer ?? { ssh: node });
+            try {
+              return await t.request<Hello>("hello", {
+                from: config.node.id,
+                protocol: PROTOCOL_VERSION,
+              });
+            } finally {
+              await t.close();
+            }
+          },
+          ghLoggedIn: async () =>
+            (await procRun(["gh", "auth", "status", "-h", "github.com"]).catch(() => undefined))
+              ?.code === 0,
+        },
+      });
+    },
+    render: doctorText,
+    exitCode: (r) => (r.ok ? 0 : 1),
+    usage: [
+      "doctor [--tests]",
+      "Check this node can plan, build and land (--tests: each project's tests in the sandbox)",
+    ],
+  }),
+  help: command({
+    run: async () => ({ usage: usageText() }),
+    render: (h) => h.usage,
+  }),
+  version: command({
+    run: async () => heph_version(),
+    render: (v) => `heph ${v.version} (${v.build})\n`,
+    usage: ["version", "The version of this heph"],
   }),
 };
 
-/** The nearest directory at or above `cwd` with `.heph/workspace.yaml`, else `cwd` itself. */
-export function findWorkspace(cwd: string): string {
-  let dir = resolve(cwd);
-  for (;;) {
-    if (existsSync(join(dir, ".heph", "workspace.yaml"))) return dir;
-    const up = dirname(dir);
-    if (up === dir) return resolve(cwd);
-    dir = up;
-  }
+/** heph help: every listed command, then the options every command takes. */
+function usageText(): string {
+  const rows = Object.values(COMMANDS).flatMap((c) => (c.usage ? [c.usage] : []));
+  const width = Math.max(...rows.map(([u]) => u.length));
+  return [
+    "usage: heph <command> [options]",
+    "",
+    ...rows.map(([u, what]) => `  ${u.padEnd(width)}  ${what}`),
+    "",
+    "options for every command:",
+    "  --json              machine-readable output: { schema, command, ok, data | error }",
+    "  --workspace <dir>   the workspace (default: the nearest .heph/ at or above here)",
+    "  --home <dir>        this node's home (default: $HEPH_HOME, else ~/.heph)",
+    "  --set key=value     override a config value for this command",
+    "",
+  ].join("\n");
 }
 
 /** `--set key=value`; the value is parsed as YAML, so numbers and booleans keep their type. */
@@ -423,13 +565,23 @@ export async function run(argv: string[], io: Io): Promise<number> {
         now: { type: "boolean", default: false },
         home: { type: "string" },
         on: { type: "string" },
+        help: { type: "boolean", short: "h", default: false },
+        tests: { type: "boolean", default: false },
+        version: { type: "boolean", default: false },
       },
     });
     json = values.json ?? false;
-    const found = match(positionals);
+    const asked = values.help
+      ? ["help"]
+      : values.version
+        ? ["version"]
+        : positionals.length
+          ? positionals
+          : ["help"];
+    const found = match(asked);
     if (!found) {
       name = positionals.join(" ");
-      throw new Error(`unknown command "${name}"; known: ${Object.keys(COMMANDS).join(", ")}`);
+      throw new Error(`unknown command "${name}" (heph help lists them)`);
     }
     name = found.name;
     const cmd = COMMANDS[name] as Command<unknown>;
@@ -438,6 +590,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       set: values.set ?? [],
       force: values.force ?? false,
       now: values.now ?? false,
+      tests: values.tests ?? false,
       ...(values.home ? { home: values.home } : {}),
       ...(values.on ? { on: values.on } : {}),
       ...(values.brief ? { brief: values.brief } : {}),
@@ -457,7 +610,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     } else {
       io.stdout(cmd.render(data));
     }
-    return 0;
+    return cmd.exitCode?.(data) ?? 0;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (json) {
