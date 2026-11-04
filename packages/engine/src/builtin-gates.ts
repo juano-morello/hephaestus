@@ -31,8 +31,11 @@ const changed = (ctx: UnitGateContext) =>
 export const diffScopeGate: DiffGate = {
   name: "diff_scope",
   run(ctx) {
+    // Locked files are reported once, by locked_paths.
+    const locked = new Set(ctx.lockedPaths.map(normalizePath));
     const evidence = changed(ctx).flatMap(({ path, inside }) => {
       if (!inside) return [`outside project: ${path}`];
+      if (locked.has(path)) return [];
       return ctx.task.scope.some((g) => globsOverlap(g, path)) ? [] : [`out of scope: ${path}`];
     });
     return result(
@@ -88,19 +91,31 @@ export function tail(stdout: string, stderr: string): string {
 
 type CommandKey = "test" | "typecheck" | "lint";
 
+const shellQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+
 function commandGate(name: "tests" | "typecheck" | "lint", key: CommandKey): UnitGate {
   return {
     name,
     needsSandbox: true,
     async run(ctx) {
       const isTestUnit = ctx.task.kind === "test";
-      // New tests may reference code that doesn't exist yet: compile errors are the expected red.
-      if (name !== "tests" && isTestUnit) return result(name, true, "skipped for test units");
-      const command = ctx.commands[key];
+      let command = ctx.commands[key];
+      const usesFiles = name !== "tests" && (command?.includes("{files}") ?? false);
+      // New tests may reference code that doesn't exist yet, so a whole-project typecheck or lint
+      // is the expected red. A command scoped with {files} only sees the files the unit changed.
+      if (name !== "tests" && isTestUnit && !usesFiles)
+        return result(name, true, "skipped for test units");
       if (!command) {
         return name === "tests"
           ? result(name, false, "no test command configured")
           : result(name, true, `skipped: no ${name} command configured`);
+      }
+      if (usesFiles) {
+        const files = changed(ctx)
+          .filter((c) => c.inside)
+          .map((c) => shellQuote(c.path));
+        if (!files.length) return result(name, true, "skipped: no changed files in the project");
+        command = command.replaceAll("{files}", files.join(" "));
       }
       if (!ctx.sandbox) return result(name, false, "no sandbox configured for gates");
 
