@@ -96,7 +96,9 @@ export async function doctor(o: {
       detail: `${config.workspace.name}: ${projects
         .map(([p]) => {
           const test = config.projects[p]?.commands.test;
-          return `${p} (${test ? `test: ${test}` : "no test command"})`;
+          const lines = test?.trim().split("\n") ?? [];
+          const shown = lines.length > 1 ? `a ${lines.length}-line script` : lines[0];
+          return `${p} (${test ? `test: ${shown}` : "no test command"})`;
         })
         .join(", ")}`,
       ...(untested.length

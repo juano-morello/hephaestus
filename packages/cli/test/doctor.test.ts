@@ -112,6 +112,15 @@ describe("heph doctor", () => {
     });
   });
 
+  test("a multi-line test command is summarized, not printed", async () => {
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands:\n      test: |\n        sh test_add.sh\n        true\n",
+    );
+    const c = byArea(await doctor({ home, cwd: ws, tests: false, env: env() }));
+    expect(c.workspace?.detail).toBe("calc: calc (test: a 2-line script)");
+  });
+
   test("gh is checked only when a repo has a remote", async () => {
     const noGh = env({ ghLoggedIn: async () => false });
     expect(byArea(await doctor({ home, cwd: ws, tests: false, env: noGh })).gh).toMatchObject({

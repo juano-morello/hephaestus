@@ -143,9 +143,19 @@ async function installHere() {
       const plist = join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
       mkdirSync(join(plist, ".."), { recursive: true });
       writeFileSync(plist, launchdPlist({ heph, path, log: join(hephHome, "daemon.log") }));
+      // bootout returns before the old agent is gone; bootstrap fails (error 5) until it is.
       const domain = `gui/${process.getuid?.()}`;
-      Bun.spawnSync(["launchctl", "bootout", `${domain}/${LAUNCHD_LABEL}`]);
-      sh(["launchctl", "bootstrap", domain, plist]);
+      const target = `${domain}/${LAUNCHD_LABEL}`;
+      Bun.spawnSync(["launchctl", "bootout", target]);
+      for (let i = 0; i < 100 && Bun.spawnSync(["launchctl", "print", target]).exitCode === 0; i++)
+        await Bun.sleep(100);
+      for (let attempt = 1; ; attempt++) {
+        const r = Bun.spawnSync(["launchctl", "bootstrap", domain, plist], { stderr: "pipe" });
+        if (r.exitCode === 0) break;
+        if (attempt === 10)
+          throw new Error(`launchctl bootstrap ${plist}: ${r.stderr.toString().trim()}`);
+        await Bun.sleep(500);
+      }
       say(`daemon running under launchd (${plist}; log ${join(hephHome, "daemon.log")})`);
     } else {
       const unit = join(home, ".config", "systemd", "user", "heph.service");
