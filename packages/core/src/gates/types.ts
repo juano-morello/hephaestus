@@ -37,6 +37,8 @@ export type GateContext = {
   workspace: Workspace;
   limits: PlanLimits;
   projectGates: ProjectGates;
+  /** Tracked files per project, project-relative. When present, scopes are checked against them. */
+  files?: Record<string, string[]>;
 };
 
 export function result(gate: string, evidence: string[], passReason: string, failReason: string) {

@@ -130,17 +130,44 @@ export function testPrecedesImplement(plan: Plan, ctx: GateContext): GateResult 
   );
 }
 
-export function parallelScopesDisjoint(plan: Plan): GateResult {
+const WILDCARD = /[*?[{]/;
+const prefixOf = (projectPath: string | undefined) =>
+  !projectPath || projectPath === "."
+    ? ""
+    : `${projectPath.replace(/^\.\//, "").replace(/\/$/, "")}/`;
+const matches = (glob: string, files: string[]) => files.filter((f) => globsOverlap(glob, f));
+
+/**
+ * Parallel tasks (no produces/consumes path between them) in the same repo must not share files.
+ * Scopes are compared repo-relative, so projects with nested roots in one repo are covered too.
+ * With the project's file list, globs that match existing files are compared on those files;
+ * a glob that matches no file yet may create new ones, so it is compared as a glob.
+ */
+export function parallelScopesDisjoint(plan: Plan, ctx: GateContext): GateResult {
   const { reach } = graph(plan);
   const ordered = (a: Task, b: Task) => reach.get(a.id)?.has(b.id) || reach.get(b.id)?.has(a.id);
+  const project = (t: Task) => ctx.workspace.projects[t.project];
+  const repoOf = (t: Task) => project(t)?.repo ?? `project:${t.project}`;
   const evidence: string[] = [];
 
   plan.tasks.forEach((a, i) => {
     for (const b of plan.tasks.slice(i + 1)) {
-      if (a.project !== b.project || ordered(a, b)) continue;
+      if (repoOf(a) !== repoOf(b) || ordered(a, b)) continue;
+      const files = a.project === b.project ? ctx.files?.[a.project] : undefined;
+      const [pa, pb] = [prefixOf(project(a)?.path), prefixOf(project(b)?.path)];
       for (const ga of a.scope) {
         for (const gb of b.scope) {
-          if (globsOverlap(ga, gb)) evidence.push(`${a.id} x ${b.id}: ${ga} overlaps ${gb}`);
+          if (files) {
+            const [ma, mb] = [matches(ga, files), matches(gb, files)];
+            const shared = ma.find((f) => mb.includes(f));
+            if (shared) {
+              evidence.push(`${a.id} x ${b.id}: ${ga} and ${gb} both match ${shared}`);
+              continue;
+            }
+            if (ma.length && mb.length) continue;
+          }
+          if (globsOverlap(pa + ga, pb + gb))
+            evidence.push(`${a.id} x ${b.id}: ${pa + ga} overlaps ${pb + gb}`);
         }
       }
     }
@@ -149,9 +176,46 @@ export function parallelScopesDisjoint(plan: Plan): GateResult {
   return result(
     "parallel_scope_disjoint",
     evidence,
-    "parallel tasks in each project have disjoint scopes",
-    "parallel tasks in the same project have overlapping scopes",
+    "parallel tasks have disjoint scopes",
+    "parallel tasks have overlapping scopes",
   );
+}
+
+/**
+ * Scopes against the project's real files (needs `ctx.files`): a literal path that doesn't exist
+ * is a new file, fine if its directory exists; a path or glob in a directory that doesn't exist
+ * is almost always a guess. New files are listed in the evidence either way.
+ */
+export function scopePaths(plan: Plan, ctx: GateContext): GateResult {
+  if (!ctx.files)
+    return { gate: "scope_paths", verdict: "pass", reason: "skipped: no file list", evidence: [] };
+  const failures: string[] = [];
+  const notes: string[] = [];
+  for (const t of plan.tasks) {
+    const files = ctx.files[t.project] ?? [];
+    const dirExists = (dir: string) => dir === "" || files.some((f) => f.startsWith(dir));
+    for (const g of t.scope) {
+      if (matches(g, files).length) continue;
+      const wild = g.search(WILDCARD);
+      if (wild < 0) {
+        const dir = g.includes("/") ? g.slice(0, g.lastIndexOf("/") + 1) : "";
+        if (dirExists(dir)) notes.push(`${t.id}: new file ${g}`);
+        else failures.push(`${t.id}: ${g} is in a directory that does not exist (${dir})`);
+        continue;
+      }
+      const dir = g.slice(0, g.lastIndexOf("/", wild) + 1);
+      if (!dirExists(dir))
+        failures.push(`${t.id}: ${g} matches no files and ${dir} does not exist`);
+    }
+  }
+  return failures.length
+    ? {
+        gate: "scope_paths",
+        verdict: "fail",
+        reason: "scopes point at directories that do not exist",
+        evidence: failures,
+      }
+    : { gate: "scope_paths", verdict: "pass", reason: "scopes match the repo", evidence: notes };
 }
 
 export function migrationIrreversible(plan: Plan): GateResult {
@@ -238,9 +302,10 @@ export function runPlanGates(plan: Plan, ctx: GateContext): GateResult[] {
     criteriaCovered(plan, ctx),
     consumesResolve(plan),
     testPrecedesImplement(plan, ctx),
-    parallelScopesDisjoint(plan),
+    parallelScopesDisjoint(plan, ctx),
     migrationIrreversible(plan),
     complexitySanity(plan, ctx),
     sizeLimits(plan, ctx),
+    scopePaths(plan, ctx),
   ];
 }

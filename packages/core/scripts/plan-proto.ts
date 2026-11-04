@@ -3,7 +3,10 @@
 //
 //   bun run packages/core/scripts/plan-proto.ts --brief <file> --workspace <file> [--runs N]
 //     [--model opus] [--thinking high] [--prompt <file>] [--gates <file>] [--repo-maps <dir>]
-//     [--out <dir>]
+//     [--out <dir>] [--workspace-root <dir>]
+//
+// --workspace-root points at the real repos (resolved like workspace.yaml's repo paths); the plan
+// gates then check scopes against each project's tracked files.
 
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -35,6 +38,7 @@ const { values } = parseArgs({
     gates: { type: "string" },
     "repo-maps": { type: "string" },
     out: { type: "string" },
+    "workspace-root": { type: "string" },
   },
 });
 
@@ -88,7 +92,32 @@ const prompt = template
   .replace("{{project_gates}}", gatesFile.text.trim())
   .replace("{{repo_maps}}", repoMaps.join("\n\n"));
 
-const ctx: GateContext = { brief, workspace, limits: DEFAULT_LIMITS, projectGates };
+/** Tracked files per project, project-relative, read with git from the real repos. */
+function projectFiles(root: string): Record<string, string[]> {
+  const byRepo = new Map<string, string[]>();
+  for (const [repo, path] of Object.entries(workspace.repos)) {
+    const r = Bun.spawnSync(["git", "ls-files"], { cwd: resolve(root, path) });
+    if (r.exitCode !== 0) throw new Error(`git ls-files failed in ${path}: ${r.stderr.toString()}`);
+    byRepo.set(repo, r.stdout.toString().split("\n").filter(Boolean));
+  }
+  return Object.fromEntries(
+    Object.entries(workspace.projects).map(([name, p]) => {
+      const prefix = p.path === "." ? "" : `${p.path.replace(/^\.\//, "").replace(/\/$/, "")}/`;
+      const files = (byRepo.get(p.repo) ?? [])
+        .filter((f) => f.startsWith(prefix))
+        .map((f) => f.slice(prefix.length));
+      return [name, files];
+    }),
+  );
+}
+
+const ctx: GateContext = {
+  brief,
+  workspace,
+  limits: DEFAULT_LIMITS,
+  projectGates,
+  ...(values["workspace-root"] ? { files: projectFiles(resolve(values["workspace-root"])) } : {}),
+};
 
 type Usage = { input: number; output: number; cacheRead: number; totalTokens: number };
 type RunRecord = {
