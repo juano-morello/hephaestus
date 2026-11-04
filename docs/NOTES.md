@@ -374,6 +374,10 @@ A presentation zoom for the Godot client, driven from Claude Code with the skill
 8. **Open: stacking.** You asked to build the 2.5x change on the unmerged zoom branch. A run always starts from its target, so you merged first. Building on another run's branch (and landing in order) is not built; it belongs with step 3.
 9. **Seen, not a heph problem:** the agent's own Brief had a wrong decision number (23 was taken); the documenter refused to duplicate it, which is the `blocked` exit working.
 
+## Following a run from the chat host (2026-11-04)
+
+Feedback from using heph inside Claude Code: nothing told the agent what a background run was doing, and an obviously structural stall (a unit escalating over and over) cost attempts before anyone was asked. **Built: `heph watch <run>`** (SPEC section 16), a polling milestone stream that the skill starts with Monitor (Claude Code) and checks by hand in Codex. It ends with `waiting for you` or `the planner escalated`, and the skill tells the agent to explain and ask rather than retry. **Not built:** MCP progress notifications (hosts differ in whether the model sees them; the MCP server stays on the roadmap and can reuse the same milestones), and detecting a structural stall earlier than the unit's own escalation (the second half of the feedback; today it relies on the escalation and the agent asking).
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.

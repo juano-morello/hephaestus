@@ -111,6 +111,21 @@ its own approval; the waiting `heph run` builds whichever plan is approved. It e
 - `paused` on a **rate limit**: it resumes on its own after the limit passes (the daemon does
   this); tell the user and move on.
 
+### Following a run
+
+`heph run` prints only to its own terminal, so start the follower next to it. In Claude Code, run
+`heph watch <run>` with the Monitor tool (or as a second background command) right after
+`heph run`: it prints one line per milestone (attempt started or finished, a unit accepted or
+returned, escalations, pauses, staging) and exits when the run is staged, failed, or needs the
+user. Tell the user each time a unit is accepted or goes red, in one short line, not every
+line. In Codex there is no streaming: look at `heph watch <run>` or `heph status <run>` whenever
+you come back to the conversation.
+
+When `heph watch` ends with `waiting for you` or `the planner escalated`, don't retry and don't
+spend more attempts: run `heph explain <run> <unit>`, say plainly what is blocked (a criterion a
+later task owns, a file outside the unit's scope, a decision the Brief got wrong), and ask the
+user how to go on: a hint (`--scope` for a file), a plan revision, or a new Brief.
+
 `heph status <run>` shows where a run is at any time; `heph status` lists all runs.
 `heph cancel <run>` stops one for good; only do that when the user asks.
 

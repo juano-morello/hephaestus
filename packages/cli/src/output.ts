@@ -157,6 +157,9 @@ export const OUTPUT = {
   run: RunResult,
   status: z.union([StatusOne, StatusList]),
   explain: Explain,
+  watch: z
+    .object({ run_id: z.string(), status: z.string(), reason: z.string().optional() })
+    .strict(),
   hint: Hint,
   cancel: Cancelled,
   sync: Synced,

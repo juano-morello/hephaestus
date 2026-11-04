@@ -28,6 +28,7 @@ import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
 import { hephVersion as heph_version } from "./version.ts";
+import { watchRun } from "./watch.ts";
 
 /** Output schema version of every `--json` envelope (SPEC section 16). */
 export const JSON_SCHEMA = 1;
@@ -375,6 +376,30 @@ const COMMANDS: Record<string, Command<unknown>> = {
       ].join("\n");
     },
     usage: ["status [<run>]", "List runs, or show one"],
+  }),
+  watch: command({
+    run: (ctx) =>
+      withRuntime(ctx, (rt) =>
+        watchRun(
+          need(ctx.args, 0, "run id"),
+          {
+            status: async (id) => {
+              const s = await rt.status(id);
+              if (!("run" in s)) throw new Error(`no such run ${id}`);
+              return s;
+            },
+            explain: (id) => rt.explain(id),
+          },
+          // stdout is what an agent's Monitor reads; --json keeps stdout for the envelope.
+          (l) => (ctx.flags.json ? ctx.stderr(`${l}\n`) : ctx.stdout(`${l}\n`)),
+          ctx.env.HEPH_WATCH_MS ? { intervalMs: Number(ctx.env.HEPH_WATCH_MS) } : {},
+        ),
+      ),
+    render: () => "",
+    usage: [
+      "watch <run>",
+      "One line per milestone of a run until it is staged, failed or needs you (for an agent's Monitor)",
+    ],
   }),
   explain: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.explain(need(ctx.args, 0, "run id"), ctx.args[1])),
