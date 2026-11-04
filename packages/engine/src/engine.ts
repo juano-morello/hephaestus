@@ -730,7 +730,12 @@ async function runUnit(
     ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);
   }
 
-  const reason = `red after ${config.maxAttempts} attempts`;
+  // Attempts are numbered across escalations; each escalation gives a fresh maxAttempts.
+  const all = history.next + config.maxAttempts - history.used - 1;
+  const reason =
+    all > config.maxAttempts
+      ? `red after ${config.maxAttempts} more attempts (${all} in all)`
+      : `red after ${config.maxAttempts} attempts`;
   const engine = { ...unit, actor: "engine" as const };
   ledger.appendMany([
     { ...engine, type: "unit.escalated", data: { reason } },

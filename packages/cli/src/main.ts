@@ -447,7 +447,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
     run: async (ctx) => {
       const home = homeOf(ctx);
       const config = await loadHomeConfig(home);
-      const log = (l: string) => ctx.stderr(`heph daemon: ${l}\n`);
+      const log = (l: string) => ctx.stderr(daemonLine(l));
       const host = openHost({
         home,
         config,
@@ -592,6 +592,10 @@ function match(positionals: string[]): { name: string; args: string[] } | undefi
   }
   return undefined;
 }
+
+/** A daemon log line, timestamped: under launchd the log is a plain file. */
+export const daemonLine = (text: string, now = new Date()) =>
+  `${now.toISOString()} heph daemon: ${text}\n`;
 
 /** Errors whose cause isn't heph's: say what to do about them. */
 export function explainError(message: string): string {

@@ -163,7 +163,10 @@ export function localRunner(o: LocalRunnerOptions): Runner {
           };
         }
 
-        const sha = await git.commitAll(worktree, `heph: ${req.runId} ${t.id} a${req.attempt}`);
+        const sha = await git.commitAll(
+          worktree,
+          `${t.title}\n\nHeph-Run: ${req.runId}\nHeph-Unit: ${t.id}\nHeph-Attempt: ${req.attempt}\n`,
+        );
         const diff = await git.diff(req.tip, sha);
         const parsed = WorkerResult.safeParse(out.output);
         const gates: GateResult[] = [];

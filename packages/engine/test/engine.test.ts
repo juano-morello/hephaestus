@@ -205,8 +205,16 @@ describe("runPlan", () => {
       "server/inventory/stack.go",
       "server/inventory/stack_test.go",
     ]);
-    expect(await runOk(["git", "log", "--format=%s", "main..heph/R1"], { cwd: repoDir })).toBe(
-      "heph: R1 T2 a1\nheph: R1 T1 a1\n",
+    // Commits say what the unit did (its title), and which run, unit and attempt made them.
+    expect(
+      await runOk(
+        ["git", "log", "--format=%s|%(trailers:only,unfold,separator=;)", "main..heph/R1"],
+        {
+          cwd: repoDir,
+        },
+      ),
+    ).toBe(
+      "T2|Heph-Run: R1;Heph-Unit: T2;Heph-Attempt: 1\nT1|Heph-Run: R1;Heph-Unit: T1;Heph-Attempt: 1\n",
     );
 
     expect(types()).toEqual([

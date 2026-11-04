@@ -196,6 +196,24 @@ describe("resuming a build", () => {
     ledger.close();
   });
 
+  test("a unit escalating again says how many attempts it had in all", async () => {
+    const gate: UnitGate = {
+      name: "red",
+      run: ({ task }) =>
+        task.id === "S2"
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: [] }
+          : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
+    };
+    const { ledger, rest } = await setup([gate]);
+    expect(await buildRun({ ...rest, worker: scripted().worker })).toMatchObject({
+      reason: "S2: red after 3 attempts",
+    });
+    expect(await buildRun({ ...rest, worker: scripted().worker })).toMatchObject({
+      reason: "S2: red after 3 more attempts (6 in all)",
+    });
+    ledger.close();
+  });
+
   test("a crash after the last attempt but before the escalation escalates without a new attempt", async () => {
     const gate: UnitGate = {
       name: "red",

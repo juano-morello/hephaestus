@@ -657,13 +657,15 @@ export function describe(e: { type: string; data: unknown; attempt?: number | un
     case "run.plan_escalated":
       return `escalated: ${(d.reasons as string[]).join("; ")}`;
     case "human.input":
-      return `${d.kind}${d.target ? ` ${d.target}` : ""}${d.text ? `: ${d.text}` : ""}${d.budget_tokens ? ` (${d.budget_tokens} tokens)` : ""}`;
+      return `${d.kind}${d.target ? ` ${d.target}` : ""}${d.text ? `: ${d.text}` : ""}${d.budget_tokens ? ` (${d.budget_tokens} tokens)` : ""}${Array.isArray(d.scope) ? `: may also change ${d.scope.join(", ")}` : ""}`;
     case "effect.intended":
       return `${String(d.effect).replaceAll("_", " ")}: ${d.target}${d.after ? ` to ${String(d.after).slice(0, 7)}` : ""}`;
     case "effect.done":
       return `${String(d.effect).replaceAll("_", " ")} ${d.state}${d.sha ? ` (${String(d.sha).slice(0, 7)})` : ""}${d.url ? ` ${d.url}` : ""}`;
     case "run.handed_off":
       return `handed off to ${d.to}`;
+    case "run.paused":
+      return d.reason === "user" ? "run paused: waiting for you" : `run paused: ${d.reason}`;
     case "merge.staged":
       return d.prs
         ? `staged as pull requests: ${Object.values(d.prs as object).join(", ")}`

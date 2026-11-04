@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
-import { explainError, mergeText, run } from "../src/main.ts";
+import { daemonLine, explainError, mergeText, run } from "../src/main.ts";
+import { describe as said } from "../src/runtime.ts";
 
 function io() {
   const out: string[] = [];
@@ -84,4 +85,19 @@ test("a refused write to heph's home says it is probably a sandbox, and what to 
     "If it runs inside a sandbox (Claude Code's Bash sandbox, say), run it outside",
   );
   expect(explainError("run R1 is failed")).toBe("run R1 is failed");
+});
+
+test("daemon log lines carry the time", () => {
+  expect(daemonLine("r-1 staged", new Date("2026-11-04T19:59:15.875Z"))).toBe(
+    "2026-11-04T19:59:15.875Z heph daemon: r-1 staged\n",
+  );
+});
+
+test("a pause for the user and a scope hint read as what they mean", () => {
+  const e = (type: string, data: unknown) => ({ type, data }) as Parameters<typeof said>[0];
+  expect(said(e("run.paused", { reason: "user" }))).toBe("run paused: waiting for you");
+  expect(said(e("run.paused", { reason: "handoff" }))).toBe("run paused: handoff");
+  expect(said(e("human.input", { kind: "scope", scope: ["NOTES.md"] }))).toBe(
+    "scope: may also change NOTES.md",
+  );
 });
