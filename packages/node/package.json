@@ -1,0 +1,16 @@
+{
+  "name": "@hephaestus/node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@hephaestus/core": "workspace:*",
+    "@hephaestus/engine": "workspace:*",
+    "@hephaestus/ledger": "workspace:*",
+    "@hephaestus/sandbox": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

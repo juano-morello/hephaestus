@@ -295,6 +295,20 @@ function repoProjects(
 
 const show = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 
+export type HomeConfig = Pick<ResolvedConfig, "node" | "nodes" | "workspaces" | "sync">;
+
+/** Only the node's own settings (no workspace): what `heph peer` and `heph sync` need. */
+export async function loadHomeConfig(home: string, nodeId?: string): Promise<HomeConfig> {
+  const d = defaultConfig({ nodeId: nodeId ?? hostname() });
+  const layer = (await readLayer(join(home, "config.yaml"), HomeConfigLayer))?.data ?? {};
+  return {
+    node: { ...d.node, ...layer.node },
+    nodes: { ...d.nodes, ...layer.nodes },
+    workspaces: { ...d.workspaces, ...layer.workspaces },
+    sync: { ...d.sync, ...layer.sync },
+  };
+}
+
 /** `key = value  (source)` for every resolved leaf, in config order. */
 export function explainConfig({ config, sources }: LoadedConfig): string[] {
   return leaves(config).map(

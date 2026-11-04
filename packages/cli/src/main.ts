@@ -3,7 +3,9 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { explainConfig, type LoadedConfig, loadConfig } from "./config.ts";
+import { openLedger } from "@hephaestus/ledger";
+import { servePeer, stdinLines, syncMethods } from "@hephaestus/node";
+import { explainConfig, type LoadedConfig, loadConfig, loadHomeConfig } from "./config.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { type Deps, describe, openRuntime, type Runtime } from "./runtime.ts";
 
@@ -15,6 +17,8 @@ export type Io = {
   env: Record<string, string | undefined>;
   stdout: (s: string) => void;
   stderr: (s: string) => void;
+  /** Lines of stdin, for `heph peer`. Default: the process's stdin. */
+  stdin?: AsyncIterable<string>;
   /** Test injection: planner, worker, pull requests. */
   deps?: Deps;
 };
@@ -28,6 +32,7 @@ type Flags = {
   runId?: string;
   budget?: number;
   now: boolean;
+  home?: string;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -39,7 +44,7 @@ type Command<T> = {
 
 const command = <T>(c: Command<T>): Command<unknown> => c as Command<unknown>;
 
-const homeOf = (ctx: Ctx) => ctx.env.HEPH_HOME || join(homedir(), ".heph");
+const homeOf = (ctx: Ctx) => ctx.flags.home || ctx.env.HEPH_HOME || join(homedir(), ".heph");
 const workspaceOf = (ctx: Ctx) =>
   ctx.flags.workspace ? resolve(ctx.cwd, ctx.flags.workspace) : findWorkspace(ctx.cwd);
 
@@ -212,6 +217,27 @@ const COMMANDS: Record<string, Command<unknown>> = {
     run: (ctx) => withRuntime(ctx, (rt) => rt.mergeStatus(need(ctx.args, 0, "run id"))),
     render: (m) => `merge of ${m.run_id}: ${JSON.stringify(m.result)}\n`,
   }),
+  /**
+   * The far side of node-to-node traffic (SPEC section 7), run through `ssh <host> heph peer`:
+   * answers protocol requests on stdin until it closes. Prints nothing else on stdout.
+   */
+  peer: command({
+    run: async (ctx) => {
+      const home = homeOf(ctx);
+      const config = await loadHomeConfig(home);
+      const ledger = openLedger(home, { nodeId: config.node.id });
+      try {
+        await servePeer(syncMethods(ledger), {
+          lines: ctx.stdin ?? stdinLines(Bun.stdin.stream()),
+          write: ctx.stdout,
+        });
+      } finally {
+        ledger.close();
+      }
+      return { served: true };
+    },
+    render: () => "",
+  }),
   "config explain": command<LoadedConfig>({
     run: (ctx) =>
       loadConfig({
@@ -272,6 +298,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         "run-id": { type: "string" },
         budget: { type: "string" },
         now: { type: "boolean", default: false },
+        home: { type: "string" },
       },
     });
     json = values.json ?? false;
@@ -287,6 +314,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       set: values.set ?? [],
       force: values.force ?? false,
       now: values.now ?? false,
+      ...(values.home ? { home: values.home } : {}),
       ...(values.brief ? { brief: values.brief } : {}),
       ...(values["run-id"] ? { runId: values["run-id"] } : {}),
       ...(values.budget ? { budget: Number.parseInt(values.budget, 10) } : {}),
