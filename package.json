@@ -15,6 +15,7 @@
     "test": "bun test",
     "heph": "bun run packages/cli/src/main.ts",
     "build:heph": "bun build --compile packages/cli/src/main.ts --outfile dist/heph --external omp-legacy-pi-modules",
+    "install:heph": "bun packages/cli/scripts/install.ts",
     "build:heph:linux": "bun build --compile --target=bun-linux-x64 packages/cli/src/main.ts --outfile dist/linux-x64/heph --external omp-legacy-pi-modules && bun packages/cli/scripts/fetch-natives.ts linux-x64 dist/linux-x64"
   },
   "devDependencies": {
