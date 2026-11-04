@@ -61,12 +61,16 @@ export async function handOff(
   const me = o.ledger.nodeId;
   const run = o.ledger.run(o.runId);
   if (!run) throw new Error(`no run ${o.runId}`);
+  const peer = await hello(o.ledger, o.transport);
+  if (peer.node !== o.to) throw new Error(`that peer is ${peer.node}, not ${o.to}`);
+  // Already handed to `to` by this node: a handoff that stopped after run.handed_off. Finish it.
+  const last = o.ledger.read({ run_id: o.runId, types: ["run.handed_off"] }).at(-1)?.event;
+  if (run.owner_node === o.to && last?.node_id === me && (last.data as { to: string }).to === o.to)
+    return { pushed: [], ...(await deliver(o)) };
   if (run.owner_node !== me)
     throw new Error(`run ${o.runId} is owned by ${run.owner_node}; hand it off from there`);
   if (TERMINAL.has(run.status)) throw new Error(`run ${o.runId} is ${run.status}`);
   if (o.to === me) throw new Error(`run ${o.runId} is already on ${me}`);
-  const peer = await hello(o.ledger, o.transport);
-  if (peer.node !== o.to) throw new Error(`that peer is ${peer.node}, not ${o.to}`);
 
   const plan = latestPlan(o.ledger, o.runId);
   const repos = plan ? touchedRepos(o.workspace as Workspace, plan) : [];
@@ -112,13 +116,18 @@ export async function handOff(
   await point(o.chaos, "before:run.handed_off");
   o.ledger.append({ ...scope.base, actor: "engine", type: "run.handed_off", data: { to: o.to } });
   await point(o.chaos, "after:run.handed_off");
+  return { pushed, ...(await deliver(o)) };
+}
+
+/** The last steps: the new owner gets the events, then takes the run. */
+async function deliver(o: HandoffOptions): Promise<{ synced: SyncResult; taken: TakeResult }> {
   const synced = await syncWith(o.ledger, o.transport);
   await point(o.chaos, "after:sync");
   const taken = await o.transport.request<TakeResult>("run.take", {
     run_id: o.runId,
     workspace: o.description,
   });
-  return { pushed, synced, taken };
+  return { synced, taken };
 }
 
 async function point(chaos: Chaos | undefined, p: string) {

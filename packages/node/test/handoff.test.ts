@@ -259,18 +259,8 @@ describe("handoff", () => {
       };
       await expect(handOff({ ...handoff, chaos })).rejects.toBeInstanceOf(Stopped);
 
-      // Recovery: if mbp still owns the run it hands off again; if not, the nodes sync and
-      // denver takes the run (what the daemons do on their next sync).
-      let recovered: { dir: string };
-      if (n.a.run("R1")?.owner_node === "mbp") {
-        recovered = (await handOff({ ...handoff, stopBuild: undefined })).taken;
-      } else {
-        await syncWith(n.a, n.toB());
-        recovered = await n.toB().request<{ dir: string }>("run.take", {
-          run_id: "R1",
-          workspace: n.description,
-        });
-      }
+      // Recovery is running heph handoff again on the old owner, whatever step it stopped at.
+      const recovered = (await handOff({ ...handoff, stopBuild: undefined })).taken;
       const second = worker();
       expect({
         at,
