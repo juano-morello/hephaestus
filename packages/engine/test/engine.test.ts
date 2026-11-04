@@ -223,6 +223,7 @@ describe("runPlan", () => {
       "gate.result",
       "unit.attempt.finished",
       "unit.accepted",
+      "gate.result",
       "node.finished",
     ]);
     expect(ledger.run("R1")).toMatchObject({
@@ -545,6 +546,7 @@ describe("runPlan with the built-in gates", () => {
     expect(result.status).toBe("built");
     const reasons = ledger
       .read({ types: ["gate.result"] })
+      .filter((s) => s.event.unit_id)
       .map(
         (s) =>
           `${s.event.unit_id} ${(s.event.data as { gate: string }).gate}: ${(s.event.data as { reason: string }).reason}`,

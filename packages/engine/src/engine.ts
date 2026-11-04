@@ -22,6 +22,7 @@ import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute }
 import { buildContextPack } from "./context.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit } from "./git.ts";
+import { runIntegrationGate } from "./integration.ts";
 import { projectRelative } from "./paths.ts";
 import type { SpawnOutput, Worker } from "./worker.ts";
 
@@ -56,6 +57,8 @@ export type RunPlanOptions = {
   worktreesDir: string;
   /** Opens a sandbox over an attempt's project dir for the command gates; same spec as the worker's. */
   gateSandbox?: (workdir: string, task: Task) => Promise<Sandbox>;
+  /** Opens a sandbox over the assembled changeset for the workspace integration gate. */
+  integrationSandbox?: (dir: string) => Promise<Sandbox>;
   eval?: boolean;
 };
 
@@ -176,9 +179,52 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
     accepted.set(id, result.files);
   }
 
+  // The whole changeset must pass the workspace integration gate before it can land.
+  const integration = await integrationGate(ctx, repos);
+  ledger.append({ ...base, actor: "gate", type: "gate.result", data: integration });
+  if (integration.verdict === "fail") {
+    ledger.append({ ...engine, type: "run.paused", data: { reason: "user" } });
+    return {
+      status: "paused",
+      runBranch: branch,
+      heads: await heads(),
+      reason: integration.reason,
+    };
+  }
+
   // Landing (staging, PRs or fast-forward) is a separate step: see land.ts.
   ledger.append({ ...engine, type: "node.finished", graph_node: "build", data: { outcome: "ok" } });
   return { status: "built", runBranch: branch, heads: await heads() };
+}
+
+/** Integration gate over the changeset: touched repos at their run branch, the rest at target. */
+export function integrationGate(
+  opts: Pick<
+    RunPlanOptions,
+    | "workspace"
+    | "workspaceRoot"
+    | "targets"
+    | "integrationSandbox"
+    | "config"
+    | "worktreesDir"
+    | "runId"
+  >,
+  touched: string[],
+) {
+  const refs = Object.fromEntries(
+    Object.keys(opts.workspace.repos).map((r) => [
+      r,
+      touched.includes(r) ? runBranch(opts.runId) : (opts.targets?.[r] ?? "main"),
+    ]),
+  );
+  return runIntegrationGate({
+    workspace: opts.workspace,
+    workspaceRoot: opts.workspaceRoot,
+    refs,
+    assembleDir: join(opts.worktreesDir, opts.runId, `_integration-${Date.now()}`),
+    ...(opts.integrationSandbox ? { sandbox: opts.integrationSandbox } : {}),
+    timeoutMs: opts.config.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
+  });
 }
 
 type UnitResult = { status: "accepted"; files: string[] } | { status: "paused"; reason: string };

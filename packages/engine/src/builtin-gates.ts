@@ -80,7 +80,8 @@ export const touchedVsDiffGate: DiffGate = {
   },
 };
 
-function tail(stdout: string, stderr: string): string {
+/** The last lines of a command's output, as gate evidence. */
+export function tail(stdout: string, stderr: string): string {
   const lines = `${stdout}${stderr}`.replace(/\n+$/, "").split("\n");
   return lines.slice(-TAIL_LINES).join("\n").slice(-TAIL_CHARS);
 }
