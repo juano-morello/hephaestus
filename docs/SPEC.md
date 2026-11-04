@@ -250,20 +250,23 @@ Event = {
 run.created            (owner_node)
 run.plan_ready
 run.plan_escalated     (reasons; the run waits for a revised Brief)
-run.paused / run.resumed   (reason: rate_limit | handoff | user)
+run.paused             (reason: rate_limit | handoff | user; retry_after?)
+run.resumed            (reason: rate_limit | handoff | user | crash)
 run.handed_off         (to)
 run.adopted            (forced, old owner unreachable)
 run.finished / run.failed
 node.started / node.finished
 unit.attempt.started / unit.attempt.finished
     (role, tier, model, effort, provider, usage, duration, outcome)
-unit.attempt.interrupted
+unit.attempt.interrupted   (reason: rate_limit | crash | handoff | user)
 gate.result            (gate, verdict, reason, evidence)
 unit.returned          (Return payload)
 unit.accepted / unit.escalated / unit.needs_input
 merge.staged / merge.committed / merge.aborted
 human.input            (hints, plan edits, budget overrides, approvals of a plan or a merge)
 context.pack_built     (size, truncated items, expansions)
+effect.intended        (effect, key, target, before?, after?; see section 13)
+effect.done            (effect, key, state: applied | confirmed | abandoned, sha?, url?)
 ```
 
 ### Projections
@@ -567,21 +570,34 @@ OMP has no pluggable execution backend, and its built-in file tools run in the h
 
 Every side effect writes an intent event, performs the effect, writes a confirmation. On resume, intents without confirmations are reconciled against reality.
 
+The intent is `effect.intended` and the confirmation `effect.done`, matched by a deterministic `key` (e.g. `run_branch_advance:<repo>:<unit>:a<n>`). Effects: `run_branch_reset`, `run_branch_advance`, `rebase`, `push`, `staging_ref`, `pr_open`, `pr_edit`, `pr_merge`, `target_advance`. The events that justify an effect are written with its intent, and those that follow from it with its confirmation, in one transaction each (a green attempt's verdict with the advance intent, `unit.accepted` with the advance's done), so a crash can't split them. Reconciling a pending intent writes its `effect.done`:
+
+- `confirmed`: reality already matches (the ref is at `after`, the PR exists or is merged).
+- `applied`: it can be finished from the intent alone (a run-branch advance whose branch is still at `before`).
+- `abandoned`: it did not happen; the step that wanted it runs again.
+
+A run branch at neither `before` nor `after` stops the resume: something else moved it. An effect that fails rather than stops is also closed as `abandoned`. Attempt-local work (the worktree, the attempt commit) is not an effect: an interrupted attempt is redone.
+
 ### Idempotent effects
 
 - Branches/worktrees: deterministic names (`heph-attempt/<run>/<unit>/a<attempt>`), reused or reset to recorded base. Attempt branches live outside `heph/`: git cannot hold the changeset branch `heph/<run>` and branches under `heph/<run>/` at the same time.
 - Pushes: compare remote ref to expected SHA before pushing.
+- Pull requests: one already open for the head is reused; one already merged counts as merged and is not merged again.
 - Merges: staging ref, then fast-forward; target already at expected SHA means done.
 - Codegen and gates: pure, re-run.
 
 ### Resume behavior
 
-- Worker interrupted: attempt marked `interrupted` (does not count against the 3), worktree reset, restart with a fresh pack.
+A build is fresh when there is no `node.started` (build) since the latest `run.plan_ready`: each run branch is reset to its target. Otherwise it resumes: leftover worktrees are removed, pending effects reconciled, and `run.resumed` records why (`crash` when the run was still running).
+
+- Worker interrupted: attempt marked `interrupted` (does not count against the 3), worktree reset, restart with a fresh pack. Attempt numbers continue across the run; they are never reused.
 - Gate interrupted: re-run.
-- Accepted units are never redone.
-- Planner interrupted: replan from the brief; the plan exists only at `run.plan_ready`.
+- Accepted units are never redone. Their files still lock later units (from the recorded run-branch advance).
+- Escalated unit: resuming the run gives it a fresh set of attempts, with its last Return and any new hints.
+- Planner interrupted: replan from the brief (`heph plan revise <run>`); the plan exists only at `run.plan_ready`.
 - Human checkpoint: run waits.
-- Rate limit: `run.paused` with `retry_after`; scheduler resumes automatically or reroutes if the role allows.
+- Rate limit: `run.paused` with `retry_after`; scheduler resumes automatically or reroutes if the role allows. In v0 the scheduler is `heph run`, which waits in the foreground until `retry_after` (`--now` skips the wait).
+- One process drives a run at a time (a pid lock under `$HEPH_HOME/locks`); a lock whose process is dead is taken over.
 
 ### Handoff
 
@@ -597,6 +613,8 @@ Every side effect writes an intent event, performs the effect, writes a confirma
 ### Testing
 
 Chaos runs in the eval suite: kill the daemon at random points during golden tasks and assert identical outcomes.
+
+v0 (before the daemon): a deterministic chaos test kills a run at every ledger write and around every effect, resumes it from the reopened ledger, and requires the same trees, commit counts, accepted units (one green attempt each), no pending effects and no leftover worktrees as a run never killed; `packages/engine/scripts/chaos-smoke.ts` does the same with real SIGKILLs of a child process.
 
 ---
 

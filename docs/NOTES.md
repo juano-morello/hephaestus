@@ -232,7 +232,7 @@ How it works and what I interpreted:
 4. **Approval is tied to a plan version:** `approve plan` names the `run.plan_ready` event id; a revision makes a new one, so `run` refuses until it is approved again.
 5. **Landing is two steps:** `landChangeset` stages (rebase and re-gate if a target moved, push and open PRs where there is a remote, staging refs otherwise); `mergeChangeset` merges PRs and fast-forwards local repos. `heph run` stages right after a clean build; `heph approve merge` merges. `autoMerge` (library option) does both.
 6. **Hints and budgets:** `heph hint <run> <unit> "<text>" [--budget N]` writes `human.input`; the engine adds every hint for that unit or for the whole run to the next attempt's constraints, and the latest budget override for the unit to its context pack.
-7. **Cancel** writes `run.failed` ("cancelled by user"); a running build checks before each unit and each attempt and stops. An attempt already in flight finishes (interrupting a worker belongs to resume, 2.7).
+7. **Cancel** writes `run.failed` ("cancelled by user"); a running build checks before each unit and each attempt and stops. An attempt already in flight finishes (still true after 2.7; see below).
 8. **Gates available to a project** for gate-checked criteria are the built-ins (`tests`, `typecheck`, `lint`, `diff_scope`, `locked_paths`, `touched_vs_diff`) plus its configured `gates`.
 9. **Repo map** for the planner is the tracked file list per project (`repoMapFromFiles`), trimmed to 200 lines, until per-stack adapters exist.
 10. **Progress output:** `heph run` prints one line per ledger event to stderr through the ledger's `onAppend` hook; `--json` keeps stdout to the envelope.
@@ -241,6 +241,28 @@ How it works and what I interpreted:
 **Live smoke (2026-11-03, `dist/heph`, opus planner, container sandbox):** `init`, `new` (29 s, planned on the first answer), `plan show`, `approve plan`, `run` (114 s; both units green on attempt 1, every gate streamed, staged), `approve merge` (merged), `status` finished; `main` has `add.sh` and `test_add.sh`. The planner rated both tasks `trivial`, so the default routing used haiku.
 
 Not built: `--on local|devserver`, handoff/adopt/sync (2.8), `eval`, `retro`, `ui`, `--dry-run`, presets, workflows, custom gates from `.heph/gates/`. `heph init` writes `.heph/` into the repo for a single-repo workspace and does not commit it.
+
+## Resume and idempotency (v0 step 2.7)
+
+Built 2026-11-04 in `packages/engine` (`src/effects.ts`, `buildRun`, `land.ts`) and `packages/cli`. SPEC sections 6 and 13 now describe what is built.
+
+Decided with you: explicit `effect.intended` / `effect.done` events, a fresh attempt budget for an escalated unit on resume, `heph run` waits out a rate limit in the foreground, chaos at every crash point plus real kills.
+
+How it works and what I interpreted:
+
+1. **Fresh or resume:** a build is fresh when there is no `node.started` (build) since the latest `run.plan_ready`; only a fresh build resets the run branches. A revised plan therefore always starts from the targets again.
+2. **Atomic verdicts:** an attempt's gate results and `unit.attempt.finished` are written in one batch with what follows from them: the run-branch advance intent (green), the Return (red), or the escalation and pause (blocked). `unit.accepted` is written with the advance's `effect.done`. Without this, a crash between a green verdict and the advance would spend an attempt (and on the third attempt, escalate a green unit).
+3. **Attempt numbers continue across the whole run**, also across plan revisions (they used to restart at 1 per build). The budget counts finished attempts since the latest plan or the unit's last escalation. A crash after the last red attempt but before its escalation escalates on resume without a new attempt, the same as if it had not crashed.
+4. **Reconciling a rebase:** confirmed when the run branch moved away from `before`, because only the rebase moves it during landing. A landing re-run after a rebase always re-gates (any rebase since the latest plan), so a stopped landing can cost one extra re-gate, never a missing one.
+5. **Reconciling GitHub effects** asks `PullRequests` (`find` by head, `status`); `pr_edit` is always abandoned and redone, since editing a body again is harmless.
+6. **Failures vs stops:** an effect whose step throws is closed as `abandoned`. The tests simulate a kill with a `Stopped` error, which passes through the code that turns failures into `merge.aborted` or a half-landed result, since a killed process writes nothing. The in-process chaos test still lets `finally` blocks run (worktree cleanup); the SIGKILL smoke is where leftover worktrees and half-done attempts are real.
+7. **Rate limits:** `heph run` waits until `retry_after`, or 60 s after the pause when there is none. **OMP reports a 429 but no retry-after**, so today every rate-limited run waits the 60 s default. `SpawnOutput.retry_after` is there for when a worker can read it.
+8. **The pid lock** (`$HEPH_HOME/locks/<run>.lock`) is per node. Two nodes driving one run is the handoff/adopt problem of 2.8.
+9. **`heph plan revise <run>`** without instructions is allowed only when the run has no plan yet (its planner was stopped); it plans from the Brief.
+
+**Results (2026-11-04):** the chaos test finds about 45 crash points in one build, stage and merge with a red attempt and kills at each one: every resumed run matches the uninterrupted one (37 s; runs in CI). I checked it by mutation: confirming a run-branch advance without accepting the unit fails it. Before that, the test compared only trees, and the mutation passed, because redoing an accepted unit adds an empty commit with the same tree. Commit counts and one green attempt per unit now catch it. `chaos-smoke.ts`: seed 7, 10 of 10 the same; seed 42, 20 of 20.
+
+Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs 2.8), handoff and adopt, interrupting a worker already in flight on `heph cancel` (it still finishes its attempt), scheduler rerouting a rate-limited role.
 
 ## Environment and OMP
 
