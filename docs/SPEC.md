@@ -262,7 +262,7 @@ gate.result            (gate, verdict, reason, evidence)
 unit.returned          (Return payload)
 unit.accepted / unit.escalated / unit.needs_input
 merge.staged / merge.committed / merge.aborted
-human.input            (hints, plan edits, budget overrides)
+human.input            (hints, plan edits, budget overrides, approvals of a plan or a merge)
 context.pack_built     (size, truncated items, expansions)
 ```
 
@@ -690,7 +690,9 @@ heph init
 heph ui
 ```
 
-Every command supports `--json` with stable, versioned output schemas.
+Every command supports `--json` with stable, versioned output schemas: `{ schema: 1, command, ok, data }` or `{ schema: 1, command, ok: false, error: { message } }` with a non-zero exit.
+
+v0 runs the CLI in-process on the node's ledger (`$HEPH_HOME`, default `~/.heph`) through a runtime facade that the daemon wraps once it exists. `heph run` builds in the foreground and then stages the changeset (pull requests where repos have a remote, staging refs otherwise); `heph approve merge` merges it. `heph merge status` follows pull requests merged on GitHub directly.
 
 ### Chat hosts (Claude Code, Codex)
 

@@ -218,6 +218,30 @@ Interpretations and limits:
 5. **Verified live 2026-11-03** (`packages/engine/scripts/pr-smoke.ts`): two private sandbox repos (`juano-morello/heph-sandbox-proto`, `-server`, now archived; delete them when convenient), branches pushed, two PRs opened with sibling links, both merged by the engine, files on `main`, run finished.
 6. **Run status** gains `built` (clean build node) and `staged` (`merge.staged`); `PROJECTION_VERSION` is 2, so older ledgers rebuild on open.
 
+## The heph CLI (v0 step 2.6)
+
+Built 2026-11-03 in `packages/cli`: `heph init`, `config explain`, `new [feature]`, `plan show`, `plan revise`, `approve plan`, `run`, `status`, `explain`, `hint`, `cancel`, `approve merge`, `merge status`, all with `--json` (payload schemas in `src/output.ts`). `bun run heph ...` for development; `bun run build:heph` compiles `dist/heph` (124 MB, needs nothing next to it). The layered config and `config explain` were built in a side session.
+
+Decided with you: in-process now (daemon in 2.8 wraps `src/runtime.ts`), the core run-lifecycle commands, approvals as `human.input` kind `approve`, layered config with sources.
+
+How it works and what I interpreted:
+
+1. **The node's home** (`$HEPH_HOME`, default `~/.heph`) holds `ledger.db`, `blobs/`, `worktrees/` and the node-level `config.yaml`. Run ids are `r-<yyyymmdd>-<6 hex>` unless `--run-id`.
+2. **`run.created` carries the Brief and the workspace root**, so `plan revise`, `run` and the merge commands rebuild everything from the ledger.
+3. **Planner loop:** up to 3 answers per `new` or `revise`; failed plan gates (and schema errors as a `plan_schema` result) are recorded as `gate.result` with `graph_node: plan` and fed back into the next prompt. After 3 invalid plans the run fails. An Escalation stops the loop at once. Plan gates run against the workspace's real file list.
+4. **Approval is tied to a plan version:** `approve plan` names the `run.plan_ready` event id; a revision makes a new one, so `run` refuses until it is approved again.
+5. **Landing is two steps:** `landChangeset` stages (rebase and re-gate if a target moved, push and open PRs where there is a remote, staging refs otherwise); `mergeChangeset` merges PRs and fast-forwards local repos. `heph run` stages right after a clean build; `heph approve merge` merges. `autoMerge` (library option) does both.
+6. **Hints and budgets:** `heph hint <run> <unit> "<text>" [--budget N]` writes `human.input`; the engine adds every hint for that unit or for the whole run to the next attempt's constraints, and the latest budget override for the unit to its context pack.
+7. **Cancel** writes `run.failed` ("cancelled by user"); a running build checks before each unit and each attempt and stops. An attempt already in flight finishes (interrupting a worker belongs to resume, 2.7).
+8. **Gates available to a project** for gate-checked criteria are the built-ins (`tests`, `typecheck`, `lint`, `diff_scope`, `locked_paths`, `touched_vs_diff`) plus its configured `gates`.
+9. **Repo map** for the planner is the tracked file list per project (`repoMapFromFiles`), trimmed to 200 lines, until per-stack adapters exist.
+10. **Progress output:** `heph run` prints one line per ledger event to stderr through the ledger's `onAppend` hook; `--json` keeps stdout to the envelope.
+11. **Packaging:** prompts are text imports (embedded in the binary; typed with sidecar `.d.md.ts` files). `omp-legacy-pi-modules` is left external in `build:heph`: it is a virtual module of OMP's own build, reached only by its legacy plugin loader.
+
+**Live smoke (2026-11-03, `dist/heph`, opus planner, container sandbox):** `init`, `new` (29 s, planned on the first answer), `plan show`, `approve plan`, `run` (114 s; both units green on attempt 1, every gate streamed, staged), `approve merge` (merged), `status` finished; `main` has `add.sh` and `test_add.sh`. The planner rated both tasks `trivial`, so the default routing used haiku.
+
+Not built: `--on local|devserver`, handoff/adopt/sync (2.8), `eval`, `retro`, `ui`, `--dry-run`, presets, workflows, custom gates from `.heph/gates/`. `heph init` writes `.heph/` into the repo for a single-repo workspace and does not commit it.
+
 ## Environment and OMP
 
 - **Names (SPEC section 20 open item), checked 2026-11-03.** The npm scope `@hephaestus` is taken: `@hephaestus/core` is an unrelated package published since 2022. `hephaestus` on GitHub is an existing user account, so no org of that name. The repo lives at `juano-morello/hephaestus`. Packages stay `private: true` until a publishable scope is chosen; the `heph` binary name and `.heph/` dir are unaffected.
