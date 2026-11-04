@@ -14,7 +14,6 @@
       "name": "@hephaestus/core",
       "version": "0.0.0",
       "dependencies": {
-        "@oh-my-pi/pi-coding-agent": "18.16.0",
         "zod": "4.6.7",
       },
     },

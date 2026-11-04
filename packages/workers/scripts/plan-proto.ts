@@ -1,7 +1,7 @@
 // Step 0 planner prototype (SPEC section 19): run the planner N times on one Brief through OMP
 // and measure how often its first answer passes every plan gate.
 //
-//   bun run packages/core/scripts/plan-proto.ts --brief <file> --workspace <file> [--runs N]
+//   bun run packages/workers/scripts/plan-proto.ts --brief <file> --workspace <file> [--runs N]
 //     [--model opus] [--thinking high] [--prompt <file>] [--gates <file>] [--repo-maps <dir>]
 //     [--out <dir>] [--workspace-root <dir>]
 //
@@ -12,20 +12,18 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
-  type CreateAgentSessionOptions,
-  createAgentSession,
-  SessionManager,
-} from "@oh-my-pi/pi-coding-agent";
-import { briefGate } from "../src/gates/brief.ts";
-import type { ComplexityResult } from "../src/gates/plan.ts";
-import { DEFAULT_LIMITS, type GateContext } from "../src/gates/types.ts";
-import { deriveEdges, topoOrder } from "../src/graph/edges.ts";
-import { type Evaluation, evaluatePlannerOutput } from "../src/planner/evaluate.ts";
-import { Brief, briefHash } from "../src/schemas/brief.ts";
-import { ProjectGates } from "../src/schemas/gates.ts";
-import { Workspace } from "../src/schemas/workspace.ts";
-
-type Thinking = CreateAgentSessionOptions["thinkingLevel"];
+  Brief,
+  briefGate,
+  briefHash,
+  type ComplexityResult,
+  deriveEdges,
+  type Evaluation,
+  ProjectGates,
+  topoOrder,
+  Workspace,
+} from "@hephaestus/core";
+import type { Usage } from "@hephaestus/ledger";
+import { PLANNER_PROMPT, runPlanner } from "../src/planner.ts";
 
 const { values } = parseArgs({
   options: {
@@ -84,14 +82,6 @@ for (const name of Object.keys(workspace.projects)) {
   if (await file.exists()) repoMaps.push((await file.text()).trim());
 }
 
-const promptPath = resolve(values.prompt ?? join(import.meta.dir, "..", "prompts", "planner.md"));
-const template = await Bun.file(promptPath).text();
-const prompt = template
-  .replace("{{brief}}", JSON.stringify(brief, null, 2))
-  .replace("{{workspace}}", workspaceFile.text.trim())
-  .replace("{{project_gates}}", gatesFile.text.trim())
-  .replace("{{repo_maps}}", repoMaps.join("\n\n"));
-
 /** Tracked files per project, project-relative, read with git from the real repos. */
 function projectFiles(root: string): Record<string, string[]> {
   const byRepo = new Map<string, string[]>();
@@ -111,15 +101,10 @@ function projectFiles(root: string): Record<string, string[]> {
   );
 }
 
-const ctx: GateContext = {
-  brief,
-  workspace,
-  limits: DEFAULT_LIMITS,
-  projectGates,
-  ...(values["workspace-root"] ? { files: projectFiles(resolve(values["workspace-root"])) } : {}),
-};
+const files = values["workspace-root"]
+  ? projectFiles(resolve(values["workspace-root"]))
+  : undefined;
 
-type Usage = { input: number; output: number; cacheRead: number; totalTokens: number };
 type RunRecord = {
   run: number;
   model: string;
@@ -130,39 +115,24 @@ type RunRecord = {
   evaluation: Evaluation;
 };
 
-async function callPlanner(): Promise<Omit<RunRecord, "run" | "evaluation">> {
+async function callPlanner(): Promise<Omit<RunRecord, "run">> {
   const started = Date.now();
-  const { session } = await createAgentSession({
-    cwd: ROOT,
-    modelPattern: values.model,
-    thinkingLevel: values.thinking as Thinking,
-    systemPrompt: ["You are the Hephaestus planner. You output one JSON object and nothing else."],
-    toolNames: [],
-    skills: [],
-    contextFiles: [],
-    enableMCP: false,
-    enableLsp: false,
-    disableExtensionDiscovery: true,
-    sessionManager: SessionManager.inMemory(),
+  const r = await runPlanner({
+    brief,
+    workspace,
+    projectGates,
+    ...(files ? { files } : {}),
+    repoMap: repoMaps.join("\n\n"),
+    route: { model: values.model, effort: values.thinking },
+    promptPath: resolve(values.prompt ?? PLANNER_PROMPT),
   });
-  try {
-    await session.prompt(prompt);
-    const last = session.state.messages.findLast((m) => m.role === "assistant");
-    const content = last && "content" in last && Array.isArray(last.content) ? last.content : [];
-    const output = content
-      .flatMap((b) => (b.type === "text" && typeof b.text === "string" ? [b.text] : []))
-      .join("");
-    const meta = (last ?? {}) as { usage?: Usage; stopReason?: string; errorMessage?: string };
-    return {
-      model: `${session.model?.provider}/${session.model?.id}`,
-      duration_ms: Date.now() - started,
-      ...(meta.usage ? { usage: meta.usage } : {}),
-      ...(meta.stopReason ? { stop_reason: meta.stopReason } : {}),
-      output: output || (meta.errorMessage ?? ""),
-    };
-  } finally {
-    await session.dispose();
-  }
+  return {
+    model: values.model,
+    duration_ms: Date.now() - started,
+    usage: r.usage,
+    output: r.output,
+    evaluation: r.evaluation,
+  };
 }
 
 function printRun(r: RunRecord) {
@@ -208,13 +178,19 @@ console.log(`brief_hash ${hash}`);
 
 const records: RunRecord[] = [];
 for (let run = 1; run <= runs; run++) {
-  let call: Omit<RunRecord, "run" | "evaluation">;
+  let call: Omit<RunRecord, "run">;
   try {
     call = await callPlanner();
   } catch (e) {
-    call = { model: values.model, duration_ms: 0, output: `planner call failed: ${e}` };
+    const error = `planner call failed: ${e}`;
+    call = {
+      model: values.model,
+      duration_ms: 0,
+      output: error,
+      evaluation: { valid: false, failures: ["json_parse"], error, gates: [] },
+    };
   }
-  const record = { run, ...call, evaluation: evaluatePlannerOutput(call.output, ctx, hash) };
+  const record = { run, ...call };
   records.push(record);
   printRun(record);
   await Bun.write(join(outDir, `run-${run}.json`), JSON.stringify(record, null, 2));
@@ -236,7 +212,7 @@ const summary = {
   brief_hash: hash,
   model: values.model,
   thinking: values.thinking,
-  prompt: promptPath,
+  prompt: resolve(values.prompt ?? PLANNER_PROMPT),
   runs,
   valid,
   validity_rate: runs ? valid / runs : 0,
@@ -244,7 +220,11 @@ const summary = {
   failures_by_gate: Object.fromEntries(Object.entries(histogram).sort(([, a], [, b]) => b - a)),
   complexity_bumps: bumps.length,
   tasks_per_plan: records.map((r) => r.evaluation.plan?.tasks.length ?? null),
-  tokens: records.reduce((n, r) => n + (r.usage?.totalTokens ?? 0), 0),
+  tokens: records.reduce(
+    (n, r) =>
+      n + (r.usage ? r.usage.input + r.usage.output + r.usage.cache_read + r.usage.cache_write : 0),
+    0,
+  ),
   duration_ms: records.reduce((n, r) => n + r.duration_ms, 0),
 };
 await Bun.write(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));

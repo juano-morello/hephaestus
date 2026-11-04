@@ -4,7 +4,7 @@ Open questions, spec pushback, and deferred ideas. The spec is not changed silen
 
 ## Prototype results (Step 0)
 
-Run on 2026-11-03 with `anthropic/claude-opus-5-5`, thinking high, via the OMP SDK, prompt `packages/core/prompts/planner.md`, hand-written repo maps. Raw results are in `out/` (gitignored).
+Run on 2026-11-03 with `anthropic/claude-opus-5-5`, thinking high, via the OMP SDK, prompt `packages/workers/prompts/planner.md`, hand-written repo maps. Raw results are in `out/` (gitignored).
 
 | Fixture | Projects | First-try valid | Tasks per plan | Time per run | Output tokens per run |
 |---|---|---|---|---|---|
