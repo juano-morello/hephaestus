@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Brief, briefHash, type Plan, type Task, type Workspace } from "@hephaestus/core";
 import type { EngineConfig } from "../src/config.ts";
+import type { Worker } from "../src/worker.ts";
 import { initRepo, writeFiles } from "./helpers.ts";
 
 /** Three separate git repos under one workspace root: proto and server are touched, web is not. */
@@ -96,3 +97,17 @@ export const config: EngineConfig = {
 export function writeScript(root: string, path: string, body: string) {
   writeFiles(root, { [path]: body });
 }
+
+/** Writes each unit's files from crossRepoFiles and reports them as touched. */
+export const writer: Worker = {
+  async spawn(input) {
+    const files = crossRepoFiles[input.brief.task.id as keyof typeof crossRepoFiles] ?? {};
+    writeFiles(input.workdir, files);
+    return {
+      output: { schema: 1, summary: "", claims: [], touched: Object.keys(files) },
+      transcript: "",
+      usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      exit: "ok",
+    };
+  },
+};
