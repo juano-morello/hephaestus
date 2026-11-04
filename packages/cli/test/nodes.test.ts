@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PullRequests, Worker } from "@hephaestus/engine";
@@ -151,6 +151,18 @@ describe("a run on another node", () => {
     const checkout = join(homeB, "workspaces", sh(["basename", ws], root));
     expect(sh(["git", "show", "heph/R1:add.sh"], checkout)).toBe("echo $(($1 + $2))");
   }, 60_000);
+
+  test("a forwarded command brings the sender's heph config to the owner's checkout", async () => {
+    await heph(["init", "--force"]);
+    put(join(ws, ".heph", "config.yaml"), "projects:\n  calc:\n    commands: { test: sh a.sh }\n");
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R6"]);
+    const there = join(homeB, "workspaces", "calc", ".heph", "config.yaml");
+    expect(readFileSync(there, "utf8")).toContain("sh a.sh");
+
+    put(join(ws, ".heph", "config.yaml"), "projects:\n  calc:\n    commands: { test: sh b.sh }\n");
+    expect((await heph(["approve", "plan", "R6"])).ok).toBe(true);
+    expect(readFileSync(there, "utf8")).toContain("sh b.sh");
+  });
 
   test("--on local keeps the run here even when a preferred node answers", async () => {
     await heph(["init", "--force"]);

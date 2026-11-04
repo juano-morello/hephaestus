@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type { WorkspaceConfig } from "@hephaestus/core";
 import { createGit, type PullRequests, runBranch } from "@hephaestus/engine";
 import { run, runOk } from "@hephaestus/sandbox";
@@ -47,14 +47,18 @@ export async function describeWorkspace(
 
 /**
  * This node's checkout of a named workspace: `workspaces.<name>` from its config, else
- * `<home>/workspaces/<name>`. Repos it lacks are cloned from their remotes; the heph files that
- * aren't committed (workspace.yaml, each repo's .heph/config.yaml) are written if missing.
+ * `<home>/workspaces/<name>`. Repos it lacks are cloned from their remotes. The heph files that
+ * aren't committed (workspace.yaml, each repo's .heph/config.yaml) come from the sender: a
+ * checkout heph made takes them every time, so the node runs with the sender's current config;
+ * a checkout you configured is yours, and gets them only where it has none. `written` lists the
+ * files written, relative to the checkout.
  */
 export async function ensureWorkspace(
   desc: WorkspaceDescription,
   opts: { home: string; workspaces: Record<string, string> },
-): Promise<{ dir: string; cloned: string[] }> {
-  const dir = resolve(opts.workspaces[desc.name] ?? join(opts.home, "workspaces", desc.name));
+): Promise<{ dir: string; cloned: string[]; written: string[] }> {
+  const configured = opts.workspaces[desc.name];
+  const dir = resolve(configured ?? join(opts.home, "workspaces", desc.name));
   const cloned: string[] = [];
   // Root repo first: git clone needs an empty directory.
   const repos = Object.entries(desc.repos).sort(([, a], [, b]) =>
@@ -67,15 +71,18 @@ export async function ensureWorkspace(
     await runOk(["git", "clone", "-q", r.url, target]);
     cloned.push(repo);
   }
+  const written: string[] = [];
   const put = (file: string, text: string | undefined) => {
-    if (text === undefined || existsSync(file)) return;
+    if (text === undefined) return;
+    if (existsSync(file) && (configured || read(file) === text)) return;
     mkdirSync(join(file, ".."), { recursive: true });
     writeFileSync(file, text);
+    written.push(relative(dir, file));
   };
   put(join(dir, ".heph", "workspace.yaml"), desc.workspaceYaml);
   for (const r of Object.values(desc.repos))
     put(join(resolve(dir, r.path), ".heph", "config.yaml"), r.config);
-  return { dir, cloned };
+  return { dir, cloned, written };
 }
 
 /** What a node checks about pull requests before it takes a run (only `preflight` is used). */
@@ -119,7 +126,7 @@ export async function prepareWorkspace(
     workspaces: Record<string, string>;
     prs?: Preflight | undefined;
   },
-): Promise<{ dir: string; cloned: string[] }> {
+): Promise<{ dir: string; cloned: string[]; written: string[] }> {
   const out = await ensureWorkspace(desc, opts);
   const problems = await checkWorkspace(out.dir, desc, opts);
   if (problems.length)
@@ -129,11 +136,16 @@ export async function prepareWorkspace(
   return out;
 }
 
-/** `workspace.ensure` for a node's peer methods: asked before a run is given to this node. */
+/**
+ * A node's workspace peer methods: `workspace.ensure`, asked before a run is given to this node,
+ * and `workspace.files`, which brings the sender's heph files before a command it forwards.
+ */
 export function workspaceMethods(opts: Parameters<typeof prepareWorkspace>[1]): Methods {
   return {
     "workspace.ensure": (p: { workspace: WorkspaceDescription }) =>
       prepareWorkspace(p.workspace, opts),
+    "workspace.files": (p: { workspace: WorkspaceDescription }) =>
+      ensureWorkspace(p.workspace, opts),
   };
 }
 

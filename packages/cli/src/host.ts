@@ -8,6 +8,7 @@ import { type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
 import {
   adopt,
   describeWorkspace,
+  ensureWorkspace,
   fetchRunBranches,
   handOff,
   hello,
@@ -151,13 +152,40 @@ export function openHost(o: HostOptions) {
       return false;
     }
   };
+  /**
+   * The checkout's description to send with a command for a run another node owns, when the
+   * command comes from a checkout of the run's workspace: the owner then runs it with this
+   * checkout's heph files (SPEC section 7). Undefined otherwise.
+   */
+  const senderFiles = async (runId: string, cwd: string | undefined) => {
+    if (!cwd) return undefined;
+    const name = (
+      ledger.read({ run_id: runId, types: ["run.created"] })[0]?.event.data as
+        | { workspace_name?: string }
+        | undefined
+    )?.workspace_name;
+    try {
+      const { workspace } = await runtimeFor(cwd);
+      if (!name || workspace.name !== name) return undefined;
+      return await describeWorkspace(cwd, workspace);
+    } catch {
+      return undefined;
+    }
+  };
+
   /** A command for a run another node owns, carried out there; then this node catches up. */
-  const forward = async (owner: string, method: string, args: unknown[]) =>
-    withPeer(owner, async (t) => {
+  const forward = async (owner: string, method: string, args: unknown[], cwd?: string) => {
+    const files =
+      DAEMON_ONLY.has(method) && method !== "run"
+        ? undefined
+        : await senderFiles(args[0] as string, cwd);
+    return withPeer(owner, async (t) => {
+      if (files) await t.request("workspace.files", { workspace: files });
       const result = await t.request("rpc", { method, args });
       await syncWith(ledger, t);
       return result;
     });
+  };
 
   const rateLimited = (runId: string) => {
     if (ledger.run(runId)?.status !== "paused") return false;
@@ -228,6 +256,8 @@ export function openHost(o: HostOptions) {
   const peerMethods = (): Methods => ({
     ...syncMethods(ledger),
     "workspace.ensure": (p: { workspace: WorkspaceDescription }) => prepare(p.workspace),
+    "workspace.files": (p: { workspace: WorkspaceDescription }) =>
+      ensureWorkspace(p.workspace, { home: o.home, workspaces: o.config.workspaces }),
     ...takeMethods({
       ledger,
       home: o.home,
@@ -357,7 +387,7 @@ export function openHost(o: HostOptions) {
           // heph run: in the foreground here, or as a job on whichever node's daemon owns it.
           const [runId, opts] = args as [string, { now?: boolean }];
           const owner = ownerOf(runId);
-          if (owner !== me) return forward(owner, "run", args);
+          if (owner !== me) return forward(owner, "run", args, cwd);
           if (o.daemon) return startJob(runId, opts);
           const d = await o.localDaemon?.();
           if (d) return d.call("run", [runId, opts]);
@@ -394,7 +424,7 @@ export function openHost(o: HostOptions) {
           if (!OWNER_ONLY.has(method)) throw new Error(`unknown command ${method}`);
           const runId = args[0] as string;
           const owner = ownerOf(runId);
-          if (owner !== me) return forward(owner, method, args);
+          if (owner !== me) return forward(owner, method, args, cwd);
           if (method === "cancel") await stopJob(runId, "user");
           const { rt } = await runtimeFor(workspaceOf(runId));
           const fn = (rt as unknown as Record<string, (...a: unknown[]) => unknown>)[method];

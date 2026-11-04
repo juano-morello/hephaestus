@@ -44,7 +44,11 @@ describe("a workspace on another node", () => {
 
     const home = dir();
     const out = await ensureWorkspace(desc, { home, workspaces: {} });
-    expect(out).toEqual({ dir: join(home, "workspaces", "game"), cloned: ["proto", "server"] });
+    expect(out).toEqual({
+      dir: join(home, "workspaces", "game"),
+      cloned: ["proto", "server"],
+      written: [".heph/workspace.yaml", "server/.heph/config.yaml"],
+    });
     expect(readFileSync(join(out.dir, "server", "README.md"), "utf8")).toBe("server\n");
     expect(readFileSync(join(out.dir, ".heph", "workspace.yaml"), "utf8")).toContain("name: game");
     expect(readFileSync(join(out.dir, "server", ".heph", "config.yaml"), "utf8")).toContain(
@@ -53,7 +57,31 @@ describe("a workspace on another node", () => {
     expect(await ensureWorkspace(desc, { home, workspaces: {} })).toEqual({
       dir: out.dir,
       cloned: [],
+      written: [],
     });
+  });
+
+  test("a checkout heph made takes the sender's heph files each time; one you configured keeps its own", async () => {
+    const { ws } = await mbp();
+    const home = dir();
+    const mine = join(dir(), "code", "game");
+    const first = await describeWorkspace(ws, WS);
+    const managed = await ensureWorkspace(first, { home, workspaces: {} });
+    await ensureWorkspace(first, { home: dir(), workspaces: { game: mine } });
+
+    // The sender changes its test command after the first run.
+    put(join(ws, "server", ".heph", "config.yaml"), "project: { commands: { test: sh u.sh } }\n");
+    const second = await describeWorkspace(ws, WS);
+    expect(await ensureWorkspace(second, { home, workspaces: {} })).toMatchObject({
+      written: ["server/.heph/config.yaml"],
+    });
+    expect(readFileSync(join(managed.dir, "server", ".heph", "config.yaml"), "utf8")).toContain(
+      "sh u.sh",
+    );
+    expect(
+      await ensureWorkspace(second, { home: dir(), workspaces: { game: mine } }),
+    ).toMatchObject({ written: [] });
+    expect(readFileSync(join(mine, "server", ".heph", "config.yaml"), "utf8")).toContain("sh t.sh");
   });
 
   test("uses the node's own path for the name when it has one", async () => {
