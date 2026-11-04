@@ -92,8 +92,8 @@ async function commitToMain(repoDir: string, files: Record<string, string>) {
 
 const types = (ledger: ReturnType<typeof openLedger>) => ledger.read().map((e) => e.event.type);
 
-describe("landChangeset without remotes", () => {
-  test("fast-forwards every touched target in depends_on order and finishes the run", async () => {
+describe("landing without remotes", () => {
+  test("stages first, then fast-forwards every touched target in depends_on order", async () => {
     const { ledger, options, git } = await built();
     expect((await runPlan(options)).status).toBe("built");
     const heads = {
@@ -102,8 +102,13 @@ describe("landChangeset without remotes", () => {
     };
     const webMain = await git("web").revParse("main");
 
+    const protoMain = await git("proto").revParse("main");
     const out = await landChangeset(options);
-    expect(out).toEqual({ status: "landed", refs: heads });
+    expect(out).toEqual({ status: "staged", refs: heads });
+    expect(await git("proto").revParse("main")).toBe(protoMain);
+    expect(ledger.run("R1")?.status).toBe("staged");
+
+    expect(await mergeChangeset(options)).toEqual({ status: "merged" });
     expect(await git("proto").revParse("main")).toBe(heads.proto);
     expect(await git("server").revParse("main")).toBe(heads.server);
     expect(await git("web").revParse("main")).toBe(webMain);
@@ -125,7 +130,8 @@ describe("landChangeset without remotes", () => {
     await commitToMain(join(root, "server"), { "NEWS.md": "upstream\n" });
 
     const out = await landChangeset(options);
-    expect(out.status).toBe("landed");
+    expect(out.status).toBe("staged");
+    expect((await mergeChangeset(options)).status).toBe("merged");
     const main = await git("server").revParse("main");
     expect((await git("server").diff("main~3", main)).files).toEqual([
       "NEWS.md",
@@ -438,5 +444,19 @@ describe("ghPullRequests readiness and merge", () => {
       "--match-head-commit",
       "d".repeat(40),
     ]);
+  });
+});
+
+describe("mergeChangeset locally", () => {
+  test("a target that moved after staging aborts and nothing lands", async () => {
+    const { root, ledger, options, git } = await built();
+    await runPlan(options);
+    await landChangeset(options);
+    const protoMain = await git("proto").revParse("main");
+    await commitToMain(join(root, "server"), { "NEWS.md": "late\n" });
+    const r = await mergeChangeset(options);
+    expect(r).toMatchObject({ status: "aborted" });
+    expect(await git("proto").revParse("main")).toBe(protoMain);
+    ledger.close();
   });
 });
