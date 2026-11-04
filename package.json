@@ -12,7 +12,9 @@
     "typecheck": "tsc -b packages/core packages/ledger packages/sandbox packages/engine packages/workers packages/cli",
     "lint": "biome ci .",
     "format": "biome check --write .",
-    "test": "bun test"
+    "test": "bun test",
+    "heph": "bun run packages/cli/src/main.ts",
+    "build:heph": "bun build --compile packages/cli/src/main.ts --outfile dist/heph --external omp-legacy-pi-modules"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
