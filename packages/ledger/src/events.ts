@@ -92,6 +92,8 @@ export const EVENT_TYPES = {
         /** The Brief itself and the workspace root, so later commands can rebuild the run. */
         brief: Brief.optional(),
         workspace_root: z.string().min(1).optional(),
+        /** How other nodes find their own checkout of the workspace (SPEC section 7). */
+        workspace_name: z.string().min(1).optional(),
       })
       .strict(),
   ),

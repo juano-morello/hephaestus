@@ -125,7 +125,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
 type RunMeta = Pick<
   RunPlanOptions,
   "ledger" | "brief" | "runId" | "changesetId" | "workspaceRoot" | "config" | "gates" | "eval"
->;
+> & { workspaceName?: string | undefined };
 
 const runEvent = (o: Pick<RunPlanOptions, "runId" | "changesetId" | "config" | "gates">) => ({
   run_id: o.runId,
@@ -160,6 +160,7 @@ export function createRun(o: RunMeta): void {
       eval: o.eval ?? false,
       brief: o.brief,
       workspace_root: o.workspaceRoot,
+      ...(o.workspaceName ? { workspace_name: o.workspaceName } : {}),
     },
   });
 }
