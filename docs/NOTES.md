@@ -262,6 +262,8 @@ How it works and what I interpreted:
 
 **Results (2026-11-04):** the chaos test finds about 45 crash points in one build, stage and merge with a red attempt and kills at each one: every resumed run matches the uninterrupted one (37 s; runs in CI). I checked it by mutation: confirming a run-branch advance without accepting the unit fails it. Before that, the test compared only trees, and the mutation passed, because redoing an accepted unit adds an empty commit with the same tree. Commit counts and one green attempt per unit now catch it. `chaos-smoke.ts`: seed 7, 10 of 10 the same; seed 42, 20 of 20.
 
+**Live smoke (2026-11-04, `dist/heph`, container sandbox):** `heph run` SIGKILLed after T1 was accepted, while T2 attempt 1 was in flight. `status` showed `running`; the second `heph run` marked T2/a1 interrupted (crash), wrote `run.resumed` (crash), removed the leftover worktree, did not redo T1, took T2 green on attempt 2 and staged; `approve merge` landed `add.sh` and `test_add.sh`. T2 shows 1 attempt: the interrupted one does not count.
+
 Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs 2.8), handoff and adopt, interrupting a worker already in flight on `heph cancel` (it still finishes its attempt), scheduler rerouting a rate-limited role.
 
 ## Environment and OMP

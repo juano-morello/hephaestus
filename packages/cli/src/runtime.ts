@@ -587,6 +587,10 @@ export function describe(e: { type: string; data: unknown; attempt?: number | un
       return `escalated: ${(d.reasons as string[]).join("; ")}`;
     case "human.input":
       return `${d.kind}${d.target ? ` ${d.target}` : ""}${d.text ? `: ${d.text}` : ""}${d.budget_tokens ? ` (${d.budget_tokens} tokens)` : ""}`;
+    case "effect.intended":
+      return `${String(d.effect).replaceAll("_", " ")}: ${d.target}${d.after ? ` to ${String(d.after).slice(0, 7)}` : ""}`;
+    case "effect.done":
+      return `${String(d.effect).replaceAll("_", " ")} ${d.state}${d.sha ? ` (${String(d.sha).slice(0, 7)})` : ""}${d.url ? ` ${d.url}` : ""}`;
     case "merge.staged":
       return d.prs
         ? `staged as pull requests: ${Object.values(d.prs as object).join(", ")}`
