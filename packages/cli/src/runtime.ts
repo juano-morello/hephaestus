@@ -41,15 +41,21 @@ import {
   runPlanner,
 } from "@hephaestus/workers";
 import type { LoadedConfig } from "./config.ts";
+import { lockRun } from "./lock.ts";
 
 /** Injection points for tests; production uses OMP, the gh CLI and the configured sandboxes. */
 export type Deps = {
   planner?: (input: PlannerInput) => Promise<PlannerResult>;
   worker?: Worker;
   prs?: PullRequests;
+  /** The clock and the wait for a rate limit to pass. */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 const PLANNER_ATTEMPTS = 3;
+/** How long a rate-limited run waits when the provider gave no retry_after. */
+const DEFAULT_RETRY_MS = 60_000;
 const BUILTIN_GATES = builtinGates().map((g) => g.name);
 const TERMINAL = new Set(["failed", "finished"]);
 
@@ -94,6 +100,8 @@ export function openRuntime(opts: {
   home: string;
   deps?: Deps;
   onAppend?: (events: LedgerEvent[]) => void;
+  /** Human progress lines that are not events (e.g. waiting out a rate limit). */
+  notify?: (line: string) => void;
 }) {
   const { config } = opts.loaded;
   const deps = opts.deps ?? {};
@@ -137,6 +145,16 @@ export function openRuntime(opts: {
     deps.worker ?? createOmpWorker({ sandbox: (i) => sandboxFor(i.brief.task.project, i.workdir) });
   const prs = (): PullRequests => deps.prs ?? ghPullRequests();
   const planner = deps.planner ?? runPlanner;
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const locked = async <T>(runId: string, fn: () => Promise<T>): Promise<T> => {
+    const release = lockRun(opts.home, runId);
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
 
   const runRow = (runId: string) => {
     const row = ledger.run(runId);
@@ -152,6 +170,15 @@ export function openRuntime(opts: {
       workspaceRoot: data.workspace_root ?? opts.workspaceDir,
       changesetId: e?.changeset_id ?? runId,
     };
+  };
+  /** A planner that started and never finished: the process running it was stopped. */
+  const plannerInterrupted = (runId: string) => {
+    const last = ledger
+      .read({ run_id: runId, types: ["node.started", "node.finished"] })
+      .map((s) => s.event)
+      .filter((e) => e.graph_node === "plan")
+      .at(-1);
+    return last?.type === "node.started";
   };
   const latestPlan = (runId: string) => {
     const e = ledger.read({ run_id: runId, types: ["run.plan_ready"] }).at(-1)?.event;
@@ -210,6 +237,24 @@ export function openRuntime(opts: {
     const o = runOptions(runId);
     return { ...o, plan: latestPlan(runId).plan, prs: prs() };
   };
+
+  /** A run paused by a rate limit waits until the provider's retry_after; returns when that was. */
+  async function waitOutRateLimit(runId: string): Promise<string | undefined> {
+    if (runRow(runId).status !== "paused") return undefined;
+    const paused = ledger.read({ run_id: runId, types: ["run.paused"] }).at(-1)?.event;
+    const d = paused?.data as { reason: string; retry_after?: string } | undefined;
+    if (!paused || d?.reason !== "rate_limit") return undefined;
+    const until = d.retry_after
+      ? Date.parse(d.retry_after)
+      : Date.parse(paused.ts) + DEFAULT_RETRY_MS;
+    const ms = until - now();
+    const at = new Date(until).toISOString();
+    if (ms > 0) {
+      opts.notify?.(`rate limited; continuing at ${at} (heph run ${runId} --now to skip)`);
+      await sleep(ms);
+    }
+    return at;
+  }
 
   /** The planner loop: up to 3 answers, failed plan gates fed back each time (SPEC section 2). */
   async function plan(
@@ -318,16 +363,30 @@ export function openRuntime(opts: {
       return plan(runId, brief, opts.workspaceDir, runId);
     },
 
+    /**
+     * heph plan revise: plans again with your instructions. A run with no plan yet (its planner
+     * was stopped) is planned from the Brief, instructions optional (SPEC section 13).
+     */
     async revise(runId: string, instructions: string): Promise<PlanResult> {
       const row = runRow(runId);
       if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is ${row.status}`);
-      const c = created(runId);
-      const previous = latestPlan(runId).plan;
-      human(runId, c.changesetId, {
-        type: "human.input",
-        data: { kind: "plan_edit", text: instructions },
+      return locked(runId, async () => {
+        const c = created(runId);
+        const hasPlan = ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length > 0;
+        if (hasPlan && !instructions) throw new Error("missing instructions");
+        if (instructions) {
+          human(runId, c.changesetId, {
+            type: "human.input",
+            data: { kind: "plan_edit", text: instructions },
+          });
+        }
+        const extra: Partial<PlannerInput> = hasPlan
+          ? { previous: latestPlan(runId).plan, instructions }
+          : instructions
+            ? { instructions }
+            : {};
+        return plan(runId, c.brief, c.workspaceRoot, c.changesetId, extra);
       });
-      return plan(runId, c.brief, c.workspaceRoot, c.changesetId, { previous, instructions });
     },
 
     planShow(runId: string) {
@@ -358,25 +417,52 @@ export function openRuntime(opts: {
       return { run_id: runId, target: "plan" as const, plan_id: id };
     },
 
-    /** heph run: build an approved plan, then stage it (PRs for review, or staging refs). */
-    async build(runId: string) {
+    /**
+     * heph run: build an approved plan, then stage it (PRs for review, or staging refs). Picks up
+     * from where the run is: a stopped or paused build resumes, a built one is staged, and a
+     * rate-limited one first waits for the limit to pass (`now` skips the wait).
+     */
+    async build(runId: string, o: { now?: boolean } = {}) {
       const row = runRow(runId);
       if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is ${row.status}`);
+      if (row.status === "staged")
+        throw new Error(`run ${runId} is already staged (heph approve merge ${runId})`);
+      if (row.status === "escalated")
+        throw new Error(`the planner escalated ${runId}; see heph explain ${runId}`);
+      if (
+        plannerInterrupted(runId) ||
+        !ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length
+      )
+        throw new Error(`run ${runId} has no finished plan (heph plan revise ${runId})`);
       if (!approvedPlan(runId))
         throw new Error(`the latest plan of ${runId} is not approved (heph approve plan ${runId})`);
-      const { brief: _brief, ...o } = runOptions(runId);
-      const out = await buildRun(o);
-      const base = {
-        run_id: runId,
-        status: out.status,
-        heads: out.heads,
-        ...(out.reason ? { reason: out.reason } : {}),
-      };
-      if (out.status !== "built") return base;
-      const staged = await landChangeset(landOptions(runId));
-      if (staged.status !== "staged")
-        return { ...base, status: "paused" as const, reason: staged.reason ?? "staging failed" };
-      return { ...base, status: "staged" as const, ...(staged.prs ? { prs: staged.prs } : {}) };
+      return locked(runId, async () => {
+        const waited = o.now ? undefined : await waitOutRateLimit(runId);
+        const extra = waited ? { waited_until: waited } : {};
+        const { brief: _brief, ...ro } = runOptions(runId);
+        let heads: Record<string, string> = {};
+        if (runRow(runId).status !== "built") {
+          const out = await buildRun(ro);
+          const base = {
+            run_id: runId,
+            status: out.status,
+            heads: out.heads,
+            ...(out.reason ? { reason: out.reason } : {}),
+            ...extra,
+          };
+          if (out.status !== "built") return base;
+          heads = out.heads;
+        }
+        const staged = await landChangeset(landOptions(runId));
+        const base = {
+          run_id: runId,
+          heads: Object.keys(heads).length ? heads : staged.refs,
+          ...extra,
+        };
+        if (staged.status !== "staged")
+          return { ...base, status: "paused" as const, reason: staged.reason ?? "staging failed" };
+        return { ...base, status: "staged" as const, ...(staged.prs ? { prs: staged.prs } : {}) };
+      });
     },
 
     status(runId?: string) {
@@ -457,7 +543,10 @@ export function openRuntime(opts: {
         type: "human.input",
         data: { kind: "approve", target: "merge" },
       });
-      return { run_id: runId, result: await mergeChangeset(landOptions(runId)) };
+      return locked(runId, async () => ({
+        run_id: runId,
+        result: await mergeChangeset(landOptions(runId)),
+      }));
     },
 
     async mergeStatus(runId: string) {

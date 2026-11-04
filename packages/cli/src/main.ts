@@ -27,6 +27,7 @@ type Flags = {
   brief?: string;
   runId?: string;
   budget?: number;
+  now: boolean;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -59,6 +60,7 @@ async function withRuntime<T>(
     workspaceDir,
     home: homeOf(ctx),
     ...(ctx.deps ? { deps: ctx.deps } : {}),
+    ...(ctx.flags.json ? {} : { notify: (line: string) => ctx.stderr(`  ${line}\n`) }),
     ...(progress && !ctx.flags.json
       ? {
           onAppend: (events) => {
@@ -141,12 +143,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
   }),
   "plan revise": command({
     run: (ctx) =>
-      withRuntime(ctx, (rt) =>
-        rt.revise(
-          need(ctx.args, 0, "run id"),
-          need(ctx.args.slice(1), 0, "instructions") && ctx.args.slice(1).join(" "),
-        ),
-      ),
+      withRuntime(ctx, (rt) => rt.revise(need(ctx.args, 0, "run id"), ctx.args.slice(1).join(" "))),
     render: planText,
   }),
   "approve plan": command({
@@ -154,7 +151,8 @@ const COMMANDS: Record<string, Command<unknown>> = {
     render: (a) => `approved plan ${a.plan_id} of ${a.run_id}; next: heph run ${a.run_id}\n`,
   }),
   run: command({
-    run: (ctx) => withRuntime(ctx, (rt) => rt.build(need(ctx.args, 0, "run id")), true),
+    run: (ctx) =>
+      withRuntime(ctx, (rt) => rt.build(need(ctx.args, 0, "run id"), { now: ctx.flags.now }), true),
     render: (r) =>
       `${[
         `run ${r.run_id}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`,
@@ -273,6 +271,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         brief: { type: "string" },
         "run-id": { type: "string" },
         budget: { type: "string" },
+        now: { type: "boolean", default: false },
       },
     });
     json = values.json ?? false;
@@ -287,6 +286,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       json,
       set: values.set ?? [],
       force: values.force ?? false,
+      now: values.now ?? false,
       ...(values.brief ? { brief: values.brief } : {}),
       ...(values["run-id"] ? { runId: values["run-id"] } : {}),
       ...(values.budget ? { budget: Number.parseInt(values.budget, 10) } : {}),

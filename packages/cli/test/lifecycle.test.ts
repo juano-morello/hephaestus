@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { SpawnInput, Worker } from "@hephaestus/engine";
+import { type SpawnInput, type SpawnOutput, Stopped, type Worker } from "@hephaestus/engine";
 import { type PlannerInput, type PlannerSession, runPlanner } from "@hephaestus/workers";
 import type { z } from "zod";
 import { type Io, run } from "../src/main.ts";
@@ -112,11 +112,14 @@ const FILES: Record<string, Record<string, string>> = {
   T1: { "test_add.sh": '[ "$(sh add.sh 2 3)" = "5" ]\n' },
   T2: { "add.sh": "echo $(($1 + $2))\n" },
 };
-function worker() {
+function worker(first?: (input: SpawnInput) => Partial<SpawnOutput> | "stop" | undefined) {
   const inputs: SpawnInput[] = [];
   const w: Worker = {
     async spawn(input) {
       inputs.push(input);
+      const once = inputs.filter((i) => i.brief.task.id === input.brief.task.id).length === 1;
+      const special = once ? first?.(input) : undefined;
+      if (special === "stop") throw new Stopped("killed");
       const files = FILES[input.brief.task.id] ?? {};
       for (const [p, c] of Object.entries(files)) put(join(input.workdir, p), c);
       return {
@@ -124,6 +127,7 @@ function worker() {
         transcript: "",
         usage: { input: 10, output: 20, cache_read: 0, cache_write: 0 },
         exit: "ok",
+        ...special,
       };
     },
   };
@@ -268,6 +272,109 @@ describe("heph lifecycle", () => {
     expect((await heph(["cancel", "R5"])).data).toMatchObject({ run_id: "R5", status: "failed" });
     await heph(["approve", "plan", "R5"]);
     expect((await heph(["run", "R5"], { worker: w })).error?.message).toBe("run R5 is failed");
+  });
+
+  async function approved(runId: string, deps: Deps) {
+    await initWithTests();
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", runId], deps);
+    await heph(["approve", "plan", runId], deps);
+  }
+  const ids = (inputs: SpawnInput[]) => inputs.map((i) => i.brief.task.id);
+
+  test("a run whose process was stopped mid-build resumes without redoing accepted units", async () => {
+    const stopped = worker((i) => (i.brief.task.id === "T2" ? "stop" : undefined));
+    await approved("R6", { planner: planner([PLAN]).fn, worker: stopped.w });
+    const killed = await heph(["run", "R6"], { worker: stopped.w });
+    expect(killed).toMatchObject({ ok: false, error: { message: "killed" } });
+    expect(((await heph(["status", "R6"])).data as { run: { status: string } }).run.status).toBe(
+      "running",
+    );
+
+    const next = worker();
+    expect((await heph(["run", "R6"], { worker: next.w })).data).toMatchObject({
+      status: "staged",
+    });
+    expect(ids(next.inputs)).toEqual(["T2"]);
+    expect(
+      (
+        (await heph(["explain", "R6"])).data as { events: { type: string; summary: string }[] }
+      ).events
+        .filter((e) => e.type === "run.resumed")
+        .map((e) => e.summary),
+    ).toEqual(["run resumed: crash"]);
+    expect((await heph(["run", "R6"], { worker: next.w })).error?.message).toBe(
+      "run R6 is already staged (heph approve merge R6)",
+    );
+  });
+
+  test("a rate-limited run waits for retry_after, unless --now", async () => {
+    const t0 = Date.parse("2026-11-04T10:00:00.000Z");
+    const retry = new Date(t0 + 90_000).toISOString();
+    const limited = () =>
+      worker((i) =>
+        i.brief.task.id === "T2" ? { exit: "rate_limited", retry_after: retry } : undefined,
+      );
+    const slept: number[] = [];
+    const clock: Deps = { now: () => t0, sleep: async (ms) => void slept.push(ms) };
+
+    const a = limited();
+    await approved("R7", { planner: planner([PLAN]).fn, worker: a.w });
+    expect((await heph(["run", "R7"], { worker: a.w, ...clock })).data).toMatchObject({
+      status: "paused",
+    });
+    expect(slept).toEqual([]);
+    const resumed = await heph(["run", "R7"], { worker: a.w, ...clock });
+    expect(resumed.data).toMatchObject({ status: "staged", waited_until: retry });
+    expect(slept).toEqual([90_000]);
+
+    const b = limited();
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R8"], {
+      planner: planner([PLAN]).fn,
+    });
+    await heph(["approve", "plan", "R8"]);
+    await heph(["run", "R8"], { worker: b.w, ...clock });
+    expect((await heph(["run", "R8", "--now"], { worker: b.w, ...clock })).data).toMatchObject({
+      status: "staged",
+    });
+    expect(slept).toEqual([90_000]);
+  });
+
+  test("a second process can't drive a run while the first is alive; a dead one's lock is taken over", async () => {
+    const w = worker();
+    await approved("R9", { planner: planner([PLAN]).fn, worker: w.w });
+    put(join(home, "locks", "R9.lock"), `${process.ppid}\n`);
+    expect((await heph(["run", "R9"], { worker: w.w })).error?.message).toBe(
+      `run R9 is being driven by process ${process.ppid}`,
+    );
+    const gone = Bun.spawn(["true"]);
+    await gone.exited;
+    put(join(home, "locks", "R9.lock"), `${gone.pid}\n`);
+    expect((await heph(["run", "R9"], { worker: w.w })).data).toMatchObject({ status: "staged" });
+  });
+
+  test("a run whose planner was stopped is planned from the Brief by plan revise", async () => {
+    await initWithTests();
+    const stop: Deps["planner"] = async () => {
+      throw new Stopped("killed");
+    };
+    expect(
+      (
+        await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R10"], {
+          planner: stop,
+        })
+      ).error?.message,
+    ).toBe("killed");
+    expect((await heph(["run", "R10"])).error?.message).toBe(
+      "run R10 has no finished plan (heph plan revise R10)",
+    );
+    const p = planner([PLAN]);
+    expect((await heph(["plan", "revise", "R10"], { planner: p.fn })).data).toMatchObject({
+      status: "planned",
+    });
+    expect(p.prompts[0]).not.toContain("keep it");
+    expect((await heph(["plan", "revise", "R10"], { planner: p.fn })).error?.message).toBe(
+      "missing instructions",
+    );
   });
 
   test("errors use the envelope", async () => {

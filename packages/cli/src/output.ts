@@ -59,6 +59,8 @@ export const RunResult = z
     heads: z.record(z.string(), z.string()),
     prs: z.record(z.string(), z.string()).optional(),
     reason: z.string().optional(),
+    /** When the run waited out a rate limit before continuing. */
+    waited_until: z.iso.datetime().optional(),
   })
   .strict();
 
