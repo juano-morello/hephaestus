@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { detectWorkspace, initWorkspace } from "../src/init.ts";
 
@@ -107,6 +107,8 @@ describe("initWorkspace", () => {
       nodeId: "n",
     });
     expect(Object.keys(config.workspace.repos).sort()).toEqual(["server", "web"]);
+    expect(config.workspace.name).toBe(basename(root).replace(/[^A-Za-z0-9._-]/g, "-"));
+    expect(sources["workspace.name"]).toBe(join(root, ".heph", "workspace.yaml"));
     expect(config.projects.server?.commands).toEqual({
       test: "go test ./...",
       typecheck: "go vet ./...",

@@ -109,7 +109,7 @@ export function openRuntime(opts: {
     nodeId: config.node.id,
     ...(opts.onAppend ? { onAppend: opts.onAppend } : {}),
   });
-  const { targets, ...workspaceWithIntegration } = config.workspace;
+  const { targets, name: _name, ...workspaceWithIntegration } = config.workspace;
   const workspace: Workspace = workspaceWithIntegration;
   const engineConfig = toEngineConfig(config);
   const gates = builtinGates();

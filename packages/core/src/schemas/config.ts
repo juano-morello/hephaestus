@@ -44,6 +44,29 @@ export type SandboxConfig = z.infer<typeof SandboxConfig>;
 export const NodeConfig = z.object({ id: z.string().min(1) }).strict();
 export type NodeConfig = z.infer<typeof NodeConfig>;
 
+/** Another node this one talks to (SPEC section 7), reached over SSH. */
+export const PeerNode = z
+  .object({
+    /** An ssh destination: a host from ~/.ssh/config, or user@host. */
+    ssh: z.string().min(1),
+    /** The heph binary on that node. Default "heph". */
+    heph: z.string().min(1).optional(),
+    /** Its HEPH_HOME. Default: its own default (~/.heph). */
+    home: z.string().min(1).optional(),
+    labels: z.array(z.string().min(1)).optional(),
+    /** New runs go to the preferred node when it is reachable. */
+    preferred: z.boolean().optional(),
+  })
+  .strict();
+export type PeerNode = z.infer<typeof PeerNode>;
+
+export const SyncConfig = z.object({ interval_s: z.int().positive() }).strict();
+export type SyncConfig = z.infer<typeof SyncConfig>;
+
+const WorkspaceName = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "letters, digits, dot, dash and underscore");
+
 export const ProjectCommands = z
   .object({
     test: z.string().min(1).optional(),
@@ -65,6 +88,8 @@ export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
 /** `<workspace>/.heph/workspace.yaml`: the Workspace plus the branch each repo lands on. */
 export const WorkspaceConfig = Workspace.safeExtend({
+  /** Names the workspace across nodes; each node maps it to a path (`workspaces`). */
+  name: WorkspaceName.optional(),
   targets: z.record(z.string(), z.string().min(1)).optional(),
 }).superRefine((ws, ctx) => {
   for (const repo of Object.keys(ws.targets ?? {})) {
@@ -83,6 +108,10 @@ export const ResolvedConfig = z
     sandbox: SandboxConfig,
     workspace: WorkspaceConfig,
     projects: z.record(z.string(), ProjectSettings),
+    nodes: z.record(z.string(), PeerNode),
+    /** Workspace name -> its checkout on this node. */
+    workspaces: z.record(WorkspaceName, z.string().min(1)),
+    sync: SyncConfig,
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -105,6 +134,9 @@ export const HomeConfigLayer = z
     routing: Routing.optional(),
     limits: Limits.partial().optional(),
     sandbox: SandboxConfig.partial().optional(),
+    nodes: z.record(z.string(), PeerNode).optional(),
+    workspaces: z.record(WorkspaceName, z.string().min(1)).optional(),
+    sync: SyncConfig.partial().optional(),
   })
   .strict();
 export type HomeConfigLayer = z.infer<typeof HomeConfigLayer>;
@@ -150,5 +182,8 @@ export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
     },
     limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000 },
     sandbox: { mode: "container", runtime: "docker", image: "alpine:3.20" },
+    nodes: {},
+    workspaces: {},
+    sync: { interval_s: 30 },
   };
 }

@@ -117,6 +117,7 @@ export function initWorkspace(dir: string, opts: { force?: boolean } = {}): Init
   const detected = detectWorkspace(workspaceDir);
   const files = new Map<string, unknown>();
   files.set(join(workspaceDir, ".heph", "workspace.yaml"), {
+    name: basename(workspaceDir).replace(/[^A-Za-z0-9._-]/g, "-") || "workspace",
     repos: detected.repos,
     projects: Object.fromEntries(
       Object.entries(detected.projects).map(([n, p]) => [

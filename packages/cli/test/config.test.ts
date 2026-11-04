@@ -83,6 +83,47 @@ describe("loadConfig", () => {
     expect(sources["node.id"]).toBe(file);
   });
 
+  test("nodes, workspaces and sync come from the home layer; the workspace is named after its dir", async () => {
+    const empty = await loadConfig({ workspaceDir: ws, home });
+    expect(empty.config.nodes).toEqual({});
+    expect(empty.config.workspaces).toEqual({});
+    expect(empty.config.sync).toEqual({ interval_s: 30 });
+    expect(empty.config.workspace.name).toBe(basename(ws));
+    expect(empty.sources["workspace.name"]).toBe("default");
+
+    const file = join(home, "config.yaml");
+    await put(
+      file,
+      [
+        "nodes:",
+        "  denver: { ssh: denver, heph: ~/bin/heph, labels: [linux, unattended], preferred: true }",
+        "workspaces:",
+        "  legendsao: /home/juano/code/legendsao",
+        "sync: { interval_s: 10 }",
+        "",
+      ].join("\n"),
+    );
+    await put(join(ws, ".heph", "workspace.yaml"), `name: calc\n${WORKSPACE}`);
+    const { config, sources } = await loadConfig({ workspaceDir: ws, home });
+    expect(config.nodes.denver).toEqual({
+      ssh: "denver",
+      heph: "~/bin/heph",
+      labels: ["linux", "unattended"],
+      preferred: true,
+    });
+    expect(config.workspaces).toEqual({ legendsao: "/home/juano/code/legendsao" });
+    expect(config.sync.interval_s).toBe(10);
+    expect(config.workspace.name).toBe("calc");
+    expect(sources["workspace.name"]).toBe(join(ws, ".heph", "workspace.yaml"));
+  });
+
+  test("a node needs an ssh destination", async () => {
+    await put(join(home, "config.yaml"), "nodes:\n  denver: { preferred: true }\n");
+    expect((await loadError({ workspaceDir: ws, home })).issues[0]).toMatchObject({
+      key: "nodes.denver.ssh",
+    });
+  });
+
   test("a route in a later layer replaces the whole route", async () => {
     const file = join(home, "config.yaml");
     await put(file, "routing:\n  implementer:\n    complex: { model: claude/opus }\n");

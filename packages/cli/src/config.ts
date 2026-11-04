@@ -214,6 +214,11 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
   const wsLayer = await readLayer(wsFile, WorkspaceConfig, ["workspace"]);
   const workspace = wsLayer?.data ?? impliedWorkspace(opts.workspaceDir);
   apply(merged, { workspace }, wsLayer?.file ?? "default", sources);
+  if (!workspace.name) {
+    const name =
+      basename(resolve(opts.workspaceDir)).replace(/[^A-Za-z0-9._-]/g, "-") || "workspace";
+    apply(merged, { workspace: { name } }, "default", sources);
+  }
 
   const projects: Obj = {};
   for (const name of Object.keys(workspace.projects)) projects[name] = { commands: {} };
