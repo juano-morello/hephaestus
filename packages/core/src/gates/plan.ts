@@ -143,6 +143,48 @@ const matches = (glob: string, files: string[]) => files.filter((f) => globsOver
  * With the project's file list, globs that match existing files are compared on those files;
  * a glob that matches no file yet may create new ones, so it is compared as a glob.
  */
+/**
+ * Every task must pass its project's tests, so a test task may only check what the tasks run by
+ * then have done. A criterion tested early but covered by a later task fails every task between
+ * them, however good their work. Order is the execution order (topological, plan order on ties).
+ */
+export function testsPassable(plan: Plan, _ctx: GateContext): GateResult {
+  const { edges } = graph(plan);
+  const order = topoOrder(ids(plan), edges);
+  if (!order.ok) return result("tests_passable", [], "skipped: the plan has a cycle", "");
+  const byId = new Map(plan.tasks.map((t) => [t.id, t]));
+  const run = order.order.flatMap((id) => byId.get(id) ?? []);
+  const evidence: string[] = [];
+  const reported = new Set<string>();
+
+  run.forEach((x, i) => {
+    if (x.kind === "test") return;
+    const done = new Set(run.slice(0, i + 1).flatMap((t) => (t.kind === "test" ? [] : t.covers)));
+    for (const t of run.slice(0, i)) {
+      if (t.kind !== "test" || t.project !== x.project) continue;
+      const later = run.slice(i + 1).filter((u) => u.kind !== "test");
+      const missing = t.covers.filter(
+        (c) =>
+          !done.has(c) && later.some((u) => u.covers.includes(c)) && !reported.has(`${t.id}:${c}`),
+      );
+      if (!missing.length) continue;
+      for (const c of missing) reported.add(`${t.id}:${c}`);
+      const list = missing.join(", ");
+      const by = later.filter((u) => u.covers.some((c) => missing.includes(c))).map((u) => u.id);
+      evidence.push(
+        `${x.id}: runs after test ${t.id}, which checks ${list}, but ${list} ${missing.length > 1 ? "are" : "is"} covered only by ${by.join(", ")}, which ${by.length > 1 ? "run" : "runs"} later. Every task must pass its project's tests, so cover ${list} in ${x.id} or earlier, or test ${list} in a test task after ${x.id}`,
+      );
+    }
+  });
+
+  return result(
+    "tests_passable",
+    evidence,
+    "every task's tests check only work done by then",
+    "a task must pass tests for work that runs after it",
+  );
+}
+
 export function parallelScopesDisjoint(plan: Plan, ctx: GateContext): GateResult {
   const { reach } = graph(plan);
   const ordered = (a: Task, b: Task) => reach.get(a.id)?.has(b.id) || reach.get(b.id)?.has(a.id);
@@ -302,6 +344,7 @@ export function runPlanGates(plan: Plan, ctx: GateContext): GateResult[] {
     criteriaCovered(plan, ctx),
     consumesResolve(plan),
     testPrecedesImplement(plan, ctx),
+    testsPassable(plan, ctx),
     parallelScopesDisjoint(plan, ctx),
     migrationIrreversible(plan),
     complexitySanity(plan, ctx),

@@ -382,6 +382,7 @@ Plan gates (pure code):
 - every Criterion covered: test-checked ones by at least one `test` task; gate-checked ones by a task in a project where that gate is configured, and never by a `test` task
 - every `consumes` resolves to exactly one `produces` (an artifact produced twice is ambiguous and fails); graph is acyclic
 - every test-checked criterion an `implement` task covers is covered by a `test` task in the same project that precedes it: the test task produces a `test:<Name>` artifact the implement task consumes (directly or through a chain). An implement task with empty `covers`, or covering only gate-checked criteria, fails
+- every task passes its project's tests, so in execution order (topological, plan order on ties) every criterion a test task checks is covered by the first non-test task in that project after it, or earlier. A criterion tested early but done by a later task (a docs entry, say) fails every task in between (decided 2026-11-04, after a LegendsAO run dead-ended on it)
 - parallel tasks (no path between them) in the same repo have non-overlapping scopes, compared repo-relative so projects with nested roots are covered; with the repo's file list, globs are compared on the files they match
 - scopes point at directories that exist (needs the file list); new files in existing directories are listed for review
 - `migration` forces lane `irreversible`

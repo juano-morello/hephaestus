@@ -89,6 +89,12 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    order. To make a test precede, the test task produces `test:<Name>` and the implement task
    consumes it (consume one artifact per test task it relies on). Writing a test task alone is not enough; without the
    `test:` artifact in `consumes` the implement task is unordered and the gate fails.
+   **Every task must pass all of its project's tests**, including tests from every earlier test
+   task. So every criterion a test task checks must be covered by the first non-test task in
+   that project that runs after it, or by a task that runs even earlier. A criterion done late (a docs entry, a
+   later wiring step) gets its own test task placed just before the task that covers it, or no
+   test at all if it has a `check` gate. Never put it in an early test task: every task in
+   between would fail.
 5. **Parallel tasks do not overlap.** Two tasks in the same project with no produces/consumes
    path between them may run at the same time, so their scopes must not share any file. Put
    test files and implementation files in different globs (for Go,

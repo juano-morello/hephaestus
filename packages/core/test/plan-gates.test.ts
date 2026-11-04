@@ -10,6 +10,7 @@ import {
   scopePaths,
   sizeLimits,
   testPrecedesImplement,
+  testsPassable,
 } from "../src/gates/plan.ts";
 import { DEFAULT_LIMITS, type GateContext } from "../src/gates/types.ts";
 import type { Workspace } from "../src/schemas/workspace.ts";
@@ -50,12 +51,52 @@ describe("runPlanGates", () => {
       "criteria_covered",
       "consumes_resolve",
       "test_precedes_implement",
+      "tests_passable",
       "parallel_scope_disjoint",
       "migration_irreversible",
       "complexity_sanity",
       "size_limits",
       "scope_paths",
     ]);
+  });
+});
+
+describe("tests_passable", () => {
+  test("passes when each task's tests check only work done by then", () => {
+    expect(testsPassable(goodPlan(), ctx()).verdict).toBe("pass");
+  });
+
+  test("fails when a test checks a criterion whose task runs later (the zoom run)", () => {
+    // T1 tests AC1 and AC2; T2 does AC1 but must pass every test, and AC2 waits for T3.
+    const p = plan([
+      task("T1", { kind: "test", covers: ["AC1", "AC2"], produces: ["test:Zoom"] }),
+      task("T2", { covers: ["AC1"], consumes: ["test:Zoom"] }),
+      task("T3", { kind: "docs", covers: ["AC2"], consumes: ["test:Zoom"] }),
+    ]);
+    const r = testsPassable(p, ctx());
+    expect(r.verdict).toBe("fail");
+    expect(r.evidence).toEqual([
+      "T2: runs after test T1, which checks AC2, but AC2 is covered only by T3, which runs later. Every task must pass its project's tests, so cover AC2 in T2 or earlier, or test AC2 in a test task after T2",
+    ]);
+  });
+
+  test("passes when the later criterion gets its own test task after the first work", () => {
+    const p = plan([
+      task("T1", { kind: "test", covers: ["AC1"], produces: ["test:A"] }),
+      task("T2", { covers: ["AC1"], consumes: ["test:A"], produces: ["fn:A"] }),
+      task("T3", { kind: "test", covers: ["AC2"], consumes: ["fn:A"], produces: ["test:B"] }),
+      task("T4", { kind: "docs", covers: ["AC2"], consumes: ["test:B"] }),
+    ]);
+    expect(testsPassable(p, ctx()).verdict).toBe("pass");
+  });
+
+  test("only tests in the task's own project count: they are the ones its gate runs", () => {
+    const p = plan([
+      task("T1", { kind: "test", project: "client", covers: ["AC1", "AC2"], produces: ["test:C"] }),
+      task("T2", { project: "server", covers: ["AC2"] }),
+      task("T3", { project: "client", covers: ["AC1"], consumes: ["test:C"] }),
+    ]);
+    expect(testsPassable(p, ctx()).verdict).toBe("pass");
   });
 });
 
