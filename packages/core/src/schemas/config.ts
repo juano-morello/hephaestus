@@ -167,18 +167,19 @@ export type DefaultConfig = Omit<ResolvedConfig, "workspace" | "projects">;
 
 /** Built-in defaults: everything except the workspace, which comes from workspace.yaml or is implied. */
 export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
+  // Exact model ids: OMP matches a bare "opus" or "sonnet" to an older model in its catalog.
   const tiered = (): RoleRoutes => ({
-    trivial: { model: "claude/haiku" },
-    standard: { model: "claude/sonnet", effort: "medium" },
-    complex: { model: "claude/sonnet", effort: "high" },
+    trivial: { model: "claude/claude-haiku-5-5" },
+    standard: { model: "claude/claude-sonnet-5-5", effort: "medium" },
+    complex: { model: "claude/claude-sonnet-5-5", effort: "high" },
   });
   return {
     node: { id: opts.nodeId },
     routing: {
-      planner: { default: { model: "claude/opus", effort: "high" } },
+      planner: { default: { model: "claude/claude-opus-5-5", effort: "high" } },
       test_author: tiered(),
       implementer: tiered(),
-      documenter: { default: { model: "claude/haiku" } },
+      documenter: { default: { model: "claude/claude-haiku-5-5" } },
     },
     limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000 },
     sandbox: { mode: "container", runtime: "docker", image: "alpine:3.20" },

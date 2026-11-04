@@ -17,11 +17,17 @@ const resolved = () => ({
 describe("defaultConfig", () => {
   test("uses SPEC section 10 routing", () => {
     const d = defaultConfig({ nodeId: "mbp" });
-    expect(d.routing.planner?.default).toEqual({ model: "claude/opus", effort: "high" });
-    expect(d.routing.implementer?.trivial).toEqual({ model: "claude/haiku" });
-    expect(d.routing.implementer?.standard).toEqual({ model: "claude/sonnet", effort: "medium" });
-    expect(d.routing.test_author?.complex).toEqual({ model: "claude/sonnet", effort: "high" });
-    expect(d.routing.documenter?.default).toEqual({ model: "claude/haiku" });
+    expect(d.routing.planner?.default).toEqual({ model: "claude/claude-opus-5-5", effort: "high" });
+    expect(d.routing.implementer?.trivial).toEqual({ model: "claude/claude-haiku-5-5" });
+    expect(d.routing.implementer?.standard).toEqual({
+      model: "claude/claude-sonnet-5-5",
+      effort: "medium",
+    });
+    expect(d.routing.test_author?.complex).toEqual({
+      model: "claude/claude-sonnet-5-5",
+      effort: "high",
+    });
+    expect(d.routing.documenter?.default).toEqual({ model: "claude/claude-haiku-5-5" });
   });
 
   test("uses the built-in limits and sandbox", () => {

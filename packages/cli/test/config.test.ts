@@ -54,7 +54,10 @@ describe("loadConfig", () => {
     expect(config.node.id).toBe(hostname());
     expect(config.limits.attempts_per_unit).toBe(3);
     expect(config.sandbox.image).toBe("alpine:3.20");
-    expect(config.routing.planner?.default).toEqual({ model: "claude/opus", effort: "high" });
+    expect(config.routing.planner?.default).toEqual({
+      model: "claude/claude-opus-5-5",
+      effort: "high",
+    });
     expect(config.workspace.repos).toEqual({ [name]: "." });
     expect(config.workspace.projects[name]).toEqual({ repo: name, path: ".", stack: "unknown" });
     expect(config.projects[name]).toEqual({ commands: {} });
@@ -130,7 +133,7 @@ describe("loadConfig", () => {
     const { config, sources } = await loadConfig({ workspaceDir: ws, home });
     expect(config.routing.implementer?.complex).toEqual({ model: "claude/opus" });
     expect(config.routing.implementer?.standard).toEqual({
-      model: "claude/sonnet",
+      model: "claude/claude-sonnet-5-5",
       effort: "medium",
     });
     expect(sources["routing.implementer.complex.model"]).toBe(file);
