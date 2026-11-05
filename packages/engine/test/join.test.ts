@@ -439,6 +439,41 @@ describe("join", () => {
   });
 });
 
+describe("rejoin cleanup", () => {
+  test("a join worktree that fails to be added is still cleaned up", async () => {
+    const { repoDir, worktreesDir } = await setup();
+    const main = (await log(repoDir, ["rev-parse", "main"]))[0] as string;
+    const path = join(worktreesDir, "R1", "T1", "a1-join");
+    // A failing post-checkout hook: git creates and registers the worktree, then fails the add.
+    const hooks = join(dir(), "hooks");
+    writeFiles(hooks, { "post-checkout": "#!/bin/sh\nexit 1\n" });
+    await runOk(["chmod", "+x", join(hooks, "post-checkout")]);
+    await runOk(["git", "config", "core.hooksPath", hooks], { cwd: repoDir });
+    const runner = localRunner({
+      worker: scripted({}).worker,
+      gates: [],
+      worktreesDir,
+      tools: [],
+    });
+    await expect(
+      runner.rejoin({
+        runId: "R1",
+        task: task("T1", ["b.txt"]),
+        attempt: 1,
+        repoDir,
+        projectPath: "server",
+        project: { name: "server", stack: "go", commands: {} },
+        locked: [],
+        commit: main,
+        tip: main,
+        worker: { schema: 1, summary: "", claims: [], touched: [] },
+      }),
+    ).rejects.toThrow("worktree add");
+    expect(await log(repoDir, ["worktree", "list"])).toHaveLength(1);
+    expect(filesUnder(path)).toEqual([]);
+  });
+});
+
 describe("rate-limit throttle", () => {
   test("a build resuming from a rate limit starts at half its parallelism and ramps up", async () => {
     const { go, ledger, repoDir, worktreesDir } = await setup();
