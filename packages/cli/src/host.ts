@@ -401,6 +401,15 @@ export function openHost(o: HostOptions) {
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }
+        case "dashboard": {
+          const runId = args[0] as string;
+          const fresh = await refresh(runId);
+          const { rt } = await runtimeFor(cwd ?? workspaceOfOrHome(runId));
+          return {
+            ...rt.dashboard(runId),
+            ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
+          };
+        }
         case "planShow":
         case "explain": {
           const runId = args[0] as string;

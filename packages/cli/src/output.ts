@@ -92,6 +92,70 @@ export const StatusOne = z
   })
   .strict();
 
+/** The run page's one read: the run, its latest plan, and what each unit and attempt did. */
+export const Dashboard = z
+  .object({
+    schema: z.literal(1),
+    run: RunRow,
+    plan_approved: z.boolean(),
+    plan: z
+      .object({
+        units: z.array(
+          z
+            .object({
+              id: z.string(),
+              title: z.string(),
+              kind: z.string(),
+              project: z.string(),
+              depends_on: z.array(z.string()),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+    units: z.array(
+      z
+        .object({
+          unit_id: z.string(),
+          status: z.string(),
+          attempts: z.int(),
+          /** False for a unit an earlier plan had and the latest plan dropped. */
+          in_plan: z.boolean(),
+        })
+        .strict(),
+    ),
+    attempts: z.array(
+      z
+        .object({
+          unit_id: z.string(),
+          attempt: z.int(),
+          status: z.string(),
+          model: z.string().optional(),
+          provider: z.string().optional(),
+          outcome: z.string().optional(),
+          duration_ms: z.int().optional(),
+          gates: z.array(
+            z
+              .object({
+                gate: z.string(),
+                verdict: z.string(),
+                reason: z.string(),
+                evidence: z.array(z.string()),
+              })
+              .strict(),
+          ),
+        })
+        .strict(),
+    ),
+    /** Why the run paused, since it last resumed. */
+    pauses: z.array(z.string()),
+    stack_on: z.object({ run_id: z.string(), status: z.string() }).strict().optional(),
+    usage: z.array(z.object({ provider: z.string(), model: z.string() }).passthrough()),
+    stale: z.string().optional(),
+  })
+  .strict();
+export type Dashboard = z.infer<typeof Dashboard>;
+
 export const Explain = z
   .object({
     run_id: z.string(),
@@ -186,4 +250,5 @@ export const OUTPUT = {
   handoff: HandedOff,
   adopt: Adopted,
   "merge status": MergeResult,
+  ui: z.object({ url: z.string(), opened: z.boolean() }).strict(),
 } as const;

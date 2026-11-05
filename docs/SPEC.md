@@ -787,6 +787,8 @@ Approval guarantee: the server never approves. Its method allowlist (`newRun`, `
 - Widget actions call the daemon API, never the model.
 - Widgets in order: run graph, plan review, gate results, changeset diff summary, ledger charts (attempts, escalations, tokens, provider usage vs limits), retro proposals.
 
+**As built (2026-11-05), first slice: read-only runs list and run page.** The daemon also serves HTTP on `127.0.0.1:7878` (another free port when that one is taken). The port and a token go to `$HEPH_HOME/ui.json` (`{ port, token }`, mode 0600, written atomically). The token is created once and survives daemon restarts. The listener refuses any `Host` header that is not `127.0.0.1:<port>` or `localhost:<port>`, requires `Authorization: Bearer <token>` on `POST /api/<method>`, and serves only a 4-method read allowlist: `status`, `explain`, `planShow` and the new `dashboard` (one call returning run, plan, unit statuses, attempts with gate results, pauses, stacked-on parent, usage, staleness). Every other method answers 404, so approve, hint and cancel are not on the network surface. The UI is a React bundle (packages/ui, built by `bun run build:ui`) embedded in the daemon binary and served from `/`. `heph ui [--no-open]` prints the URL, with the token in the URL fragment (`#t=...`, never sent to a server or logged), and opens the browser only when stdout is a TTY and `--no-open` is absent. The page polls (2 s while a run is running, else 10 s, idle while the tab is hidden); there is no push channel yet. Not built: approve/hint/cancel buttons, plan review, diff summary, ledger charts, retro, MCP Apps widgets, SSE, remote-node dashboards.
+
 ### Approvals
 
 Deferred to v1.5. Planned: out-of-band confirmation (TTY or one-time code via phone ping), MCP elicitation, approve buttons in widgets, irreversible lane approvals only via out-of-band path.
@@ -846,6 +848,7 @@ Small MMORPG across three projects: Go server, Godot client, web. Optional share
    7. Resume and idempotency
    8. Node model: coordinator/runner split, local fallback, sync, handoff
 3. **Then:** cross-node runners, routing tiers with escalation, MCP server, dashboard, MCP Apps widgets.
+   Built (2026-11-05): the dashboard, first slice (read-only runs list and run page, `heph ui`; see section 16). Not built: the rest of the widget list, MCP Apps widgets.
    Built (2026-11-05): parallel fan-out (`limits.parallel`, drain, join) and stacking (`--stack-on`, restack, `pr_retarget`). Not built: multiple parents, optimistic joins, rate-limit throttling, cross-node runners.
 4. **v1.5:** approvals.
 5. **Later:** retro and constraint store, learned routing, additional worker backends.

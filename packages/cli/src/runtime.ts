@@ -231,6 +231,26 @@ export function openRuntime(opts: {
       return d.kind === "approve" && d.target === "plan" && d.plan === latest;
     });
   };
+  /** What status and dashboard share: the run's row, units, attempts, usage and stack parent. */
+  const snapshot = (runId: string) => {
+    const run = runRow(runId);
+    return {
+      run,
+      plan_approved:
+        ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length > 0 && approvedPlan(runId),
+      units: ledger.units(runId),
+      attempts: ledger.attempts(runId),
+      usage: ledger.usage(runId),
+      ...(run.stack_on
+        ? {
+            stack_on: {
+              run_id: run.stack_on,
+              status: ledger.run(run.stack_on)?.status ?? "unknown",
+            },
+          }
+        : {}),
+    };
+  };
   const human = (
     runId: string,
     changesetId: string,
@@ -605,27 +625,82 @@ export function openRuntime(opts: {
 
     status(runId?: string) {
       if (!runId) return { runs: ledger.runs() };
-      const run = runRow(runId);
       const staged = ledger.read({ run_id: runId, types: ["merge.staged"] }).at(-1)?.event.data as
         | { prs?: Record<string, string> }
         | undefined;
+      return { ...snapshot(runId), ...(staged?.prs ? { prs: staged.prs } : {}) };
+    },
+
+    /** Everything the run page shows, in one read (a superset of status without the prs). */
+    dashboard(runId: string) {
+      const snap = snapshot(runId);
+      const planned = ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length > 0;
+      const tasks = planned ? latestPlan(runId).plan.tasks : [];
+      const needs = new Map<string, string[]>();
+      for (const e of deriveEdges(tasks).edges) {
+        const list = needs.get(e.to) ?? [];
+        if (!list.includes(e.from)) list.push(e.from);
+        needs.set(e.to, list);
+      }
+      const inPlan = new Set(tasks.map((t) => t.id));
+      const gates = new Map<string, GateResult[]>();
+      for (const { event: e } of ledger.read({ run_id: runId, types: ["gate.result"] })) {
+        if (!e.unit_id || e.attempt === undefined) continue;
+        const key = `${e.unit_id}#${e.attempt}`;
+        gates.set(key, [...(gates.get(key) ?? []), e.data as GateResult]);
+      }
+      const marks = ledger
+        .read({ run_id: runId, types: ["run.paused", "run.resumed"] })
+        .map((s) => s.event);
+      const lastResume = marks.findLastIndex((e) => e.type === "run.resumed");
+      const pauses = marks
+        .slice(lastResume + 1)
+        .filter((e) => e.type === "run.paused")
+        .map((e) => (e.data as { reason: string }).reason);
       return {
-        run,
-        plan_approved:
-          ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length > 0 &&
-          approvedPlan(runId),
-        units: ledger.units(runId),
-        attempts: ledger.attempts(runId),
-        usage: ledger.usage(runId),
-        ...(staged?.prs ? { prs: staged.prs } : {}),
-        ...(run.stack_on
-          ? {
-              stack_on: {
-                run_id: run.stack_on,
-                status: ledger.run(run.stack_on)?.status ?? "unknown",
-              },
-            }
-          : {}),
+        schema: 1 as const,
+        run: snap.run,
+        plan_approved: snap.plan_approved,
+        plan: {
+          units: tasks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            kind: t.kind,
+            project: t.project,
+            depends_on: needs.get(t.id) ?? [],
+          })),
+        },
+        units: [
+          ...snap.units.map((u) => ({
+            unit_id: u.unit_id,
+            status: u.status,
+            attempts: u.attempts,
+            in_plan: inPlan.has(u.unit_id),
+          })),
+          // A revision resets the units to the new plan; what an earlier plan's units did stays
+          // in their attempts, so those show as dropped.
+          ...[...new Set(snap.attempts.map((a) => a.unit_id))]
+            .filter((id) => !snap.units.some((u) => u.unit_id === id))
+            .map((id) => ({
+              unit_id: id,
+              status: "dropped",
+              attempts: snap.attempts.filter((a) => a.unit_id === id).length,
+              in_plan: false,
+            })),
+        ],
+        attempts: snap.attempts.map((a) => ({
+          unit_id: a.unit_id,
+          attempt: a.attempt,
+          status: a.status,
+          ...(a.model ? { model: a.model } : {}),
+          ...(a.provider ? { provider: a.provider } : {}),
+          ...(a.outcome ? { outcome: a.outcome } : {}),
+          ...(a.duration_ms !== null ? { duration_ms: a.duration_ms } : {}),
+          gates: gates.get(`${a.unit_id}#${a.attempt}`) ?? [],
+        })),
+        pauses,
+        ...(snap.stack_on ? { stack_on: snap.stack_on } : {}),
+        usage: snap.usage,
       };
     },
 

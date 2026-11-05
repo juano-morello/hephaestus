@@ -28,6 +28,7 @@ import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
+import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { watchRun } from "./watch.ts";
 
@@ -45,7 +46,19 @@ export type Io = {
   deps?: Deps;
   /** Test injection: how this node reaches another. */
   connect?: (node: string) => Transport;
+  /** Test injection for `heph ui`: whether stdout is a terminal (default: the process's). */
+  tty?: boolean;
+  /** Test injection for `heph ui`: the OS (default: the process's). */
+  platform?: string;
+  /** Test injection for `heph ui`: starts the browser opener (default: a detached spawn). */
+  open?: (argv: string[]) => void;
 };
+
+/** The command that opens a URL in the user's browser on this OS. */
+export const opener = (platform: string, url: string) => [
+  platform === "darwin" ? "open" : "xdg-open",
+  url,
+];
 
 type Flags = {
   json: boolean;
@@ -61,6 +74,7 @@ type Flags = {
   on?: string;
   stackOn?: string;
   tests: boolean;
+  noOpen: boolean;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -526,7 +540,19 @@ const COMMANDS: Record<string, Command<unknown>> = {
           for (const e of events) log(`${e.run_id} ${line(e).trim()}`);
         },
       });
-      const d = await startDaemon(host, { home, intervalS: config.sync.interval_s, log });
+      // The bundle is built by `bun run build:ui`; without it the daemon runs with no dashboard.
+      let uiAssets: UiAssets | undefined;
+      try {
+        uiAssets = (await import("./ui-assets.ts")).uiAssets;
+      } catch {
+        log("dashboard bundle not built; no UI");
+      }
+      const d = await startDaemon(host, {
+        home,
+        intervalS: config.sync.interval_s,
+        log,
+        ...(uiAssets ? { uiAssets } : {}),
+      });
       log(`node ${host.node} serving ${d.socket}`);
       // A stop leaves running builds as they are; the next start resumes them.
       await new Promise<void>((done) => {
@@ -557,6 +583,40 @@ const COMMANDS: Record<string, Command<unknown>> = {
       }),
     render: () => "",
     usage: ["mcp", "Serve heph to a chat host over MCP (stdio); the host starts this"],
+  }),
+  /** Prints (and opens) the dashboard's URL, once the daemon's listener is verified alive. */
+  ui: command({
+    run: async (ctx) => {
+      const home = homeOf(ctx);
+      const ui = readUiFile(home);
+      // ui.json outlives the daemon, so a live daemon and the dashboard itself answering are both
+      // needed: the page must be 200 and ours, not just any listener (or a 404 with no bundle).
+      const live =
+        ui !== undefined &&
+        (await daemonAt(home)) !== undefined &&
+        (await fetch(`http://127.0.0.1:${ui.port}/`, {
+          signal: AbortSignal.timeout(1000),
+          redirect: "manual",
+        }).then(
+          async (r) => r.status === 200 && (await r.text()).includes('<div id="root">'),
+          () => false,
+        ));
+      if (!ui || !live)
+        throw new Error("the dashboard is not running: no daemon is serving it (run heph doctor)");
+      const url = `http://127.0.0.1:${ui.port}/#t=${ui.token}`;
+      let opened = false;
+      if (!ctx.flags.noOpen && (ctx.tty ?? process.stdout.isTTY)) {
+        try {
+          const argv = opener(ctx.platform ?? process.platform, url);
+          if (ctx.open) ctx.open(argv);
+          else Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" }).unref();
+          opened = true;
+        } catch {}
+      }
+      return { url, opened };
+    },
+    render: (r) => `${r.url}\n`,
+    usage: ["ui [--no-open]", "Open the read-only dashboard in your browser"],
   }),
   sync: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.sync()),
@@ -710,6 +770,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         "stack-on": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         tests: { type: "boolean", default: false },
+        "no-open": { type: "boolean", default: false },
         version: { type: "boolean", default: false },
       },
     });
@@ -734,6 +795,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       force: values.force ?? false,
       now: values.now ?? false,
       tests: values.tests ?? false,
+      noOpen: values["no-open"] ?? false,
       ...(values.home ? { home: values.home } : {}),
       ...(values.on ? { on: values.on } : {}),
       ...(values["stack-on"] ? { stackOn: values["stack-on"] } : {}),
