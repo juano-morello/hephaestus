@@ -155,9 +155,9 @@ then review and run `heph approve merge <child>` once more to merge. Never run a
 approvals yourself.
 Don't stack unless the user asked or the second change really needs the first.
 
-**Parallel units.** `limits.parallel` (default 1; `heph config explain` shows it) lets independent
-units of one plan build at the same time. It is opt-in and the user's setting: don't change it.
-With it above 1, `heph status <run>` lists the attempts in flight, and a pause waits for the ones
+**Parallel units.** `limits.parallel` (default 3; `heph config explain` shows it) lets independent
+units of one plan build at the same time. It is the user's setting: don't change it;
+`1` restores the strictly sequential order. With it above 1, `heph status <run>` lists the attempts in flight, and a pause waits for the ones
 running to finish first. Everything else (hints, escalations, watching) works the same.
 
 ## Don'ts

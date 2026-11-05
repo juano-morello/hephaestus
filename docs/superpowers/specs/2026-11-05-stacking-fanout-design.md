@@ -20,7 +20,7 @@ Non-goals: cross-node runners and leases, multiple parents per run, optimistic (
 | 2 | A moves after B was built | **Rebase B onto A's new tip and re-gate** at staging; conflict or red aborts and pauses B; units are not rebuilt |
 | 3 | Two parallel units go green from the same tip | **Cherry-pick the late one onto the new tip; re-run its command gates if the tip moved** |
 | 4 | One parallel unit escalates | **Drain**: no new starts, in-flight finish and are accepted if green, then one `run.paused` |
-| 5 | `limits.parallel` default | **1** (opt-in) until chaos and eval runs pass |
+| 5 | `limits.parallel` default | **3** (owner decision 2026-11-05, to be tuned later; `1` is the sequential order) |
 
 Approaches rejected: stacking as "parent branch is B's target" (B would land into A's branch, can't retarget); a separate queue entity (overkill); wave scheduling (idles on stragglers); parallelism across repos only (does not help single-repo runs).
 
@@ -100,7 +100,7 @@ NOTES (2.8 findings) records that **OMP sessions cannot start concurrently in on
 - If the failure is a start-time race, serialize session creation inside `createOmpWorker` and keep the in-process runner.
 - If concurrent sessions are fundamentally unsupported in one process, add a **subprocess runner**: one `heph worker` process per attempt, behind the existing `Runner` interface. It is also the first piece of cross-node runners (SPEC section 7), so the work is not wasted.
 
-Whichever holds, `limits.parallel` stays 1 by default until chaos and eval runs pass.
+Whichever holds, `limits.parallel` defaults to 3 (owner decision 2026-11-05, to be tuned later).
 
 ### 4.5 Ledger and surfaces
 
@@ -132,7 +132,7 @@ Kept to branch, landing and scheduling regions:
 - Stacking end-to-end on temp repos with a fake PR client: A staged, B staged with base `heph/<A>`; `approve merge B` before A is refused; A merged, B restacked and retargeted; a chain of three; a parent that moved; a local-only repo.
 - Chaos: the existing kill-at-every-effect test extended to `parallel=2` on a diamond plan (accepted units, commit counts, no pending effects, no leftover worktrees), and to the join and restack effects. `chaos-smoke.ts` with real SIGKILLs on both.
 - Mutation checks, as for 2.7: accept a joined unit without re-gating when the tip moved; land B before A.
-- A live run on LegendsAO (a stack of two runs; a plan with two independent units) before `parallel` defaults change.
+- A live run on LegendsAO (a stack of two runs; a plan with two independent units) before `parallel` defaults change (done; see NOTES, 2026-11-05).
 
 ## 7. Open items
 
