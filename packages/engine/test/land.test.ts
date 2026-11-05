@@ -834,6 +834,44 @@ describe("landing a stacked run", () => {
     f.ledger.close();
   });
 
+  test("a stacked run whose parent is only built refuses to land where there is a remote", async () => {
+    const f = await fixture({ remote: true });
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    expect(f.ledger.run("A")?.status).toBe("built");
+    const intents = () => f.ledger.read({ run_id: "B", types: ["effect.intended"] }).length;
+    const intended = intents();
+    const out = await landChangeset(f.opts("B"));
+    const reason = "stacked on A, which is not staged yet: land A first";
+    expect(out).toMatchObject({ status: "aborted", reason });
+    expect(types(f.ledger).slice(-2)).toEqual(["merge.aborted", "run.paused"]);
+    expect(f.ledger.read({ run_id: "B", types: ["merge.aborted"] })).toHaveLength(1);
+    expect(f.ledger.read({ run_id: "B", types: ["run.paused"] })).toHaveLength(1);
+    expect(f.ledger.read({ run_id: "B", types: ["merge.aborted"] })[0]?.event.data).toEqual({
+      reason,
+    });
+    expect(await f.git.remoteRef("origin", "heph/B")).toBeUndefined();
+    expect(await f.git.refSha("refs/heph/staging/B")).toBeUndefined();
+    expect(f.fake.calls.some((c) => c.startsWith("open"))).toBe(false);
+    expect(intents()).toBe(intended);
+
+    // Once A is staged (its branch pushed), the same landing goes through.
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    expect((await landChangeset(f.opts("B"))).status).toBe("staged");
+    expect(f.fake.calls.filter((c) => c.startsWith("open")).at(-1)).toContain("heph/B->heph/A");
+    f.ledger.close();
+  });
+
+  test("a local-only stacked run lands on a parent that is only built", async () => {
+    const f = await fixture();
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    expect(f.ledger.run("A")?.status).toBe("built");
+    expect((await landChangeset(f.opts("B"))).status).toBe("staged");
+    expect(await f.git.revParse("refs/heph/staging/B")).toBe(await f.git.revParse("heph/B"));
+    f.ledger.close();
+  });
+
   test("parent_moved_rebases_child_onto_new_parent_tip_and_regates", async () => {
     const f = await fixture({ remote: true });
     await f.build("A", ["a.sh"]);

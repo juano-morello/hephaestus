@@ -14,7 +14,7 @@ import {
 } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import type { PullRequests } from "./prs.ts";
-import { ancestorsOf, ontoFor, unresolvedStack } from "./stack.ts";
+import { ancestorBranch, ancestorsOf, ontoFor, unresolvedStack } from "./stack.ts";
 
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
 
@@ -108,6 +108,20 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   const ancestors = ancestorsOf(ledger, opts.runId, opts.stackOn);
   const unresolved = unresolvedStack(ancestors);
   if (unresolved) return abort(ledger, base, unresolved, {});
+  // A PR against a parent's branch needs that branch pushed, which only staging the parent does.
+  for (const r of repos) {
+    const git = gits.get(r) as Git;
+    if (!ancestors.length || (await git.remoteUrl(remote)) === undefined) continue;
+    const on = await ancestorBranch(git, ancestors);
+    const parent = on && ancestors.find((a) => runBranch(a.runId) === on);
+    if (parent && parent.status !== "staged")
+      return abort(
+        ledger,
+        base,
+        `stacked on ${parent.runId}, which is not staged yet: land ${parent.runId} first`,
+        {},
+      );
+  }
   await clearWorktrees(
     opts.worktreesDir,
     opts.runId,
@@ -226,7 +240,7 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
             repoDir: dirOf(r),
             head: branch,
             // A stacked run's PR is against its unmerged parent's branch (design 3.2).
-            base: bases.get(r) ?? target(r),
+            base: bases.get(r) as string,
             title: prTitle(opts),
             body: prBody(opts, r, withRemote, {}),
           });
