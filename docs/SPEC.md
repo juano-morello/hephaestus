@@ -756,7 +756,17 @@ The CLI works on the node's ledger (`$HEPH_HOME`, default `~/.heph`): through th
 
 ### MCP server
 
-Thin adapter over the daemon API. Tools: `heph.new`, `heph.plan.show`, `heph.plan.revise`, `heph.run`, `heph.status`, `heph.explain`, `heph.hint`, `heph.cancel`, `heph.approve` (v1.5). Every tool returns useful structured text first.
+As built (2026-11-05): `heph mcp` serves MCP over stdio, a thin adapter over the daemon API. It lives in `packages/cli/src/mcp/`, not a new package, because it needs the CLI's daemon client and a separate package would make a dependency cycle. SDK: `@modelcontextprotocol/sdk`, pinned 1.32.1.
+
+Tools: `heph_new`, `heph_plan_show`, `heph_plan_revise`, `heph_run`, `heph_watch`, `heph_status`, `heph_explain`, `heph_hint`, `heph_cancel`, and `heph_approve` (v1.5, not built). Names use underscores because Claude's API restricts tool names to `[a-zA-Z0-9_-]`, so dotted names would not load. Every tool returns useful text first.
+
+- `heph_new` embeds the Brief JSON Schema in its description, so the host agent can write a valid Brief without reading the spec.
+- `heph_run` never blocks and never waits for approval. It returns `awaiting_plan_approval` and starts nothing if the plan is not approved, `not_runnable` for failed, finished, staged or escalated runs, `started`, or `already_running`.
+- `heph_watch` is a cursor long-poll (`wait_s` default 20, max 25), the pull-side twin of `heph watch`. Outcomes: `running`, `awaiting_plan_approval`, `waiting_for_you`, `planner_escalated`, `staged`, `finished`, `failed`. A poll that ends quiet returns a heartbeat line. MCP progress notifications are sent best-effort; the tool result is the contract.
+- Transient daemon errors are retried for about 16 s.
+- The daemon is required. When it is down the tool returns a clear error, re-checked on every call.
+
+Approval guarantee: the server never approves. Its method allowlist (`newRun`, `planShow`, `revise`, `run`, `status`, `explain`, `hint`, `cancel`) has no approve method, so a model calling the tools cannot approve a plan or a merge. The limit: any process of the same user can still call the daemon socket directly. Closing that is the v1.5 out-of-band approval work below. `heph_approve` stays a v1.5 item.
 
 ### Dashboard and MCP Apps widgets
 

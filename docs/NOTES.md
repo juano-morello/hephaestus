@@ -376,7 +376,15 @@ A presentation zoom for the Godot client, driven from Claude Code with the skill
 
 ## Following a run from the chat host (2026-11-04)
 
-Feedback from using heph inside Claude Code: nothing told the agent what a background run was doing, and an obviously structural stall (a unit escalating over and over) cost attempts before anyone was asked. **Built: `heph watch <run>`** (SPEC section 16), a polling milestone stream that the skill starts with Monitor (Claude Code) and checks by hand in Codex. It ends with `waiting for you` or `the planner escalated`, and the skill tells the agent to explain and ask rather than retry. **Not built:** MCP progress notifications (hosts differ in whether the model sees them; the MCP server stays on the roadmap and can reuse the same milestones), and detecting a structural stall earlier than the unit's own escalation (the second half of the feedback; today it relies on the escalation and the agent asking).
+Feedback from using heph inside Claude Code: nothing told the agent what a background run was doing, and an obviously structural stall (a unit escalating over and over) cost attempts before anyone was asked. **Built: `heph watch <run>`** (SPEC section 16), a polling milestone stream that the skill starts with Monitor (Claude Code) and checks by hand in Codex. It ends with `waiting for you` or `the planner escalated`, and the skill tells the agent to explain and ask rather than retry. **Built later (2026-11-05): the MCP server** (`heph mcp`, SPEC section 16), with `heph_watch` as a cursor long-poll. Decision: the pull tool is the contract and MCP progress notifications are best-effort on top, because hosts differ in whether the model ever sees them. **Not built:** detecting a structural stall earlier than the unit's own escalation (the second half of the feedback; today it relies on the escalation and the agent asking).
+
+### MCP server: follow-ups and known issues (2026-11-05)
+
+- `mcp/watch.ts` duplicates the status-to-outcome mapping from the CLI's `watch.ts`. Extract a shared `watchStep` once the stall-detection change in `watch.ts` lands, so both surfaces get it.
+- The installer does not register the server with hosts yet: `claude mcp add heph -- heph mcp` for Claude Code, a config entry for Codex.
+- The skill and AGENTS.md should get a paragraph preferring the tools when present. The two files must change together (a test keeps them identical).
+- `heph_watch` ignores request cancellation (`extra.signal`); a cancelled call runs out its poll.
+- Known, pre-existing: a plain `bun run build:heph` binary fails at start, because `version.ts` spawns git without the `HEPH_BUILD` define. The installer's build passes the define, and the MCP smoke test used that build.
 
 ## Environment and OMP
 
