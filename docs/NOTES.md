@@ -382,12 +382,11 @@ Feedback from using heph inside Claude Code: nothing told the agent what a backg
 
 ### MCP server: follow-ups and known issues (2026-11-05)
 
-Fixed since the first cut and no longer listed: shared watch classification, installer registration, the skill paragraph, bounded MCP daemon calls with transient-only retries, `heph_watch` cancellation, empty-string inputs, `heph_run` on unapproved paused/built runs, the `serveStdio` wiring test, and the e2e "starts nothing" check. What remains:
+Fixed since the first cut and no longer listed: shared watch classification, installer registration, the skill paragraph, bounded MCP daemon calls with transient-only retries, `heph_watch` cancellation, empty-string inputs, `heph_run` on unapproved paused/built runs, the `serveStdio` wiring test, the e2e "starts nothing" check, and a plain `bun run build:heph` binary dying at start (it is now stamped with `HEPH_BUILD`, and `hephVersion` falls back to "unknown" when git cannot be spawned). What remains:
 
 - The CLI's `heph watch` (`watchRun`) still retries every daemon error, and the CLI's daemon calls have no timeout. Left as it was on purpose: a person at a terminal sees the retries and can press Ctrl-C, and `heph run`/`heph new` must wait out the planner. Only the MCP path, where a host times the tool out, needed bounds.
 - A cancelled `heph_watch` stops at its next wait, but a daemon call already in flight is not aborted: `McpClient.call` takes no signal, so it finishes first (bounded by its 20 s timeout). Passing a signal through the guard and the daemon client would close it; not worth the API change while the bound holds.
 - `heph mcp --json` prints one JSON line on stdout after the session closes. The host has hung up by then, so nothing reads it, and the stdout test sees only the JSON-RPC answers; it is the CLI's usual `--json` envelope, not worth a special case.
-- Known, pre-existing: a plain `bun run build:heph` binary fails at start, because `version.ts` spawns git without the `HEPH_BUILD` define. The installer's build passes the define, and the MCP smoke test used that build.
 
 ## Environment and OMP
 
