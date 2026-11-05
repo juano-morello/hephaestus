@@ -534,6 +534,19 @@ describe("heph lifecycle", () => {
     });
     expect((await heph(["status", "A"])).data).not.toHaveProperty("stack_on");
 
+    // The parent moves on (rebuilt, say): revising the child plans against its current tip.
+    const wt = join(root, "a-wt");
+    sh(["git", "worktree", "add", "-q", wt, "heph/A"], ws);
+    put(join(wt, "later-on-a.txt"), "later\n");
+    sh(["git", "add", "-A"], wt);
+    sh(["git", "-c", "user.name=T", "-c", "user.email=t@x", "commit", "-qm", "later"], wt);
+    sh(["git", "worktree", "remove", wt], ws);
+    const again = planner([PLAN]);
+    expect(
+      (await heph(["plan", "revise", "B", "once more"], { planner: again.fn })).data,
+    ).toMatchObject({ status: "planned" });
+    expect(again.prompts[0]).toContain("later-on-a.txt");
+
     await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "F"], {
       planner: planner([PLAN]).fn,
     });
@@ -558,6 +571,16 @@ describe("heph lifecycle", () => {
         })
       ).error?.message,
     ).toContain("runs on test-node");
+
+    // The parent revised back to planned: its branch is no base any more, so planning refuses.
+    expect(
+      (await heph(["plan", "revise", "A", "redo it"], { planner: planner([PLAN]).fn })).data,
+    ).toMatchObject({ status: "planned" });
+    const stale = planner([PLAN]);
+    expect(
+      (await heph(["plan", "revise", "B", "and again"], { planner: stale.fn })).error?.message,
+    ).toBe("stacked on A, which is planned: wait for it to be built again, or rebuild this run");
+    expect(stale.prompts).toEqual([]);
 
     // A parent that already landed: a normal run from the target, and the result says so.
     const l2 = openLedger(home, { nodeId: "test-node" });

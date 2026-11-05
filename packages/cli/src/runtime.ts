@@ -14,6 +14,7 @@ import {
   type Workspace,
 } from "@hephaestus/core";
 import {
+  ancestorRefs,
   ancestorsOf,
   buildRun,
   builtinGates,
@@ -27,12 +28,12 @@ import {
   mergeChangeset,
   normalizePath,
   type PullRequests,
-  parentRefs,
   projectFiles,
   type RunPlanOptions,
   recordEscalation,
   recordPlan,
   STACKABLE,
+  unresolvedStack,
   type Worker,
 } from "@hephaestus/engine";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
@@ -292,6 +293,13 @@ export function openRuntime(opts: {
       return fail(`${parentId} is ${parent.status}; a parent must be built or staged`);
     return { stackOn: parentId };
   };
+  /** A stacked run's ancestors; throws when one was revised, paused or cancelled since. */
+  const resolvableStack = (runId: string, stackOn?: string) => {
+    const ancestors = ancestorsOf(ledger, runId, stackOn);
+    const unresolved = unresolvedStack(ancestors);
+    if (unresolved) throw new Error(unresolved);
+    return ancestors;
+  };
   const runOptions = (runId: string): Omit<RunPlanOptions, "brief" | "plan"> & { brief: Brief } => {
     const c = created(runId);
     return {
@@ -344,11 +352,8 @@ export function openRuntime(opts: {
     extra: Partial<PlannerInput> = {},
   ): Promise<PlanResult> {
     // A stacked run is planned against its ancestors' branches where they have one (design 3.1).
-    const refs = await parentRefs({
-      workspace,
-      workspaceRoot,
-      ancestors: ancestorsOf(ledger, runId),
-    });
+    const ancestors = resolvableStack(runId);
+    const refs = await ancestorRefs({ workspace, workspaceRoot, ancestors });
     const files = await projectFiles(workspace, workspaceRoot, refs);
     const route = config.routing.planner?.default ?? config.routing.planner?.standard;
     if (!route) throw new Error("no route for the planner role");
@@ -463,6 +468,7 @@ export function openRuntime(opts: {
       const stack = o.stackOn ? stackParent(o.stackOn) : {};
       const runId = o.runId ?? newRunId();
       if (ledger.run(runId)) throw new Error(`run ${runId} already exists`);
+      if (stack.stackOn) resolvableStack(runId, stack.stackOn);
       createRun(meta(runId, brief, opts.workspaceDir, runId, stack.stackOn));
       const result = await plan(runId, brief, opts.workspaceDir, runId);
       return stack.note ? { ...result, note: stack.note } : result;
@@ -479,6 +485,7 @@ export function openRuntime(opts: {
         const c = created(runId);
         const hasPlan = ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length > 0;
         if (hasPlan && !instructions) throw new Error("missing instructions");
+        resolvableStack(runId);
         if (instructions) {
           human(runId, c.changesetId, {
             type: "human.input",

@@ -14,6 +14,7 @@ import {
 } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import type { PullRequests } from "./prs.ts";
+import { ancestorsOf, unresolvedStack } from "./stack.ts";
 
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
 
@@ -154,6 +155,8 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
 
   // 2. Re-gate the rebased changeset: configured project commands, then the integration gate.
   if (rebased.length || rebasedBefore) {
+    const unresolved = unresolvedStack(ancestorsOf(ledger, opts.runId, opts.stackOn));
+    if (unresolved) return abort(ledger, base, unresolved, {});
     const failed = await regate(opts, repos, gits, base);
     if (failed) return abort(ledger, base, `re-gate after rebase failed: ${failed}`, {});
   }

@@ -28,18 +28,39 @@ export function ancestorsOf(ledger: Ledger, runId: string, stackOn?: string): An
   return out;
 }
 
+const unresolvedReason = (a: Ancestor) =>
+  `stacked on ${a.runId}, which is ${a.status ?? "unknown"}: wait for it to be built again, or rebuild this run`;
+
+/**
+ * Why a stack has no known base, if it has none: an ancestor that is neither unmerged (built,
+ * staged) nor landed (finished), e.g. revised back to planned, paused mid-rebuild or cancelled.
+ */
+export function unresolvedStack(ancestors: readonly Ancestor[]): string | undefined {
+  const bad = ancestors.find(
+    (a) => !a.status || (a.status !== "finished" && !STACKABLE.has(a.status)),
+  );
+  return bad ? unresolvedReason(bad) : undefined;
+}
+
+/** Thrown where a base is needed but the stack has none (see unresolvedStack). */
+export class UnresolvedStack extends Error {
+  override name = "UnresolvedStack";
+}
+
 /**
  * The branch a stacked run builds on in this repo: the nearest ancestor that is unmerged (built
  * or staged) and has a branch here. A parent's branch holds its ancestors' work only in repos it
  * touched itself, so a repo it skipped falls through to the next ancestor; a landed (finished)
- * ancestor is skipped too, since its work is in the target. None: the target is the base.
+ * ancestor is skipped too, since its work is in the target. None: the target is the base. Any
+ * other ancestor status throws UnresolvedStack: the base is unknown, never silently the target.
  */
 export async function ancestorBranch(
   git: Git,
   ancestors: readonly Ancestor[],
 ): Promise<string | undefined> {
   for (const a of ancestors) {
-    if (!a.status || !STACKABLE.has(a.status)) continue;
+    if (a.status === "finished") continue;
+    if (!a.status || !STACKABLE.has(a.status)) throw new UnresolvedStack(unresolvedReason(a));
     const branch = runBranch(a.runId);
     if (await git.refSha(branch)) return branch;
   }
@@ -52,7 +73,6 @@ export async function ancestorBranch(
  */
 export async function baseRef(o: {
   git: Git;
-  repo: string;
   stackOn?: string | undefined;
   parentStatus?: string | undefined;
   ancestors?: readonly Ancestor[] | undefined;
@@ -69,7 +89,7 @@ type StackInput = {
 };
 
 /** Per repo that has an ancestor's branch (see ancestorBranch): what planning reads files from. */
-export async function parentRefs(o: StackInput): Promise<Record<string, string>> {
+export async function ancestorRefs(o: StackInput): Promise<Record<string, string>> {
   const refs: Record<string, string> = {};
   for (const [r, path] of Object.entries(o.workspace.repos)) {
     const branch = await ancestorBranch(createGit(resolve(o.workspaceRoot, path)), o.ancestors);
@@ -95,7 +115,6 @@ export async function stackRefs(
       ? runBranch(o.runId)
       : await baseRef({
           git: createGit(resolve(o.workspaceRoot, path)),
-          repo: r,
           ancestors: o.ancestors,
           target: o.targets?.[r] ?? "main",
         });

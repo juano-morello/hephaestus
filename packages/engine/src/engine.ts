@@ -27,7 +27,7 @@ import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
 import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
-import { ancestorsOf, baseRef, stackRefs } from "./stack.ts";
+import { ancestorsOf, baseRef, stackRefs, unresolvedStack } from "./stack.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -451,12 +451,18 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const lost = resuming && statusBefore === "running" ? lostPause(ledger, runId) : undefined;
   const scope = { ledger, base, chaos: opts.chaos };
   if (!resuming) {
+    const ancestors = ancestorsOf(ledger, runId, opts.stackOn);
+    // An ancestor revised, paused or cancelled since: the base is unknown, so nothing starts.
+    const unresolved = unresolvedStack(ancestors);
+    if (unresolved) {
+      ledger.append({ ...engine, type: "run.paused", data: { reason: "user" } });
+      return { status: "paused", runBranch: branch, heads: {}, reason: unresolved };
+    }
     // One changeset branch per touched repo, from its target (SPEC section 4), or from the
     // nearest unmerged ancestor's branch for a stacked run (design 3.1).
-    const ancestors = ancestorsOf(ledger, runId, opts.stackOn);
     for (const [repo, git] of gits) {
       const target = opts.targets?.[repo] ?? "main";
-      const at = await git.revParse(await baseRef({ git, repo, ancestors, target }));
+      const at = await git.revParse(await baseRef({ git, ancestors, target }));
       await effect(
         scope,
         {
@@ -622,14 +628,18 @@ export async function integrationGate(
     | "runId"
   >,
   touched: string[],
-) {
+): Promise<GateResult> {
+  const ancestors = ancestorsOf(opts.ledger, opts.runId, opts.stackOn);
+  // Never assembled against the target in place of an ancestor whose work is unknown.
+  const unresolved = unresolvedStack(ancestors);
+  if (unresolved) return { gate: "integration", verdict: "fail", reason: unresolved, evidence: [] };
   const refs = await stackRefs({
     workspace: opts.workspace,
     workspaceRoot: opts.workspaceRoot,
     targets: opts.targets,
     runId: opts.runId,
     touched,
-    ancestors: ancestorsOf(opts.ledger, opts.runId, opts.stackOn),
+    ancestors,
   });
   return runIntegrationGate({
     workspace: opts.workspace,

@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { briefHash, type Plan, type Task } from "@hephaestus/core";
 import { type Ledger, openLedger } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
-import { runPlan } from "../src/engine.ts";
+import { integrationGate, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
-import { baseRef } from "../src/stack.ts";
+import { baseRef, UnresolvedStack } from "../src/stack.ts";
 import type { Worker } from "../src/worker.ts";
 import { initRepo, tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, threeRepos, writeScript } from "./workspace.ts";
@@ -22,28 +22,38 @@ describe("baseRef", () => {
 
   test("baseRef_uses_parent_branch_when_built", async () => {
     const git = await repo(true);
-    expect(
-      await baseRef({ git, repo: "r", stackOn: "A", parentStatus: "built", target: "main" }),
-    ).toBe("heph/A");
-    expect(
-      await baseRef({ git, repo: "r", stackOn: "A", parentStatus: "staged", target: "main" }),
-    ).toBe("heph/A");
+    expect(await baseRef({ git, stackOn: "A", parentStatus: "built", target: "main" })).toBe(
+      "heph/A",
+    );
+    expect(await baseRef({ git, stackOn: "A", parentStatus: "staged", target: "main" })).toBe(
+      "heph/A",
+    );
   });
 
   test("baseRef_falls_back_to_target_when_parent_untouched_repo", async () => {
     const git = await repo(false);
-    expect(
-      await baseRef({ git, repo: "r", stackOn: "A", parentStatus: "built", target: "main" }),
-    ).toBe("main");
+    expect(await baseRef({ git, stackOn: "A", parentStatus: "built", target: "main" })).toBe(
+      "main",
+    );
   });
 
   test("baseRef_target_when_parent_finished", async () => {
     const git = await repo(true);
-    for (const parentStatus of ["finished", "failed", undefined])
-      expect(await baseRef({ git, repo: "r", stackOn: "A", parentStatus, target: "main" })).toBe(
-        "main",
+    expect(await baseRef({ git, stackOn: "A", parentStatus: "finished", target: "main" })).toBe(
+      "main",
+    );
+    expect(await baseRef({ git, target: "main" })).toBe("main");
+  });
+
+  test("an ancestor that is neither unmerged nor landed has no base, never the target", async () => {
+    const git = await repo(true);
+    for (const parentStatus of ["planned", "paused", "running", "failed", undefined])
+      await expect(baseRef({ git, stackOn: "A", parentStatus, target: "main" })).rejects.toThrow(
+        `stacked on A, which is ${parentStatus ?? "unknown"}`,
       );
-    expect(await baseRef({ git, repo: "r", target: "main" })).toBe("main");
+    await expect(
+      baseRef({ git, stackOn: "A", parentStatus: "planned", target: "main" }),
+    ).rejects.toBeInstanceOf(UnresolvedStack);
   });
 });
 
@@ -133,7 +143,7 @@ async function stackFixture() {
     });
   const git = (repo: string) => createGit(join(root, repo));
   const sha = (repo: string, ref: string) => git(repo).revParse(ref);
-  return { ledger, build, git, sha, seen };
+  return { ledger, build, git, sha, seen, workspace, root, worktreesDir, integrationSandbox };
 }
 
 /** The base each touched repo's run branch was reset to, from the ledger. */
@@ -264,6 +274,80 @@ describe("stacked builds", () => {
     expect(f.ledger.run("A")?.status).toBe("finished");
     await f.build("B", [task("B1", "server", ["b.sh"])], "A");
     expect(resets(f.ledger, "B")).toEqual({ server: await f.sha("server", "main") });
+    f.ledger.close();
+  });
+
+  const unresolved = (a: string, status: string) =>
+    `stacked on ${a}, which is ${status}: wait for it to be built again, or rebuild this run`;
+  /** What a parent can turn into after its child was stacked on it. */
+  const turns = {
+    planned: (ledger: Ledger, runId: string, tasks: Task[]) =>
+      ledger.append({
+        run_id: runId,
+        changeset_id: runId,
+        config_hash: "x",
+        actor: "engine",
+        type: "run.plan_ready",
+        data: { plan: plan(tasks) },
+      }),
+    failed: (ledger: Ledger, runId: string) =>
+      ledger.append({
+        run_id: runId,
+        changeset_id: runId,
+        config_hash: "x",
+        actor: "human",
+        type: "run.failed",
+        data: { reason: "cancelled by user" },
+      }),
+  };
+
+  for (const status of ["planned", "failed"] as const) {
+    test(`a fresh build stacked on a parent that is ${status} again pauses without starting`, async () => {
+      const f = await stackFixture();
+      const aTasks = [task("A1", "server", ["a.sh"])];
+      await f.build("A", aTasks);
+      turns[status](f.ledger, "A", aTasks);
+      expect(f.ledger.run("A")?.status).toBe(status);
+
+      const b = await f.build("B", [task("B1", "server", ["b.sh"])], "A");
+      expect(b).toMatchObject({ status: "paused", reason: unresolved("A", status), heads: {} });
+      expect(f.ledger.run("B")?.status).toBe("paused");
+      expect(resets(f.ledger, "B")).toEqual({});
+      const types = f.ledger.read({ run_id: "B" }).map((e) => e.event.type);
+      expect(types).not.toContain("unit.attempt.started");
+      expect(types).not.toContain("node.started");
+      expect(types.filter((t) => t === "run.paused")).toHaveLength(1);
+      expect(await f.git("server").refSha("heph/B")).toBeUndefined();
+      f.ledger.close();
+    });
+  }
+
+  test("the integration gate fails, never assembling the target, when the parent went back to planned", async () => {
+    const f = await stackFixture();
+    const aTasks = [task("A1", "server", ["a.sh"])];
+    await f.build("A", aTasks);
+    expect((await f.build("B", [task("B1", "web", ["w.html"])], "A")).status).toBe("built");
+    const gated = f.seen.length;
+    turns.planned(f.ledger, "A", aTasks);
+    const gate = await integrationGate(
+      {
+        ledger: f.ledger,
+        workspace: f.workspace,
+        workspaceRoot: f.root,
+        integrationSandbox: f.integrationSandbox,
+        config,
+        worktreesDir: f.worktreesDir,
+        runId: "B",
+      },
+      ["web"],
+    );
+    expect(gate).toEqual({
+      gate: "integration",
+      verdict: "fail",
+      reason: unresolved("A", "planned"),
+      evidence: [],
+    });
+    expect(f.seen).toHaveLength(gated);
     f.ledger.close();
   });
 });
