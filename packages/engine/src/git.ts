@@ -47,7 +47,23 @@ export type Git = {
   /** Points any ref (e.g. refs/heph/staging/<run>) at a sha. */
   setRef(ref: string, sha: string): Promise<void>;
   /** Rebases `branch` onto `onto` in a temp worktree at `path`. On conflict the branch is untouched. */
-  rebase(path: string, branch: string, onto: string): Promise<RebaseResult>;
+  rebase(path: string, branch: string, onto: string, upstream?: string): Promise<RebaseResult>;
+  /**
+   * Cherry-picks `commit` onto the worktree's HEAD. On conflict it aborts, leaving the worktree
+   * clean, and reports the conflicting files.
+   */
+  cherryPickIn(
+    worktree: string,
+    commit: string,
+  ): Promise<{ ok: true; sha: string } | { ok: false; conflicts: string[] }>;
+  isAncestor(a: string, b: string): Promise<boolean>;
+  /** Every file at a ref, repo-relative. */
+  lsTree(ref: string): Promise<string[]>;
+  /**
+   * The parent of the oldest commit on `branch` carrying the trailer `Heph-Run: <runId>`: where
+   * the run's work was last based, even after a rebase. undefined when no commit carries it.
+   */
+  forkPoint(branch: string, runId: string): Promise<string | undefined>;
 };
 
 export type RebaseResult = { ok: true; sha: string } | { ok: false; conflicts: string[] };
@@ -123,10 +139,13 @@ export function createGit(repoDir: string): Git {
       void (await git(["worktree", "add", "-q", "-f", "--detach", path, ref])),
     mergeBase: async (a, b) => (await git(["merge-base", a, b])).trim(),
     setRef: async (ref, sha) => void (await git(["update-ref", ref, sha])),
-    async rebase(path, branch, onto) {
+    async rebase(path, branch, onto, upstream) {
       await git(["worktree", "add", "-q", "-f", path, branch]);
       try {
-        const r = await run(["git", ...IDENTITY, "rebase", "-q", onto], { cwd: path });
+        const r = await run(
+          ["git", ...IDENTITY, "rebase", "-q", ...(upstream ? ["--onto", onto, upstream] : [onto])],
+          { cwd: path },
+        );
         if (r.code === 0) return { ok: true, sha: (await git(["rev-parse", "HEAD"], path)).trim() };
         const conflicts = lines(await git(["diff", "--name-only", "--diff-filter=U"], path));
         await run(["git", "rebase", "--abort"], { cwd: path });
@@ -135,6 +154,37 @@ export function createGit(repoDir: string): Git {
         await git(["worktree", "remove", "--force", path]);
         await git(["worktree", "prune"]);
       }
+    },
+    async cherryPickIn(worktree, commit) {
+      const r = await run(["git", ...IDENTITY, "cherry-pick", commit], { cwd: worktree });
+      if (r.code === 0)
+        return { ok: true, sha: (await git(["rev-parse", "HEAD"], worktree)).trim() };
+      const conflicts = lines(await git(["diff", "--name-only", "--diff-filter=U"], worktree));
+      await run(["git", "cherry-pick", "--abort"], { cwd: worktree });
+      if (conflicts.length === 0)
+        throw new Error(
+          `cherry-pick of ${commit} failed: ${r.stderr.trim().replaceAll("\n", " ")}`,
+        );
+      return { ok: false, conflicts };
+    },
+    async isAncestor(a, b) {
+      const r = await run(["git", "merge-base", "--is-ancestor", a, b], { cwd: repoDir });
+      if (r.code > 1) throw new Error(`git merge-base --is-ancestor failed: ${r.stderr.trim()}`);
+      return r.code === 0;
+    },
+    lsTree: async (ref) => lines(await git(["ls-tree", "-r", "--name-only", ref])),
+    async forkPoint(branch, runId) {
+      const escaped = runId.replace(/[.[\]\\*+?(){}|^$]/g, "\\$&");
+      const oldest = lines(
+        await git([
+          "rev-list",
+          "--reverse",
+          "--extended-regexp",
+          `--grep=^Heph-Run: ${escaped}$`,
+          branch,
+        ]),
+      )[0];
+      return oldest ? (await git(["rev-parse", `${oldest}^`])).trim() : undefined;
     },
   };
 }

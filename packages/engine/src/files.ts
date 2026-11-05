@@ -7,11 +7,15 @@ import { projectRelative } from "./paths.ts";
 export async function projectFiles(
   workspace: Workspace,
   workspaceRoot: string,
+  /** Per repo, a ref to read files from instead of the checkout (e.g. a parent run's branch). */
+  refs: Record<string, string> = {},
 ): Promise<Record<string, string[]>> {
   const byRepo = new Map<string, string[]>();
   for (const [repo, path] of Object.entries(workspace.repos)) {
     const dir = resolve(workspaceRoot, path);
-    byRepo.set(repo, await createGit(dir).lsFiles(dir));
+    const git = createGit(dir);
+    const ref = refs[repo];
+    byRepo.set(repo, ref ? await git.lsTree(ref) : await git.lsFiles(dir));
   }
   return Object.fromEntries(
     Object.entries(workspace.projects).map(([name, p]) => [
