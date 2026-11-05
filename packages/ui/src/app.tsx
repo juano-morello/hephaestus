@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { type Api, type ApiError, createApi, readToken } from "./api.ts";
+import { Run } from "./views/run.tsx";
 import { Runs } from "./views/runs.tsx";
 
 export type Route = { page: "runs" } | { page: "run"; id: string };
@@ -48,17 +49,6 @@ export function ErrorBanner({ error }: { error: ApiError | undefined }) {
   );
 }
 
-function RunPlaceholder({ id }: { id: string }) {
-  return (
-    <p className="text-muted">
-      <a className="text-accent underline" href="#/">
-        All runs
-      </a>{" "}
-      / {id}
-    </p>
-  );
-}
-
 export function App() {
   const route = useRoute();
   const api = useApi();
@@ -68,7 +58,11 @@ export function App() {
         Hephaestus
       </header>
       <main className="p-4">
-        {route.page === "runs" ? <Runs api={api} /> : <RunPlaceholder id={route.id} />}
+        {route.page === "runs" ? (
+          <Runs api={api} />
+        ) : (
+          <Run key={route.id} id={route.id} api={api} />
+        )}
       </main>
     </div>
   );

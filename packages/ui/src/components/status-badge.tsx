@@ -39,6 +39,7 @@ const TONES: Record<string, Tone> = {
   staged: { cls: GREEN, icon: check },
   landed: { cls: GREEN, icon: check },
   finished: { cls: GREEN, icon: check },
+  accepted: { cls: GREEN, icon: check },
   paused: { cls: AMBER, icon: pause },
   escalated: { cls: AMBER, icon: bang },
   failed: { cls: "text-danger border-danger", icon: cross },
