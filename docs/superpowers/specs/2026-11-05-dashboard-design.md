@@ -58,6 +58,8 @@ pauses, stack_on, usage }`, all derived from the existing projections and events
 uses `status` with no argument (already returns every run). The output schema goes in
 `packages/cli/src/output.ts` with the others.
 
+**As built (2026-11-05).** The shape differs from the sketch above: `dashboard(run_id)` -> `{ schema: 1, run, plan_approved, plan: { units: [{ id, title, kind, project, depends_on }] }, units: [{ unit_id, status, attempts, in_plan }], attempts: [{ unit_id, attempt, status, model?, provider?, outcome?, duration_ms?, gates: [{ gate, verdict, reason, evidence[] }] }], pauses, stack_on?, usage, stale? }`. Attempts are a flat list, not nested under units, and a gate carries `verdict` (pass, fail, skip, ...) rather than a boolean `pass`. A unit that ran under an earlier plan but is not in the latest plan appears in `units` with `in_plan: false` and the synthetic status `dropped`. The schema is `Dashboard` in `packages/cli/src/output.ts`.
+
 ### Package and build
 
 New package `packages/ui` (React 19, TypeScript). `bun build` bundles it to `dist/ui/`; the CLI

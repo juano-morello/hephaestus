@@ -7,7 +7,6 @@
     "@radix-ui/react-collapsible": "1.2.1",
     "@radix-ui/react-scroll-area": "1.4.0",
     "@radix-ui/react-tabs": "1.2.1",
-    "@radix-ui/react-tooltip": "1.4.1",
     "@tailwindcss/cli": "4.3.4",
     "motion": "14.9.1",
     "react": "19.3.1",
