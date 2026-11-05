@@ -615,12 +615,12 @@ A build is fresh when there is no `node.started` (build) since the latest `run.p
 - Worker interrupted: attempt marked `interrupted` (does not count against the 3), worktree reset, restart with a fresh pack. Attempt numbers continue across the run; they are never reused.
 - Gate interrupted: re-run.
 - Lost pause: a crash can leave a run `running` after a unit escalated or stalled and the drain finished but before `run.paused`. Resume detects it (an open `unit.escalated` or `unit.stalled`, or an interrupted attempt with reason `rate_limit`, `handoff` or `user`, with no later `run.paused`) and writes the pause instead of granting fresh attempts, in the same transaction as `run.resumed` (a crash between two writes would hide it from the next resume).
-- Parallel join: the replay of an attempt onto a moved run-branch tip is attempt-local work (not an effect), redone on resume; `run_branch_advance` reconciles as before. Every open attempt of a parallel build is interrupted on resume.
+- Parallel join: the replay of an attempt onto a moved run-branch tip is attempt-local work (not an effect), redone on resume; `run_branch_advance` reconciles as before. The replayed commit is pinned at `refs/heph/join/<run>/<unit>-a<n>` before the advance's intent is written and unpinned once the unit is accepted, so the `applied` path always finds it; a resume deletes the run's join refs after reconciling. Every open attempt of a parallel build is interrupted on resume.
 - Accepted units are never redone. Their files still lock later units (from the recorded run-branch advance).
 - Escalated unit: resuming the run gives it a fresh set of attempts, with its last Return and any new hints.
 - Planner interrupted: replan from the brief (`heph plan revise <run>`); the plan exists only at `run.plan_ready`.
 - Human checkpoint: run waits.
-- Rate limit: `run.paused` with `retry_after`; scheduler resumes automatically or reroutes if the role allows. In v0 the scheduler is `heph run`, which waits in the foreground until `retry_after` (`--now` skips the wait).
+- Rate limit: `run.paused` with `retry_after`; scheduler resumes automatically or reroutes if the role allows. In v0 the scheduler is `heph run`, which waits in the foreground until `retry_after` (`--now` skips the wait), and the resumed build ramps its parallelism back up (section 17); rerouting is not built.
 - One process drives a run at a time (a pid lock under `$HEPH_HOME/locks`); a lock whose process is dead is taken over.
 
 ### Handoff
@@ -640,7 +640,7 @@ As built in v0: the owner interrupts the attempt in flight (it is marked interru
 
 Chaos runs in the eval suite: kill the daemon at random points during golden tasks and assert identical outcomes.
 
-v0 (before the daemon): a deterministic chaos test kills a run at every ledger write and around every effect, resumes it from the reopened ledger, and requires the same trees, commit counts, accepted units (one green attempt each), no pending effects and no leftover worktrees as a run never killed; `packages/engine/scripts/chaos-smoke.ts` does the same with real SIGKILLs of a child process.
+v0 (before the daemon): a deterministic chaos test kills a run at every ledger write and around every effect (a kill inside one parallel unit ends the build at once: units still in flight write nothing more), resumes it from the reopened ledger, and requires the same trees, commit counts, accepted units (one green attempt each), no pending effects and no leftover worktrees as a run never killed; `packages/engine/scripts/chaos-smoke.ts` does the same with real SIGKILLs of a child process.
 
 ---
 
@@ -796,6 +796,7 @@ Deferred to v1.5. Planned: out-of-band confirmation (TTY or one-time code via ph
 - Providers via OMP using Claude and ChatGPT subscriptions.
 - Risk acknowledged: subscription access from third-party tools can break or be restricted; the worker interface and API-key fallback exist for this. Review provider terms periodically.
 - Rate limits are a scheduling input: track remaining budget per provider, throttle parallelism, route low-stakes nodes to the less-loaded provider, pause cleanly instead of failing.
+- As built: a rate limit pauses the run cleanly (`run.paused` with `retry_after`), and a build resuming from that pause throttles parallelism: it starts at `max(1, floor(limits.parallel / 2))` units at once and allows one more after each accepted unit, up to `limits.parallel`. The value comes from the ledger alone (the latest `run.resumed` that is not a crash resume, and the units accepted since), so a crash mid-ramp resumes at the same value; no event records it. Not built: tracking remaining budget per provider, and routing or rerouting by provider load.
 
 ---
 
