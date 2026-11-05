@@ -203,6 +203,53 @@ describe("stacked builds", () => {
     f.ledger.close();
   });
 
+  test("a repo the parent skipped is based on the nearest ancestor that has a branch there", async () => {
+    const f = await stackFixture();
+    await f.build("A", [task("A1", "server", ["a.sh"])]);
+    await f.build("B", [task("B1", "web", ["w.html"])], "A");
+    const aServer = await f.sha("server", "heph/A");
+    const bWeb = await f.sha("web", "heph/B");
+
+    expect((await f.build("C", [task("C1", "server", ["c.sh"])], "B")).status).toBe("built");
+    expect(resets(f.ledger, "C")).toEqual({ server: aServer });
+    expect(await f.git("server").lsTree("heph/C")).toEqual(
+      expect.arrayContaining(["a.sh", "c.sh"]),
+    );
+
+    // Untouched repos in the gate: server at A's branch (B has none there), web at B's.
+    expect((await f.build("D", [task("D1", "proto", ["d.txt"])], "B")).status).toBe("built");
+    expect(f.seen.at(-1)).toEqual({
+      proto: await f.sha("proto", "heph/D"),
+      server: aServer,
+      web: bWeb,
+    });
+    f.ledger.close();
+  });
+
+  test("a landed ancestor in the middle of a chain is skipped for the next one, then the target", async () => {
+    const f = await stackFixture();
+    const finish = (runId: string) =>
+      f.ledger.append({
+        run_id: runId,
+        changeset_id: runId,
+        config_hash: "x",
+        actor: "engine",
+        type: "run.finished",
+        data: {},
+      });
+    await f.build("A", [task("A1", "server", ["a.sh"])]);
+    await f.build("B", [task("B1", "server", ["b.sh"])], "A");
+    const aServer = await f.sha("server", "heph/A");
+    finish("B");
+    await f.build("C", [task("C1", "server", ["c.sh"])], "B");
+    expect(resets(f.ledger, "C")).toEqual({ server: aServer });
+
+    finish("A");
+    await f.build("E", [task("E1", "server", ["e.sh"])], "B");
+    expect(resets(f.ledger, "E")).toEqual({ server: await f.sha("server", "main") });
+    f.ledger.close();
+  });
+
   test("a parent that already finished is ignored: the child starts at the target", async () => {
     const f = await stackFixture();
     await f.build("A", [task("A1", "server", ["a.sh"])]);

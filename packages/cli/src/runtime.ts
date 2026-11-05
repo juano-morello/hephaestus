@@ -14,6 +14,7 @@ import {
   type Workspace,
 } from "@hephaestus/core";
 import {
+  ancestorsOf,
   buildRun,
   builtinGates,
   checkChangeset,
@@ -26,7 +27,6 @@ import {
   mergeChangeset,
   normalizePath,
   type PullRequests,
-  parentOf,
   parentRefs,
   projectFiles,
   type RunPlanOptions,
@@ -343,8 +343,12 @@ export function openRuntime(opts: {
     changesetId: string,
     extra: Partial<PlannerInput> = {},
   ): Promise<PlanResult> {
-    // A stacked run is planned against the parent's branch where it has one (design 3.1).
-    const refs = await parentRefs({ workspace, workspaceRoot, ...parentOf(ledger, runId) });
+    // A stacked run is planned against its ancestors' branches where they have one (design 3.1).
+    const refs = await parentRefs({
+      workspace,
+      workspaceRoot,
+      ancestors: ancestorsOf(ledger, runId),
+    });
     const files = await projectFiles(workspace, workspaceRoot, refs);
     const route = config.routing.planner?.default ?? config.routing.planner?.standard;
     if (!route) throw new Error("no route for the planner role");

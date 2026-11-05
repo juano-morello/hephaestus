@@ -8,59 +8,71 @@ import { createGit, type Git } from "./git.ts";
 /** A parent run can be built on only while its changeset is built or staged (not yet landed). */
 export const STACKABLE = new Set(["built", "staged"]);
 
-/** The run a run is stacked on, and that run's status, from the ledger. */
-export function parentOf(
-  ledger: Ledger,
-  runId: string,
-  stackOn?: string,
-): { stackOn?: string; parentStatus?: string } {
-  const parent = stackOn ?? ledger.run(runId)?.stack_on ?? undefined;
-  if (!parent) return {};
-  const status = ledger.run(parent)?.status;
-  return { stackOn: parent, ...(status ? { parentStatus: status } : {}) };
+/** One run up a stack: its id and status. */
+export type Ancestor = { runId: string; status?: string | undefined };
+
+/**
+ * The runs a run is stacked on, nearest first: its parent (`stackOn`, else its recorded
+ * `stack_on`), the parent's parent, and so on up to a run with no `stack_on`.
+ */
+export function ancestorsOf(ledger: Ledger, runId: string, stackOn?: string): Ancestor[] {
+  const out: Ancestor[] = [];
+  const seen = new Set([runId]);
+  let next = stackOn ?? ledger.run(runId)?.stack_on ?? undefined;
+  while (next && !seen.has(next)) {
+    seen.add(next);
+    const row = ledger.run(next);
+    out.push({ runId: next, status: row?.status });
+    next = row?.stack_on ?? undefined;
+  }
+  return out;
 }
 
 /**
- * The parent's branch in this repo, if the run builds on it there: the parent is unmerged and
- * touched the repo. A chain needs only the direct parent: its branch already holds its ancestors.
+ * The branch a stacked run builds on in this repo: the nearest ancestor that is unmerged (built
+ * or staged) and has a branch here. A parent's branch holds its ancestors' work only in repos it
+ * touched itself, so a repo it skipped falls through to the next ancestor; a landed (finished)
+ * ancestor is skipped too, since its work is in the target. None: the target is the base.
  */
-export async function parentBranch(
+export async function ancestorBranch(
   git: Git,
-  stackOn: string | undefined,
-  parentStatus: string | undefined,
+  ancestors: readonly Ancestor[],
 ): Promise<string | undefined> {
-  if (!stackOn || !parentStatus || !STACKABLE.has(parentStatus)) return undefined;
-  const branch = runBranch(stackOn);
-  return (await git.refSha(branch)) ? branch : undefined;
+  for (const a of ancestors) {
+    if (!a.status || !STACKABLE.has(a.status)) continue;
+    const branch = runBranch(a.runId);
+    if (await git.refSha(branch)) return branch;
+  }
+  return undefined;
 }
 
-/** Where a run's work in a repo starts: the parent's branch (see parentBranch), else the target. */
+/**
+ * Where a run's work in a repo starts: the nearest qualifying ancestor's branch (see
+ * ancestorBranch), else the target. `stackOn`/`parentStatus` is shorthand for a one-run chain.
+ */
 export async function baseRef(o: {
   git: Git;
   repo: string;
   stackOn?: string | undefined;
   parentStatus?: string | undefined;
+  ancestors?: readonly Ancestor[] | undefined;
   target: string;
 }): Promise<string> {
-  return (await parentBranch(o.git, o.stackOn, o.parentStatus)) ?? targetBase(o.git, o.target);
+  const chain = o.ancestors ?? (o.stackOn ? [{ runId: o.stackOn, status: o.parentStatus }] : []);
+  return (await ancestorBranch(o.git, chain)) ?? targetBase(o.git, o.target);
 }
 
 type StackInput = {
   workspace: Workspace;
   workspaceRoot: string;
-  stackOn?: string | undefined;
-  parentStatus?: string | undefined;
+  ancestors: readonly Ancestor[];
 };
 
-/** Per repo the parent's branch is in (see parentBranch): what planning reads files from. */
+/** Per repo that has an ancestor's branch (see ancestorBranch): what planning reads files from. */
 export async function parentRefs(o: StackInput): Promise<Record<string, string>> {
   const refs: Record<string, string> = {};
   for (const [r, path] of Object.entries(o.workspace.repos)) {
-    const branch = await parentBranch(
-      createGit(resolve(o.workspaceRoot, path)),
-      o.stackOn,
-      o.parentStatus,
-    );
+    const branch = await ancestorBranch(createGit(resolve(o.workspaceRoot, path)), o.ancestors);
     if (branch) refs[r] = branch;
   }
   return refs;
@@ -68,7 +80,7 @@ export async function parentRefs(o: StackInput): Promise<Record<string, string>>
 
 /**
  * What the integration gate assembles: touched repos at the run's branch, the rest at the
- * parent's branch where it has one, else at their target.
+ * nearest ancestor's branch where one qualifies, else at their target.
  */
 export async function stackRefs(
   o: StackInput & {
@@ -84,8 +96,7 @@ export async function stackRefs(
       : await baseRef({
           git: createGit(resolve(o.workspaceRoot, path)),
           repo: r,
-          stackOn: o.stackOn,
-          parentStatus: o.parentStatus,
+          ancestors: o.ancestors,
           target: o.targets?.[r] ?? "main",
         });
   }

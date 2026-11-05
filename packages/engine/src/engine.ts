@@ -27,7 +27,7 @@ import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
 import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
-import { baseRef, parentOf, stackRefs } from "./stack.ts";
+import { ancestorsOf, baseRef, stackRefs } from "./stack.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -85,7 +85,7 @@ export type RunPlanOptions = {
   chaos?: Chaos;
   /**
    * The run this one is stacked on (design 3.1). Default: the run's recorded `stack_on`. Repos
-   * the parent touched start from its branch while it is built or staged.
+   * start from the nearest unmerged ancestor's branch there (see stack.ts).
    */
   stackOn?: string;
 };
@@ -452,11 +452,11 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const scope = { ledger, base, chaos: opts.chaos };
   if (!resuming) {
     // One changeset branch per touched repo, from its target (SPEC section 4), or from the
-    // parent's branch for a stacked run (design 3.1).
-    const parent = parentOf(ledger, runId, opts.stackOn);
+    // nearest unmerged ancestor's branch for a stacked run (design 3.1).
+    const ancestors = ancestorsOf(ledger, runId, opts.stackOn);
     for (const [repo, git] of gits) {
       const target = opts.targets?.[repo] ?? "main";
-      const at = await git.revParse(await baseRef({ git, repo, ...parent, target }));
+      const at = await git.revParse(await baseRef({ git, repo, ancestors, target }));
       await effect(
         scope,
         {
@@ -606,7 +606,7 @@ export async function targetBase(git: Git, target: string): Promise<string> {
 
 /**
  * Integration gate over the changeset: touched repos at their run branch, the rest at the
- * parent's branch for a stacked run (where it has one), else at target.
+ * nearest unmerged ancestor's branch for a stacked run (where one has a branch), else at target.
  */
 export async function integrationGate(
   opts: Pick<
@@ -629,7 +629,7 @@ export async function integrationGate(
     targets: opts.targets,
     runId: opts.runId,
     touched,
-    ...parentOf(opts.ledger, opts.runId, opts.stackOn),
+    ancestors: ancestorsOf(opts.ledger, opts.runId, opts.stackOn),
   });
   return runIntegrationGate({
     workspace: opts.workspace,
