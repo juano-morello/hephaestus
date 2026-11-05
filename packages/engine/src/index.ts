@@ -11,4 +11,5 @@ export * from "./land.ts";
 export * from "./paths.ts";
 export * from "./prs.ts";
 export * from "./runner.ts";
+export * from "./stall.ts";
 export type * from "./worker.ts";

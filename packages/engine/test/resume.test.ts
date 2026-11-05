@@ -163,11 +163,12 @@ describe("resuming a build", () => {
 
   test("an escalated unit gets a fresh set of attempts, with the feedback and new hints", async () => {
     let fail = true;
+    let calls = 0;
     const gate: UnitGate = {
       name: "flaky",
       run: ({ task }) =>
         fail && task.id === "S2"
-          ? { gate: "flaky", verdict: "fail", reason: "still red", evidence: ["e"] }
+          ? { gate: "flaky", verdict: "fail", reason: "still red", evidence: [`e${++calls}`] }
           : { gate: "flaky", verdict: "pass", reason: "ok", evidence: [] },
     };
     const { ledger, rest } = await setup([gate]);
@@ -197,11 +198,12 @@ describe("resuming a build", () => {
   });
 
   test("a unit escalating again says how many attempts it had in all", async () => {
+    let calls = 0;
     const gate: UnitGate = {
       name: "red",
       run: ({ task }) =>
         task.id === "S2"
-          ? { gate: "red", verdict: "fail", reason: "red", evidence: [] }
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: [`call ${++calls}`] }
           : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
     };
     const { ledger, rest } = await setup([gate]);
@@ -215,11 +217,12 @@ describe("resuming a build", () => {
   });
 
   test("a crash after the last attempt but before the escalation escalates without a new attempt", async () => {
+    let calls = 0;
     const gate: UnitGate = {
       name: "red",
       run: ({ task }) =>
         task.id === "S2"
-          ? { gate: "red", verdict: "fail", reason: "red", evidence: [] }
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: [`call ${++calls}`] }
           : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
     };
     const { ledger, rest, node } = await setup([gate]);

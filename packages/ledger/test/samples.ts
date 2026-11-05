@@ -116,6 +116,15 @@ export const samples: { [K in EventType]: EventDraft<K> } = {
   },
   "unit.accepted": { ...unit, type: "unit.accepted", data: {} },
   "unit.escalated": { ...unit, type: "unit.escalated", data: { reason: "blocked: test is wrong" } },
+  "unit.stalled": {
+    ...unit,
+    type: "unit.stalled",
+    data: {
+      signature: "a1b2c3d4e5f6",
+      attempts: [1, 2],
+      failing: [{ gate: "tests", reason: "1 failed" }],
+    },
+  },
   "unit.needs_input": { ...unit, type: "unit.needs_input", data: { reason: "context ceiling" } },
   "merge.staged": { ...base, type: "merge.staged", data: { refs: { server: "a1b2c3d" } } },
   "merge.committed": { ...base, type: "merge.committed", data: { refs: { server: "a1b2c3d" } } },

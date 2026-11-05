@@ -108,6 +108,12 @@ its own approval; the waiting `heph run` builds whichever plan is approved. It e
   `heph hint <run> <unit> "<their guidance>"` and run `heph run <run>` again. If following it
   means changing a file outside the unit's scope (the gate said `out of scope: <file>`), add
   `--scope <file>` (relative to the project), and only for files the user agreed to.
+- `paused` with a unit that **stalled** (`heph watch` says `T2 stalled: tests failed the same way
+  on a1 and a2`): two attempts in a row failed identically, so more attempts won't help and heph
+  stopped before spending them. Don't retry and don't hint on your own. Run
+  `heph explain <run> <unit>`, tell the user what keeps failing and why it looks structural (a
+  criterion a later task owns, a file outside the unit's scope, a wrong decision in the Brief),
+  and ask: a hint (`--scope <file>` for a file they agree to), a plan revision, or a new Brief.
 - `paused` on a **rate limit**: it resumes on its own after the limit passes (the daemon does
   this); tell the user and move on.
 

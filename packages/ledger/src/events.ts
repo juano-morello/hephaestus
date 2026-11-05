@@ -129,6 +129,17 @@ export const EVENT_TYPES = {
   "unit.returned": def(Return, ATTEMPT),
   "unit.accepted": def(Empty, UNIT),
   "unit.escalated": def(Reason, UNIT),
+  /** Two red attempts in a row failed the same way; the run waits for the user. */
+  "unit.stalled": def(
+    z
+      .object({
+        signature: z.string().min(1),
+        attempts: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+        failing: z.array(z.object({ gate: z.string(), reason: z.string() }).strict()).min(1),
+      })
+      .strict(),
+    UNIT,
+  ),
   "unit.needs_input": def(Reason, UNIT),
   "merge.staged": def(
     z

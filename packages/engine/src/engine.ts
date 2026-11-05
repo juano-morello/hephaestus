@@ -24,6 +24,7 @@ import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
+import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
@@ -276,7 +277,7 @@ function unitHistory(ledger: Ledger, runId: string): Map<string, UnitHistory> {
     if (!e.unit_id) continue;
     const h = get(e.unit_id);
     if (e.type === "unit.attempt.finished") h.used++;
-    else if (e.type === "unit.escalated") h.used = 0;
+    else if (e.type === "unit.escalated" || e.type === "unit.stalled") h.used = 0;
     else if (e.type === "unit.returned") h.feedback = e.data;
     else if (e.type === "effect.intended" && e.data.effect === "run_branch_advance") {
       if (e.data.before && e.data.after)
@@ -728,6 +729,26 @@ async function runUnit(
       instruction: RETURN_INSTRUCTION,
     };
     ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);
+
+    // The same failure twice in a row won't change with more attempts: ask the user now.
+    const stall = isStalled(sinceLatestPlan(ledger, ctx.runId), t.id);
+    if (stall) {
+      const [a, b] = stall.attempts;
+      const reason = `stalled: ${feedback.reasons[0]?.gate} failed the same way on a${a} and a${b}`;
+      ledger.appendMany([
+        {
+          ...engine,
+          type: "unit.stalled",
+          data: {
+            signature: stall.signature,
+            attempts: stall.attempts,
+            failing: feedback.reasons.map(({ gate, reason }) => ({ gate, reason })),
+          },
+        },
+        { ...engine, type: "run.paused", data: { reason: "user" } },
+      ]);
+      return { status: "paused", reason };
+    }
   }
 
   // Attempts are numbered across escalations; each escalation gives a fresh maxAttempts.

@@ -184,6 +184,7 @@ export function applyEvent(db: Db, e: LedgerEvent): void {
       setUnitStatus(db, e, "accepted");
       return;
     case "unit.escalated":
+    case "unit.stalled":
       setUnitStatus(db, e, "escalated");
       return;
     case "unit.needs_input":

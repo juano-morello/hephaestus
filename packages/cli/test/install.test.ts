@@ -112,6 +112,11 @@ describe("the agent guidance", () => {
     expect(agents.split("-->\n\n")[1]).toBe(body);
   });
 
+  test("it tells the agent to explain and ask when a unit stalls", () => {
+    expect(skill).toContain("**stalled**");
+    expect(skill).toContain("failed the same way");
+  });
+
   test("it never tells the agent to approve", () => {
     for (const line of skill.split("\n").filter((l) => l.includes("heph approve")))
       expect(line).not.toMatch(/^\s*heph approve/);
