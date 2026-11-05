@@ -7,8 +7,8 @@
 //
 // --correct: when the first answer is invalid, send its output and gate evidence back once and
 // report first-try, second-try and overall validity (the planner correction edge).
-// --seed-faults: also take each valid first answer, break it with one known fault, and run only
-// the correction. A mechanism test of the edge; reported apart from the model's natural rate.
+// --seed-faults [--seed-plans N]: take the first N valid answers (default 1), break each with every
+// known fault (one per gate failure type), and run only the correction. A mechanism test of the edge; reported apart from the model's natural rate.
 //
 // --workspace-root points at the real repos (resolved like workspace.yaml's repo paths); the plan
 // gates then check scopes against each project's tracked files.
@@ -28,6 +28,7 @@ import {
   deriveEdges,
   type Evaluation,
   evaluatePlannerOutput,
+  FAULTS,
   type GateResult,
   type Plan,
   ProjectGates,
@@ -51,6 +52,7 @@ const { values } = parseArgs({
     "workspace-root": { type: "string" },
     correct: { type: "boolean", default: false },
     "seed-faults": { type: "boolean", default: false },
+    "seed-plans": { type: "string", default: "1" },
   },
 });
 
@@ -244,23 +246,8 @@ async function correct(
   };
 }
 
-/** Known faults, each a plan edit the gates must catch. First one that breaks the plan wins. */
-const FAULTS: { name: string; apply: (plan: Plan) => Plan }[] = [
-  {
-    name: "drop_consumes",
-    apply: (p) => ({
-      ...p,
-      tasks: p.tasks.map((t) => (t.kind === "implement" ? { ...t, consumes: [] } : t)),
-    }),
-  },
-  {
-    name: "uncover_criterion",
-    apply: (p) => ({ ...p, tasks: p.tasks.map((t) => ({ ...t, covers: t.covers.slice(1) })) }),
-  },
-  { name: "drop_tasks", apply: (p) => ({ ...p, tasks: p.tasks.slice(0, 1) }) },
-];
-
-async function seedFault(plan: Plan): Promise<(CorrectionRecord & { fault: string }) | undefined> {
+/** Every known fault applied to one valid plan, each followed by its one correction. */
+async function seedFaults(plan: Plan): Promise<(CorrectionRecord & { fault: string })[]> {
   const ctx = {
     brief,
     workspace,
@@ -268,22 +255,24 @@ async function seedFault(plan: Plan): Promise<(CorrectionRecord & { fault: strin
     projectGates,
     ...(files ? { files } : {}),
   };
+  const out: (CorrectionRecord & { fault: string })[] = [];
   for (const fault of FAULTS) {
-    const output = JSON.stringify(fault.apply(plan));
+    const output = fault.apply(plan);
     const evaluation = evaluatePlannerOutput(output, ctx, hash);
-    if (evaluation.valid) continue;
+    if (!evaluation.failures.includes(fault.expect)) continue;
     const record = await correct(
       0,
       { model: values.model, duration_ms: 0, output, evaluation },
       `seeded ${fault.name}`,
     );
-    return { ...record, first: "invalid", fault: fault.name };
+    out.push({ ...record, first: "invalid", fault: fault.name });
   }
-  return undefined;
+  return out;
 }
 
 const records: RunRecord[] = [];
 const corrections: CorrectionRecord[] = [];
+let seededPlans = 0;
 const seededRecords: (CorrectionRecord & { fault: string })[] = [];
 for (let run = 1; run <= runs; run++) {
   let call: Omit<RunRecord, "run">;
@@ -309,9 +298,14 @@ for (let run = 1; run <= runs; run++) {
   } else if (values.correct) {
     corrections.push({ first: answerOutcome(call.evaluation) });
   }
-  if (values["seed-faults"] && call.evaluation.plan && call.evaluation.valid) {
-    const seeded = await seedFault(call.evaluation.plan);
-    if (seeded) seededRecords.push(seeded);
+  if (
+    values["seed-faults"] &&
+    call.evaluation.plan &&
+    call.evaluation.valid &&
+    seededPlans < Number.parseInt(values["seed-plans"], 10)
+  ) {
+    seededPlans++;
+    seededRecords.push(...(await seedFaults(call.evaluation.plan)));
   }
 }
 
