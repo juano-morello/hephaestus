@@ -31,7 +31,7 @@ Approaches rejected: stacking as "parent branch is B's target" (B would land int
 - CLI: `heph new --stack-on <run>` (`--on` already names a node). Not part of the Brief: stacking is about delivery, not the goal.
 - `run.created.data.stack_on?: string` (a run id). The `runs` projection gains a `stack_on` column; `PROJECTION_VERSION` bumps so older ledgers rebuild.
 - Parent eligibility, checked at `new`: same workspace, status `built` or `staged`. A parent that already landed (`finished`) means a normal run from the target, with a note. A failed or cancelled parent is refused. Chains (A <- B <- C) are allowed; each run has exactly one direct parent, and C's base `heph/<B>` already contains A.
-- **Per-repo base.** If the parent's changeset touched repo R, B's base in R is `heph/<parent>`; else R's target (`targetBase`). B's `heph/<B>` is created by the existing `run_branch_reset` effect, whose `after` is the recorded base sha. A pin ref `refs/heph/base/<B>` (per repo) holds that fork point, so it stays reachable if A's branch is later reset by a rebuild.
+- **Per-repo base.** If the parent's changeset touched repo R, B's base in R is `heph/<parent>`; else R's target (`targetBase`). B's `heph/<B>` is created by the existing `run_branch_reset` effect, whose `after` is the recorded base sha. B's **fork point** in a repo is derived, never stored: the first parent of the oldest commit on `heph/<B>` carrying the trailer `Heph-Run: <B>` (attempt commits already carry it, and rebases and cherry-picks keep it). It stays correct after A is rebuilt, rebased or squash-merged, and needs no pin ref or extra effect.
 - **Planning B** reads the repo map and file list from the parent's ref (`git ls-tree` on the ref), not from the working checkout. `projectFiles` takes a ref.
 - **Integration gate.** `integrationGate` assembles repos B does not touch at the parent's branch (and the parent's ancestors') rather than the target, so the gate sees the whole stack.
 
@@ -40,7 +40,7 @@ Approaches rejected: stacking as "parent branch is B's target" (B would land int
 Per touched repo, in `landChangeset`:
 
 1. Determine `onto`: the parent's current `heph/<A>` tip while A is unmerged, or the target's tip once A has landed.
-2. If `onto` differs from what B was built on (its recorded fork point), rebase with `git rebase --onto <onto> <fork point> heph/<B>`. **Never merge-base**: a squash or rebase merge of A on GitHub rewrites A's commits, so plain `rebase <target>` would replay them and conflict. `Git.rebase` gains an upstream (fork point) argument.
+2. If `onto` differs from B's fork point (derived as in 3.1), rebase with `git rebase --onto <onto> <fork point> heph/<B>`. **Never merge-base**: a squash or rebase merge of A on GitHub rewrites A's commits, so plain `rebase <target>` would replay them and conflict. `Git.rebase` gains an upstream (fork point) argument.
 3. After a rebase, re-gate (project commands, then the integration gate), as today. Conflict or red: `merge.aborted` and `run.paused`; nothing pushed.
 4. Push with lease and open the PR **with base `heph/<A>`** while A is unmerged (`PullRequests.open` already takes `base`).
 
@@ -52,7 +52,7 @@ Effect keys: rebase becomes `rebase:<repo>:<onto sha, 7 chars>` because a repo m
 - When `checkChangeset(A)` finishes A (all PRs merged, or `approve merge A` completes), a mechanical **restack** runs on every run with `stack_on = A` that is `staged`: rebase `--onto <target tip> <fork point>`, re-gate if anything moved, push with lease, and retarget the PR base to the target. That needs a new effect `pr_retarget` (`PullRequests.setBase`, a REST `PATCH` of the pull request base; reconcile: `confirmed` when the PR's base already equals the target, else redo). Restack needs no approval, but the user must approve B's merge afterwards, since the head may have changed.
 - **Local-only repos:** B stages as a ref only. `approve merge A` fast-forwards the target; B's branch then descends from it (or is rebased `--onto` if A's tip changed), and `approve merge B` fast-forwards in turn.
 - **Parent cancelled or failed after B was built:** B is blocked. `heph status B` says `stacked on <A> (failed)`; B cannot stage. Rebuilding is the only way out in this version.
-- **Parent revised and rebuilt** after B was built: B's recorded fork point still exists (pin ref), so staging rebases B `--onto` the parent's new tip. If A's new content conflicts, B pauses with the files.
+- **Parent revised and rebuilt** after B was built: B's fork point is still derivable from its own commits, so staging rebases B `--onto` the parent's new tip. If A's new content conflicts, B pauses with the files.
 
 ### 3.4 Surfaces
 
