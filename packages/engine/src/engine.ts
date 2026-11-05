@@ -319,6 +319,8 @@ function resume(
   runId: string,
   engine: Omit<EventDraft, "type" | "data">,
   status: string | undefined,
+  /** Written in the same batch as run.resumed: a pause a crash lost (see lostPause). */
+  lost?: PauseReason,
 ) {
   const since = sinceLatestPlan(ledger, runId);
   const open = new Map<string, LedgerEvent>();
@@ -350,6 +352,8 @@ function resume(
         }) as EventDraft,
     ),
     { ...engine, type: "run.resumed", data: { reason } } as EventDraft,
+    // Never a separate write: a crash between the two would hide the pause from the next resume.
+    ...(lost ? [{ ...engine, type: "run.paused", data: { reason: lost } } as EventDraft] : []),
   ]);
 }
 
@@ -481,15 +485,15 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     }
     ledger.append({ ...engine, type: "node.started", graph_node: "build", data: {} });
   } else {
-    resume(ledger, runId, engine, statusBefore);
+    resume(ledger, runId, engine, statusBefore, lost?.reason);
   }
   const heads = async () =>
     Object.fromEntries(
       await Promise.all([...gits].map(async ([r, g]) => [r, await g.revParse(branch)])),
     );
   if (lost) {
-    // Pause again instead of building: an escalated unit only gets fresh attempts from the user.
-    ledger.append({ ...engine, type: "run.paused", data: { reason: lost.reason } });
+    // Paused again (with run.resumed) instead of building: an escalated unit only gets fresh
+    // attempts from the user.
     return { status: "paused", runBranch: branch, heads: await heads(), reason: lost.detail };
   }
 

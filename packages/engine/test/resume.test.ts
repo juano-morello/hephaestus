@@ -277,6 +277,38 @@ describe("resuming a build", () => {
     reopened.close();
   });
 
+  test("a second crash while recording the lost pause never leaves run.resumed without it", async () => {
+    let calls = 0;
+    const gate: UnitGate = {
+      name: "red",
+      run: ({ task }) =>
+        task.id === "S2"
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: [`call ${++calls}`] }
+          : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
+    };
+    const { ledger, rest, node } = await setup([gate]);
+    const paused = (ds: EventDraft[]) => ds.some((d) => d.type === "run.paused");
+    await expect(buildRun({ ...rest, ledger: crashing(ledger, paused) })).rejects.toBeInstanceOf(
+      Crash,
+    );
+    ledger.close();
+
+    // Killed again on resume, while it writes the pause it found lost.
+    const second = openLedger(node, { nodeId: "devserver" });
+    await expect(
+      buildRun({ ...rest, ledger: crashing(second, paused), worker: scripted().worker }),
+    ).rejects.toBeInstanceOf(Crash);
+    second.close();
+
+    const third = openLedger(node, { nodeId: "devserver" });
+    const next = scripted();
+    const out = await buildRun({ ...rest, ledger: third, worker: next.worker });
+    expect(out).toMatchObject({ status: "paused", reason: "S2: red after 3 attempts" });
+    expect(next.ids()).toEqual([]);
+    expect(of(third, "unit.attempt.started").filter((e) => e.unit_id === "S2")).toHaveLength(3);
+    third.close();
+  }, 20_000);
+
   test("a crash after a stall but before run.paused pauses again, without fresh attempts", async () => {
     const gate: UnitGate = {
       name: "red",
