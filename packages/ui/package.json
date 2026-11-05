@@ -1,0 +1,23 @@
+{
+  "name": "@hephaestus/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@radix-ui/react-collapsible": "1.2.1",
+    "@radix-ui/react-scroll-area": "1.4.0",
+    "@radix-ui/react-tabs": "1.2.1",
+    "@radix-ui/react-tooltip": "1.4.1",
+    "@tailwindcss/cli": "4.3.4",
+    "motion": "14.9.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwindcss": "4.3.4"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "21.0.4",
+    "@testing-library/react": "16.3.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0"
+  }
+}

@@ -28,7 +28,7 @@ import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
-import { readUiFile } from "./ui-server.ts";
+import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { watchRun } from "./watch.ts";
 
@@ -528,7 +528,19 @@ const COMMANDS: Record<string, Command<unknown>> = {
           for (const e of events) log(`${e.run_id} ${line(e).trim()}`);
         },
       });
-      const d = await startDaemon(host, { home, intervalS: config.sync.interval_s, log });
+      // The bundle is built by `bun run build:ui`; without it the daemon runs with no dashboard.
+      let uiAssets: UiAssets | undefined;
+      try {
+        uiAssets = (await import("./ui-assets.ts")).uiAssets;
+      } catch {
+        log("dashboard bundle not built; no UI");
+      }
+      const d = await startDaemon(host, {
+        home,
+        intervalS: config.sync.interval_s,
+        log,
+        ...(uiAssets ? { uiAssets } : {}),
+      });
       log(`node ${host.node} serving ${d.socket}`);
       // A stop leaves running builds as they are; the next start resumes them.
       await new Promise<void>((done) => {
