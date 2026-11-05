@@ -81,13 +81,27 @@ describe("readyUnits", () => {
     expect(readyUnits(p, workspace(), state(), 2)).toEqual(["T1"]);
   });
 
-  test("readyUnits_test_unit_waits_for_open_criteria_of_its_project", () => {
+  test("readyUnits_test_unit_waits_for_earlier_unaccepted_units_of_its_project", () => {
     const p = plan([
       task("T1", { kind: "test", covers: ["AC1"] }),
       task("T2", { covers: ["AC1"] }),
       task("T3", { kind: "test", covers: ["AC2"] }),
     ]);
     expect(readyUnits(p, workspace(), state({ accepted: new Set(["T1"]) }), 2)).toEqual(["T2"]);
+  });
+
+  test("readyUnits_non_test_unit_waits_for_an_earlier_unaccepted_test_with_nothing_in_flight", () => {
+    // T1 (a server test) waits on a client unit; nothing of server is in flight or picked, yet
+    // T2 must not run before T1, as it would in the sequential order the plan gate simulates.
+    const p = plan([
+      task("T0", { project: "client", produces: ["x"] }),
+      task("T1", { kind: "test", covers: ["AC1"], consumes: ["x"] }),
+      task("T2", { covers: ["AC2"] }),
+    ]);
+    expect(readyUnits(p, workspace(), state({ inFlight: new Set(["T0"]) }), 5)).toEqual([]);
+    expect(readyUnits(p, workspace(), state({ accepted: new Set(["T0", "T1"]) }), 5)).toEqual([
+      "T2",
+    ]);
   });
 
   test("readyUnits_two_independent_implement_units_in_one_project_run_together", () => {
