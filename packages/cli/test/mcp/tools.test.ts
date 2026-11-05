@@ -141,3 +141,151 @@ describe("read-only tools", () => {
     await client.close();
   });
 });
+
+const brief = {
+  schema: 1,
+  goal: "Add a widget",
+  context: "",
+  decisions: [],
+  constraints: [],
+  acceptance: [{ id: "AC1", text: "it works", kind: "behavior" }],
+  out_of_scope: [],
+  open_questions: [],
+  source: "claude-code",
+};
+const planned = {
+  run_id: "r1",
+  status: "planned",
+  plan_id: "p1",
+  planner_attempts: 1,
+  tasks: [task],
+};
+
+describe("mutating tools", () => {
+  test("heph_new sends the brief and cwd, and tells the agent to wait for the user", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({
+      name: "heph_new",
+      arguments: { brief, on: "local" },
+    });
+    expect(r.isError).toBeFalsy();
+    expect(calls[0]).toEqual({ method: "newRun", args: [brief, { on: "local" }], cwd: "/ws" });
+    const text = textOf(r);
+    expect(text).toContain("t1 feature app (fast): Add widget");
+    expect(text).toContain("next: show the plan to the user");
+    expect(text).toContain("heph approve plan r1");
+    expect(text).toContain("themselves");
+    await client.close();
+  });
+
+  test("heph_new without on sends empty options", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    await client.callTool({ name: "heph_new", arguments: { brief } });
+    expect(calls[0]?.args).toEqual([brief, {}]);
+    await client.close();
+  });
+
+  test("heph_new renders an escalated plan's reason", async () => {
+    const { client: d } = fakeDaemon({
+      newRun: () => ({
+        run_id: "r2",
+        status: "escalated",
+        planner_attempts: 2,
+        escalate: ["scope unclear"],
+        reason: "planner gave up",
+      }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({ name: "heph_new", arguments: { brief } });
+    expect(textOf(r)).toContain("r2: escalated after 2 planner attempt(s)");
+    expect(textOf(r)).toContain("- scope unclear");
+    expect(textOf(r)).toContain("planner gave up");
+    expect(textOf(r)).not.toContain("next:");
+    await client.close();
+  });
+
+  test("heph_new rejects a brief missing goal without calling the daemon", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const { goal: _goal, ...noGoal } = brief;
+    const r = await client.callTool({ name: "heph_new", arguments: { brief: noGoal } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("goal");
+    expect(calls).toHaveLength(0);
+    await client.close();
+  });
+
+  test("heph_new rejects a string brief", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({ name: "heph_new", arguments: { brief: "do it" } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("brief must be an object");
+    expect(calls).toHaveLength(0);
+    await client.close();
+  });
+
+  test("heph_new with no workspace anywhere names the problem and the argument", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const r = await client.callTool({ name: "heph_new", arguments: { brief } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("workspace");
+    expect(textOf(r)).toContain("directory");
+    expect(calls).toHaveLength(0);
+    await client.close();
+  });
+
+  test("heph_new workspace argument overrides the server's workspace", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const r = await client.callTool({
+      name: "heph_new",
+      arguments: { brief, workspace: "/other" },
+    });
+    expect(r.isError).toBeFalsy();
+    expect(calls[0]?.cwd).toBe("/other");
+    await client.close();
+  });
+
+  test("heph_plan_revise maps to revise and renders the plan", async () => {
+    const { client: d, calls } = fakeDaemon({ revise: () => planned });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({
+      name: "heph_plan_revise",
+      arguments: { run: "r1", instructions: "split t1" },
+    });
+    expect(calls[0]).toEqual({ method: "revise", args: ["r1", "split t1"], cwd: "/ws" });
+    expect(textOf(r)).toContain("run r1: planned");
+    await client.close();
+  });
+
+  test("heph_hint omits scope and budget when absent, passes them when given", async () => {
+    const hinted = { run_id: "r1", unit: "u1", recorded: ["a hint"] };
+    const { client: d, calls } = fakeDaemon({ hint: () => hinted });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    await client.callTool({
+      name: "heph_hint",
+      arguments: { run: "r1", unit: "u1", text: "try x" },
+    });
+    const r = await client.callTool({
+      name: "heph_hint",
+      arguments: { run: "r1", unit: "u1", text: "try x", scope: ["src/b.ts"], budget: 5000 },
+    });
+    expect(calls[0]?.args).toEqual(["r1", "u1", "try x", {}]);
+    expect(calls[1]?.args).toEqual(["r1", "u1", "try x", { scope: ["src/b.ts"], budget: 5000 }]);
+    expect(textOf(r)).toContain("recorded a hint for u1 in r1");
+    await client.close();
+  });
+
+  test("heph_cancel maps to cancel", async () => {
+    const { client: d, calls } = fakeDaemon({ cancel: () => ({ run_id: "r1", status: "failed" }) });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({ name: "heph_cancel", arguments: { run: "r1" } });
+    expect(calls[0]).toEqual({ method: "cancel", args: ["r1"], cwd: "/ws" });
+    expect(textOf(r)).toBe("cancelled r1\n");
+    await client.close();
+  });
+});
