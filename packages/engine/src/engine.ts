@@ -81,6 +81,11 @@ export type RunPlanOptions = {
   integrationSandbox?: (dir: string) => Promise<Sandbox>;
   /** Land right after a clean build, but only if every unit is lane contained (SPEC section 2). */
   autoMerge?: boolean;
+  /**
+   * Wraps each staged child's restack after an autoMerge lands this run (the CLI's per-run lock
+   * has this shape), so it is serialized against a concurrent `heph merge status`. Default: none.
+   */
+  around?: <T>(runId: string, fn: () => Promise<T>) => Promise<T>;
   /** Used when the touched repos have a remote: the changeset lands as pull requests. */
   prs?: PullRequests;
   eval?: boolean;
@@ -639,7 +644,12 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
     if (merged.status === "merged") {
       // Staged children of this run are restacked onto the target and retargeted, as after
       // `heph approve merge` (design 3.3); one that fails is paused on its own, never thrown.
-      await restackChildren({ ledger, parentId: runId, options: (id) => childOptions(opts, id) });
+      await restackChildren({
+        ledger,
+        parentId: runId,
+        options: (id) => childOptions(opts, id),
+        ...(opts.around ? { around: opts.around } : {}),
+      });
       return { status: "landed", runBranch: branch, heads: await heads(), ...prs };
     }
     if (merged.status === "not_ready")
@@ -660,7 +670,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
  * its own brief, changeset and latest plan, in the same workspace, with the same gates and PRs.
  */
 function childOptions(opts: RunPlanOptions, runId: string): LandOptions {
-  const { worker: _w, autoMerge: _a, stackOn: _s, ...rest } = opts;
+  const { worker: _w, autoMerge: _a, stackOn: _s, around: _l, ...rest } = opts;
   const created = opts.ledger.read({ run_id: runId, types: ["run.created"] }).at(-1)?.event;
   const brief = (created?.data as { brief?: Brief } | undefined)?.brief;
   const plan = (

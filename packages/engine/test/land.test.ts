@@ -1254,6 +1254,28 @@ describe("landing a stacked run", () => {
       f.ledger.close();
     });
 
+    test("autoMerge restacks each child inside the caller's around hook, in order", async () => {
+      const f = await stagedStack({ B: "b.sh", C: "c.sh" });
+      const log: string[] = [];
+      const around = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+        log.push(`+${id}`);
+        try {
+          return await fn();
+        } finally {
+          log.push(`-${id}`);
+        }
+      };
+      const out = await buildRun({ ...f.opts("A"), autoMerge: true, around });
+      expect(out.status).toBe("landed");
+      expect(log).toEqual(["+B", "-B", "+C", "-C"]);
+      // Each child's retarget happened inside its own hook call.
+      expect(f.fake.calls.filter((c) => c.startsWith("setBase"))).toEqual([
+        `setBase ${f.urls.B} main`,
+        `setBase ${f.urls.C} main`,
+      ]);
+      f.ledger.close();
+    });
+
     test("a child whose restack fails after an autoMerge is paused on its own; the parent still landed", async () => {
       const f = await stagedStack({ B: "b.sh" });
       f.fake.failSetBase.add(f.urls.B as string);
