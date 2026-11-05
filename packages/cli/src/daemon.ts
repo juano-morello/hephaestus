@@ -4,6 +4,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Host } from "./host.ts";
+import { startUiServer, type UiAssets } from "./ui-server.ts";
 
 export const socketOf = (home: string) => join(home, "daemon.sock");
 
@@ -74,7 +75,7 @@ export async function daemonAt(home: string): Promise<DaemonClient | undefined> 
   };
 }
 
-export type Daemon = { stop(): Promise<void>; socket: string };
+export type Daemon = { stop(): Promise<void>; socket: string; ui?: { port: number } };
 
 /**
  * Serves a host on its home's socket, resumes runs a killed process left running, and syncs
@@ -82,7 +83,13 @@ export type Daemon = { stop(): Promise<void>; socket: string };
  */
 export async function startDaemon(
   host: Host,
-  o: { home: string; intervalS: number; log?: (line: string) => void },
+  o: {
+    home: string;
+    intervalS: number;
+    log?: (line: string) => void;
+    /** The dashboard bundle; without it no UI listener starts. */
+    uiAssets?: UiAssets;
+  },
 ): Promise<Daemon> {
   const unix = socketOf(o.home);
   if (await daemonAt(o.home)) throw new Error(`a daemon is already running for ${o.home}`);
@@ -110,6 +117,15 @@ export async function startDaemon(
       }
     },
   });
+  const ui = o.uiAssets
+    ? await startUiServer({
+        home: o.home,
+        call: (m, a) => host.api.call(m, a, undefined),
+        assets: o.uiAssets,
+        ...(o.log ? { log: o.log } : {}),
+      })
+    : undefined;
+  if (ui) o.log?.(`dashboard on http://127.0.0.1:${ui.port}`);
   const resumed = await host.resumeOnStart();
   if (resumed.length) o.log?.(`resumed ${resumed.join(", ")}`);
   let syncing = false;
@@ -125,8 +141,10 @@ export async function startDaemon(
   }, o.intervalS * 1000);
   return {
     socket: unix,
+    ...(ui ? { ui: { port: ui.port } } : {}),
     async stop() {
       clearInterval(timer);
+      await ui?.stop();
       await server.stop(true);
       rmSync(unix, { force: true });
     },
