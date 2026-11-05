@@ -1,6 +1,6 @@
 # Stacking and parallel fan-out: design
 
-Status: design approved in conversation 2026-11-05; written spec awaiting review. No code yet.
+Status: built 2026-11-05 (tasks 1-11; amended where the build differs, see the 2026-11-05 amendments in NOTES).
 Touches: SPEC sections 2, 4, 6, 13, 16, 19 (step 3). Closes NOTES "First real runs" item 8.
 
 ## 1. Goal
@@ -30,8 +30,8 @@ Approaches rejected: stacking as "parent branch is B's target" (B would land int
 
 - CLI: `heph new --stack-on <run>` (`--on` already names a node). Not part of the Brief: stacking is about delivery, not the goal.
 - `run.created.data.stack_on?: string` (a run id). The `runs` projection gains a `stack_on` column; `PROJECTION_VERSION` bumps so older ledgers rebuild.
-- Parent eligibility, checked at `new`: same workspace, status `built` or `staged`. A parent that already landed (`finished`) means a normal run from the target, with a note. A failed or cancelled parent is refused. Chains (A <- B <- C) are allowed; each run has exactly one direct parent, and C's base `heph/<B>` already contains A.
-- **Per-repo base.** If the parent's changeset touched repo R, B's base in R is `heph/<parent>`; else R's target (`targetBase`). B's `heph/<B>` is created by the existing `run_branch_reset` effect, whose `after` is the recorded base sha. B's **fork point** in a repo is derived, never stored: the first parent of the oldest commit on `heph/<B>` carrying the trailer `Heph-Run: <B>` (attempt commits already carry it, and rebases and cherry-picks keep it). It stays correct after A is rebuilt, rebased or squash-merged, and needs no pin ref or extra effect.
+- Parent eligibility, checked at `new`: same workspace, status `built` or `staged`. A parent that already landed (`finished`) means a normal run from the target, with a note. A failed or cancelled parent is refused. Chains (A <- B <- C) are allowed; each run has exactly one direct parent.
+- **Per-repo base (chain walk).** A parent's branch contains its ancestors only in the repos the ancestors touched, so the base is found by walking the `stack_on` chain: in repo R, B's base is `heph/<X>` for the nearest ancestor X that is `built` or `staged` and whose `heph/<X>` exists in R; finished ancestors are skipped; with none, R's target (`targetBase`). An ancestor in any other status (failed, cancelled, paused, running...) makes the stack unresolvable: a fresh build pauses, `plan`/`revise` refuse, landing aborts. B's `heph/<B>` is created by the existing `run_branch_reset` effect, whose `after` is the recorded base sha. B's **fork point** in a repo is derived, never stored: the first parent of the oldest commit on `heph/<B>` carrying the trailer `Heph-Run: <B>` (attempt commits already carry it, and rebases and cherry-picks keep it). It stays correct after A is rebuilt, rebased or squash-merged, and needs no pin ref or extra effect.
 - **Planning B** reads the repo map and file list from the parent's ref (`git ls-tree` on the ref), not from the working checkout. `projectFiles` takes a ref.
 - **Integration gate.** `integrationGate` assembles repos B does not touch at the parent's branch (and the parent's ancestors') rather than the target, so the gate sees the whole stack.
 
@@ -50,13 +50,15 @@ Effect keys: rebase becomes `rebase:<repo>:<onto sha, 7 chars>` because a repo m
 
 - `mergeChangeset(B)` returns `not_ready` with the reason `waiting for <A>` unless A is `finished`. Merge approval stays a human act.
 - When `checkChangeset(A)` finishes A (all PRs merged, or `approve merge A` completes), a mechanical **restack** runs on every run with `stack_on = A` that is `staged`: rebase `--onto <target tip> <fork point>`, re-gate if anything moved, push with lease, and retarget the PR base to the target. That needs a new effect `pr_retarget` (`PullRequests.setBase`, a REST `PATCH` of the pull request base; reconcile: `confirmed` when the PR's base already equals the target, else redo). Restack needs no approval, but the user must approve B's merge afterwards, since the head may have changed.
+- **Recovery after a stopped restack.** If a restack stops partway (a conflict, a red re-gate), `approve merge B` on a staged child whose parent is finished and whose PR base is not yet the target restacks B and returns `restacked` **without merging**; the user reviews and approves again.
+- **PR-base guard.** `mergeChangeset(B)` refuses while any of B's PRs has a base other than the target, so B can never merge into `heph/<A>`. Opening a PR on `heph/<A>` is refused for a remote repo until A is `staged` (its branch is on the remote).
 - **Local-only repos:** B stages as a ref only. `approve merge A` fast-forwards the target; B's branch then descends from it (or is rebased `--onto` if A's tip changed), and `approve merge B` fast-forwards in turn.
 - **Parent cancelled or failed after B was built:** B is blocked. `heph status B` says `stacked on <A> (failed)`; B cannot stage. Rebuilding is the only way out in this version.
 - **Parent revised and rebuilt** after B was built: B's fork point is still derivable from its own commits, so staging rebases B `--onto` the parent's new tip. If A's new content conflicts, B pauses with the files.
 
 ### 3.4 Surfaces
 
-- `heph status`, `heph watch`, `heph explain` show `stacked on <A> (<A's status>)`; `watch` ends B with `waiting for <A>` when only the parent is missing.
+- Built: `heph status` prints `stacked on <A> (<A's status>)` (and the in-flight attempts when more than one runs), `heph explain` marks the `run created` line, and `heph watch` (and MCP `heph_watch`) ends B with `waiting for <A>` when only the parent is missing.
 - The Claude Code skill and the Codex copy (kept identical by a test) gain a short stacking section.
 
 ## 4. Parallel fan-out
@@ -66,7 +68,7 @@ Effect keys: rebase becomes `rebase:<repo>:<onto sha, 7 chars>` because a repo m
 `build()`'s `for (const id of order.order)` loop becomes a ready-set loop over a pool of `limits.parallel` slots (`EngineConfig.parallel`, default 1; with 1 it is today's sequential behaviour, same order). A unit is **ready** only when all hold:
 
 1. Every derived-edge predecessor is accepted.
-2. **`tests_passable` holds over the accepted set.** Every criterion checked by an accepted `test` task in the unit's project is covered by an accepted non-test task in that project, or by this unit. The `tests` gate runs the whole project suite, so the plan gate's sequential-order guarantee has to hold dynamically over what is actually accepted. The check reuses the plan gate's logic from `@hephaestus/core` (extracted into a shared function, not duplicated).
+2. **`tests_passable` holds over the accepted set.** Every criterion checked by an accepted `test` task is covered by an accepted non-test task of any project (the same count the plan gate makes), or by this unit. The `tests` gate runs the whole project suite, so the plan gate's sequential-order guarantee has to hold dynamically over what is actually accepted. The check reuses the plan gate's logic from `@hephaestus/core` (extracted into a shared function, not duplicated).
 3. Its scope (task scope plus `hint --scope` additions) does not overlap an in-flight unit's scope in the same repo, compared repo-relative the way the plan gate does. Widening a scope can break the plan-time disjointness guarantee, so it is checked at start.
 4. A slot is free.
 

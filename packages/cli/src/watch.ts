@@ -41,8 +41,21 @@ export const isMilestone = (e: WatchEvent) =>
 export const watchLine = (e: WatchEvent) =>
   `${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${e.summary}`;
 
+/** The parent a staged, stacked run still waits for to land (it merges only after its parent). */
+export const waitingFor = (s: {
+  run: { status: string };
+  stack_on?: { run_id: string; status: string };
+}): string | undefined =>
+  s.run.status === "staged" && s.stack_on && s.stack_on.status !== "finished"
+    ? s.stack_on.run_id
+    : undefined;
+
 export type WatchView = {
-  status(id: string): Promise<{ run: { status: string }; plan_approved: boolean }>;
+  status(id: string): Promise<{
+    run: { status: string };
+    plan_approved: boolean;
+    stack_on?: { run_id: string; status: string };
+  }>;
   explain(id: string): Promise<{ events: WatchEvent[] }> | { events: WatchEvent[] };
 };
 
@@ -112,6 +125,12 @@ export async function watchRun(
       } else if (["staged", "finished", "failed", "built"].includes(status)) {
         // `built` is the instant before staging; wait one more look for the staged line.
         if (status !== "built") {
+          const parent = waitingFor(s);
+          if (parent) {
+            say(`${id}: staged`);
+            say(`waiting for ${parent}`);
+            return { run_id: id, status, reason: `waiting for ${parent}` };
+          }
           say(
             `${id}: ${status}${status === "staged" ? `; review, then heph approve merge ${id}` : ""}`,
           );

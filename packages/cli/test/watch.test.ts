@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeText } from "../src/main.ts";
+import { inFlightLines, mergeText } from "../src/main.ts";
 import { describe as explainLine } from "../src/runtime.ts";
 import { isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
 
@@ -13,12 +13,23 @@ const ev = (id: string, type: string, summary: string, unit_id?: string, attempt
   }) as WatchEvent;
 
 /** A run that moves through scripted (status, events) steps, one per poll. */
-function script(steps: { status: string; approved?: boolean; events: WatchEvent[] }[]) {
+function script(
+  steps: {
+    status: string;
+    approved?: boolean;
+    events: WatchEvent[];
+    stack_on?: { run_id: string; status: string };
+  }[],
+) {
   let i = 0;
   const at = () => steps[Math.min(i, steps.length - 1)] as (typeof steps)[number];
   return {
     view: {
-      status: async () => ({ run: { status: at().status }, plan_approved: at().approved ?? true }),
+      status: async () => ({
+        run: { status: at().status },
+        plan_approved: at().approved ?? true,
+        ...(at().stack_on ? { stack_on: at().stack_on } : {}),
+      }),
       explain: async () => {
         const e = { events: at().events };
         i++;
@@ -77,6 +88,36 @@ describe("heph watch", () => {
     expect(explainLine({ type: "unit.stalled", data })).toBe(
       "stalled: impl failed the same way on a1 and a2",
     );
+  });
+
+  test("a staged child of an unmerged parent ends with waiting for the parent", async () => {
+    const staged = ev("1", "merge.staged", "staged");
+    const { lines, r } = await run([
+      { status: "staged", events: [staged], stack_on: { run_id: "A", status: "staged" } },
+    ]);
+    expect(lines.at(-1)).toBe("waiting for A");
+    expect(lines).not.toContain("r1: staged; review, then heph approve merge r1");
+    expect(r).toEqual({ run_id: "r1", status: "staged", reason: "waiting for A" });
+    // Once the parent is finished the child is a normal staged run.
+    const done = await run([
+      { status: "staged", events: [staged], stack_on: { run_id: "A", status: "finished" } },
+    ]);
+    expect(done.lines.at(-1)).toBe("r1: staged; review, then heph approve merge r1");
+  });
+
+  test("status shows the stack line and, with parallel units, what is in flight", () => {
+    expect(
+      inFlightLines([
+        { unit_id: "T1", attempt: 1, status: "running" },
+        { unit_id: "T2", attempt: 2, status: "running" },
+        { unit_id: "T3", attempt: 1, status: "finished" },
+      ]),
+    ).toEqual(["  in flight: T1/a1, T2/a2"]);
+    expect(inFlightLines([{ unit_id: "T1", attempt: 1, status: "running" }])).toEqual([]);
+    expect(explainLine({ type: "run.created", data: { stack_on: "A" } })).toBe(
+      "run created, stacked on A",
+    );
+    expect(explainLine({ type: "run.created", data: {} })).toBe("run created");
   });
 
   test("a retarget names its branch whole; other effects cut their sha", () => {

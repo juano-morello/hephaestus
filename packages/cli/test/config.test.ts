@@ -287,6 +287,7 @@ describe("explainConfig", () => {
     const lines = explainConfig(await loadConfig({ workspaceDir: ws, home }));
     expect(lines).toContain(`limits.attempts_per_unit = 5  (${file})`);
     expect(lines).toContain("limits.budget_tokens = 20000  (default)");
+    expect(lines).toContain("limits.parallel = 1  (default)");
     expect(lines).toContain("sandbox.image = alpine:3.20  (default)");
     expect(lines).toContain(
       `projects.${basename(ws)}.gates = ["tests","lint"]  (${join(ws, ".heph", "config.yaml")})`,

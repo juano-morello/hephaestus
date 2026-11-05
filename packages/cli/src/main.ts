@@ -221,6 +221,14 @@ type MergeView = {
   restacked?: Record<string, { status: string; reason?: string }>;
 };
 
+/** With parallel fan-out, which attempts run right now (listed only when more than one does). */
+export const inFlightLines = (attempts: { unit_id: string; attempt: number; status: string }[]) => {
+  const running = attempts.filter((a) => a.status === "running");
+  return running.length > 1
+    ? [`  in flight: ${running.map((a) => `${a.unit_id}/a${a.attempt}`).join(", ")}`]
+    : [];
+};
+
 /** A landed run's restacked children, in words. */
 const restackText = (restacked: MergeView["restacked"] = {}) =>
   Object.entries(restacked)
@@ -389,6 +397,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ...s.units.map(
           (u) => `  ${u.unit_id} ${u.status} (${u.attempts} attempt${u.attempts === 1 ? "" : "s"})`,
         ),
+        ...inFlightLines(s.attempts),
         ...s.usage.map((u) => `  ${u.model}: in ${u.input} out ${u.output} cache ${u.cache_read}`),
         ...Object.entries(s.prs ?? {}).map(([repo, url]) => `  ${repo}: ${url}`),
         "",

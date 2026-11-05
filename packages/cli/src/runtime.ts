@@ -804,6 +804,10 @@ export function describe(e: { type: string; data: unknown; attempt?: number | un
       return `${String(d.effect).replaceAll("_", " ")}: ${d.target}${d.after ? ` to ${d.effect === "pr_retarget" ? d.after : String(d.after).slice(0, 7)}` : ""}`;
     case "effect.done":
       return `${String(d.effect).replaceAll("_", " ")} ${d.state}${d.sha ? ` (${String(d.sha).slice(0, 7)})` : ""}${d.url ? ` ${d.url}` : ""}`;
+    case "run.created":
+      return typeof d.stack_on === "string"
+        ? `run created, stacked on ${d.stack_on}`
+        : "run created";
     case "run.handed_off":
       return `handed off to ${d.to}`;
     case "run.paused":

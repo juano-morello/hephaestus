@@ -19,7 +19,13 @@ const ev = (
     ...(ts ? { ts } : {}),
   }) as WatchEvent;
 
-type Step = { status: string; approved?: boolean; events: WatchEvent[]; fail?: Error };
+type Step = {
+  status: string;
+  approved?: boolean;
+  events: WatchEvent[];
+  fail?: Error;
+  stack_on?: { run_id: string; status: string };
+};
 function script(steps: Step[]) {
   let i = 0;
   let polls = 0;
@@ -34,7 +40,11 @@ function script(steps: Step[]) {
           i++;
           throw s.fail;
         }
-        return { run: { status: s.status }, plan_approved: s.approved ?? true };
+        return {
+          run: { status: s.status },
+          plan_approved: s.approved ?? true,
+          ...(s.stack_on ? { stack_on: s.stack_on } : {}),
+        };
       },
       explain: async () => {
         const e = { events: at().events };
@@ -243,5 +253,14 @@ describe("watchStep", () => {
     const r = await watchStep("r1", s.view, { waitMs: 0, onLine: (l) => got.push(l), ...clock() });
     expect(got).toEqual(r.lines);
     expect(got.length).toBe(3);
+  });
+
+  test("a staged child of an unmerged parent ends with waiting for the parent", async () => {
+    const s = script([
+      { status: "staged", events: [A], stack_on: { run_id: "P", status: "staged" } },
+    ]);
+    const r = await watchStep("r1", s.view, { waitMs: 0, ...clock() });
+    expect(r.outcome).toBe("staged");
+    expect(r.lines.at(-1)).toBe("waiting for P");
   });
 });

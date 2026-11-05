@@ -457,3 +457,28 @@ Question: can the engine run independent units concurrently with OMP in one proc
 - **Decision (default)**: serialize session creation in `createOmpWorker` with a process-wide promise chain (`serializeCreation`); sessions already created run concurrently. Keep the in-process runner; a subprocess runner (Task 5b) is not in scope for now.
 - **Re-check**: Task 12's live run must confirm two units really run at the same time. If "Agent Main was replaced" still appears after creation is serialized, switch to the subprocess runner and bring Task 5b into scope.
 - Test: `serializeCreation` in `packages/workers/test/omp.test.ts` (overlap never exceeds 1; a failed creation does not block the next).
+
+## Stacking and parallel fan-out (2026-11-05)
+
+Design: `docs/superpowers/specs/2026-11-05-stacking-fanout-design.md`. Built in tasks 1-11 on `claude/stacking-fanout-e82247`. Closes "First real runs" item 8.
+
+**Decided and built.**
+- `limits.parallel` (default 1, opt-in): ready-set scheduler (`readyUnits` in core, `scheduler.ts` in the engine), drain on escalation, stall, `blocked` or rate limit, one `run.paused` (precedence handoff > user > rate limit), join under a per-repo lock with cherry-pick replay and a re-gate of tests, typecheck and lint when the run-branch tip moved (a `join` gate on conflict).
+- `heph new --stack-on <run>`: `stack_on` on `run.created` and the `runs` projection (`PROJECTION_VERSION` 4), `ledger.stackedOn`; landing with `rebase --onto <onto> <fork point>` (effect key `rebase:<repo>:<onto7>`), the PR based on the parent's branch while the parent is unmerged, `mergeChangeset` of a child `not_ready` (`waiting for <parent>`) until the parent is finished; when the parent finishes (`approve merge` / `merge status`) staged children are restacked and their PR base retargeted (`pr_retarget` effect, `PullRequests.setBase`). `approve merge <child>` after a stopped restack restacks only, returns `restacked`, and the user approves again.
+- Surfaces: `stacked on <A> (<status>)` in `heph status`, `in flight:` attempts there when more than one runs, `waiting for <A>` ending `heph watch` and MCP `heph_watch` for a staged child, `--stack-on` in usage, the skill and its identical Codex copy.
+
+**Fork point derivation.** Never stored and no pin ref: it is the first parent of the oldest commit on `heph/<B>` carrying `Heph-Run: <B>` (attempt commits carry it; rebases and cherry-picks keep it). It stays right after the parent is rebuilt, rebased or squash-merged, which is why landing uses `--onto` and never a plain `rebase <target>`.
+
+**Chain-walk ruling.** The design said the parent's branch already contains its ancestors. That holds only in repos the ancestors touched, so the base per repo is the nearest built or staged ancestor in the `stack_on` chain whose `heph/<id>` exists in that repo; finished ancestors are skipped; any other ancestor status makes the stack unresolvable (fresh build pauses, plan/revise refuse, landing aborts). Landing (`onto`, PR base) uses the same choice.
+
+**OMP concurrency spike.** Could not run: `createAgentSession` failed on a read-only `~/.omp/agent/agent.db` in the sandbox. Decision: serialize session creation process-wide (`serializeCreation`), keep the in-process runner. Task 12's live run must confirm two units really overlap; if "Agent Main was replaced" persists, a subprocess runner comes into scope.
+
+**Traps found in review and fixed.**
+1. A crash after `unit.escalated`/`unit.stalled` but before the single `run.paused` left a running run that resume re-granted attempts to: resume now detects the lost pause.
+2. An ancestor that was neither built, staged nor finished was silently skipped, building the child without the parent's changes: the stack is now unresolvable.
+3. A remote repo with a parent that was only built (no `heph/<A>` on the remote) failed raw at `pr_open`, and a child whose PR base was still `heph/<A>` after A finished could merge into it: landing refuses until the parent is staged, and `mergeChangeset` refuses while a PR base is not the target, with the restack-only recovery above.
+
+**Amendments to the design (2026-11-05).** 3.1 per-repo base is the chain walk, not "the parent's branch contains its ancestors"; 4.1 rule 2 counts non-test tasks of any project as satisfiers, as the plan gate does (not "in that project"); 3.3 gained the `approve merge B` restack-without-merge recovery and the PR-base guard; the status line is "built".
+
+**Not built.** Multiple parents; optimistic (lock-free) joins; rate-limit throttling; cross-node runners; restack outside the runtime (the engine's `autoMerge` path does not restack); stacking across workspaces; mixed-version sync (an older node rejects a `run.created` with `stack_on`). Known costs: a late parallel unit pays one extra gate run and joins serialize; `heph merge status A` re-restacks every staged child (with a re-gate) each time it runs.
+

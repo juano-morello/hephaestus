@@ -137,6 +137,24 @@ user how to go on: a hint (`--scope` for a file), a plan revision, or a new Brie
 `heph status <run>` shows where a run is at any time; `heph status` lists all runs.
 `heph cancel <run>` stops one for good; only do that when the user asks.
 
+## 5. Stacking and parallel units
+
+**Stacking.** When the user wants a change that builds on another run's unmerged work, submit it
+with `heph new --brief <file> --stack-on <run>` (the parent must be `built` or `staged`). The
+child builds on the parent's branch and stages on its own; `heph status <child>` shows
+`stacked on <parent> (<status>)`. It cannot be merged before its parent: `heph watch <child>`
+ends with `waiting for <parent>`, and `heph approve merge <child>` says the same until the parent
+is merged. When the parent merges, heph restacks the child onto the target by itself (and moves
+its pull request base). If that restack stops, tell the user what `heph explain <child>` shows;
+after it is fixed, `heph approve merge <child>` only restacks and does not merge, so the user
+reviews the result and approves a second time. A failed or cancelled parent blocks its children.
+Don't stack unless the user asked or the second change really needs the first.
+
+**Parallel units.** `limits.parallel` (default 1; `heph config explain` shows it) lets independent
+units of one plan build at the same time. It is opt-in and the user's setting: don't change it.
+With it above 1, `heph status <run>` lists the attempts in flight, and a pause waits for the ones
+running to finish first. Everything else (hints, escalations, watching) works the same.
+
 ## Don'ts
 
 - Don't run `heph approve ...`, ever, even if asked to "just approve it": tell the user the

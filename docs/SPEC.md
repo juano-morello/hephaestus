@@ -37,6 +37,7 @@ Core properties:
 
 - A **loop** lives inside a node: produce, check, correct, repeat until green. Max 3 attempts per unit.
 - A **graph** lives between nodes: split, fan out, merge, gate, send back.
+- **Fan-out as built.** With `limits.parallel` above 1 (default 1, opt-in) the engine runs independent units at the same time from a ready set: a unit is ready when its derived-edge predecessors are accepted, the plan gate's `tests_passable` rule holds over what is actually accepted, its scope (plus `hint --scope` additions) overlaps no in-flight unit's scope in the same repo, and a slot is free. The first escalation, stall, `blocked` or rate limit *drains* the pool (no new starts; in-flight units finish and are accepted if green) and then one `run.paused` is written (reason precedence: handoff, user, rate limit). Accepted attempts join the run branch under a per-repo lock: a fast-forward when the tip is where the attempt started, otherwise a cherry-pick replay onto the new tip and a re-gate of tests, typecheck and lint on the combined tree (a `join` gate records a replay conflict). OMP session creation is serialized process-wide. With `parallel` 1 the order and events are the sequential loop's.
 - A check is something a program can evaluate. "Looks good", "model is confident" and "no errors raised" are not checks.
 
 ### Node kinds
@@ -143,6 +144,7 @@ Rules:
 - Diff-scope gates are path-based on project roots (monorepo safety).
 - Merge is always a set, ordered by `depends_on`, via staging refs, then fast-forward all at once. A changeset never half-lands.
 - Worktrees are per unit per repo.
+- **Stacked changesets.** A run can be built on another run's unmerged branch (`heph new --stack-on <run>`; the parent must be `built` or `staged`). In each repo the child's base is the nearest ancestor in the `stack_on` chain that is built or staged and has `heph/<id>` in that repo (finished ancestors are skipped, the target is the fallback); any other ancestor status makes the stack unresolvable. The child's fork point is derived from `Heph-Run` trailers, not stored. It lands with `git rebase --onto <onto> <fork point>`, opens its PR with the parent's branch as base while the parent is unmerged, and cannot merge until the parent is finished; when the parent finishes, staged children are restacked onto the target and their PR base is retargeted. See `docs/superpowers/specs/2026-11-05-stacking-fanout-design.md`.
 
 ---
 
@@ -248,7 +250,7 @@ Event = {
 ### Event types (v0)
 
 ```
-run.created            (owner_node)
+run.created            (owner_node, stack_on?: the run this one is stacked on)
 run.plan_ready
 plan.answer            (attempt, outcome: valid | invalid | escalated, failures; one per planner answer)
 run.plan_escalated     (reasons; the run waits for a revised Brief)
@@ -274,7 +276,7 @@ effect.done            (effect, key, state: applied | confirmed | abandoned, sha
 
 ### Projections
 
-`runs`, `units`, `attempts`, `gate_stats`, `usage`. Rebuildable anytime from events. CLI status, dashboard and widgets read projections only.
+`runs` (with `stack_on`), `units`, `attempts`, `gate_stats`, `usage`. Rebuildable anytime from events; the projection version bumps when a column is added (4 with `stack_on`), so older ledgers rebuild. A strict event schema means an older node rejects a `run.created` carrying `stack_on` on sync (mixed-version nodes are not supported for stacked runs). CLI status, dashboard and widgets read projections only.
 
 ### Rules
 
@@ -590,7 +592,7 @@ OMP has no pluggable execution backend, and its built-in file tools run in the h
 
 Every side effect writes an intent event, performs the effect, writes a confirmation. On resume, intents without confirmations are reconciled against reality.
 
-The intent is `effect.intended` and the confirmation `effect.done`, matched by a deterministic `key` (e.g. `run_branch_advance:<repo>:<unit>:a<n>`). Effects: `run_branch_reset`, `run_branch_advance`, `rebase`, `push`, `staging_ref`, `pr_open`, `pr_edit`, `pr_merge`, `target_advance`. The events that justify an effect are written with its intent, and those that follow from it with its confirmation, in one transaction each (a green attempt's verdict with the advance intent, `unit.accepted` with the advance's done), so a crash can't split them. Reconciling a pending intent writes its `effect.done`:
+The intent is `effect.intended` and the confirmation `effect.done`, matched by a deterministic `key` (e.g. `run_branch_advance:<repo>:<unit>:a<n>`). Effects: `run_branch_reset`, `run_branch_advance`, `rebase`, `push`, `staging_ref`, `pr_open`, `pr_edit`, `pr_retarget`, `pr_merge`, `target_advance`. `rebase` keys carry the onto sha (`rebase:<repo>:<onto7>`) because a stacked repo can rebase twice. `pr_retarget` (`PullRequests.setBase`; its `after` is a branch name, the only effect where it is not a sha) moves a restacked child's PR base to the target: `confirmed` when the base already is the target, else redone. The events that justify an effect are written with its intent, and those that follow from it with its confirmation, in one transaction each (a green attempt's verdict with the advance intent, `unit.accepted` with the advance's done), so a crash can't split them. Reconciling a pending intent writes its `effect.done`:
 
 - `confirmed`: reality already matches (the ref is at `after`, the PR exists or is merged).
 - `applied`: it can be finished from the intent alone (a run-branch advance whose branch is still at `before`).
@@ -612,6 +614,8 @@ A build is fresh when there is no `node.started` (build) since the latest `run.p
 
 - Worker interrupted: attempt marked `interrupted` (does not count against the 3), worktree reset, restart with a fresh pack. Attempt numbers continue across the run; they are never reused.
 - Gate interrupted: re-run.
+- Lost pause: a crash can leave a run `running` after a unit escalated or stalled and the drain finished but before `run.paused`. Resume detects it (an open `unit.escalated` or `unit.stalled` with no later pause) and writes the pause instead of granting fresh attempts.
+- Parallel join: the replay of an attempt onto a moved run-branch tip is attempt-local work (not an effect), redone on resume; `run_branch_advance` reconciles as before. Every open attempt of a parallel build is interrupted on resume.
 - Accepted units are never redone. Their files still lock later units (from the recorded run-branch advance).
 - Escalated unit: resuming the run gives it a fresh set of attempts, with its last Return and any new hints.
 - Planner interrupted: replan from the brief (`heph plan revise <run>`); the plan exists only at `run.plan_ready`.
@@ -628,7 +632,7 @@ A build is fresh when there is no `node.started` (build) since the latest `run.p
 3. Emits `run.handed_off`, syncs events and blobs
 4. New owner reconciles and resumes
 
-As built in v0: the owner interrupts the attempt in flight (it is marked interrupted with reason `handoff` and does not count; waiting is not built yet), pushes the run branches (`push` effects), writes `run.handed_off`, syncs, and asks the new owner to take the run. The new owner makes or finds its checkout, fetches the run branches, and resumes without redoing accepted units (`run.resumed`, reason `handoff`). A handoff stopped at any step is finished by running it again on the old owner. A handoff is refused when a touched repo has no remote, and when the new owner's check of its checkout fails (section 7); either way the build goes on where it is. A `heph run` following the build keeps following it at the new owner until it ends there.
+As built in v0: the owner interrupts the attempt in flight (it is marked interrupted with reason `handoff` and does not count; waiting is not built yet), pushes the run branches (`push` effects), writes `run.handed_off`, syncs, and asks the new owner to take the run. The new owner makes or finds its checkout, fetches the run branches, and resumes without redoing accepted units (`run.resumed`, reason `handoff`). Handoff is unchanged by fan-out: it interrupts every in-flight attempt (reason `handoff`). A handoff stopped at any step is finished by running it again on the old owner. A handoff is refused when a touched repo has no remote, and when the new owner's check of its checkout fails (section 7); either way the build goes on where it is. A `heph run` following the build keeps following it at the new owner until it ends there.
 
 `heph adopt <run>`: forced takeover when the old owner is unreachable. Recorded loudly; the only path that could produce two writers. In v0 it is refused while the owner answers `hello`, unless `--force`.
 
@@ -713,7 +717,7 @@ As built in v0: `heph daemon` runs in the foreground (under systemd or launchd i
 ### CLI (primary)
 
 ```sh
-heph new feature --brief brief.yaml [--on local|devserver] [--json]
+heph new feature --brief brief.yaml [--on local|devserver] [--stack-on <run>] [--json]
 heph plan show <run>
 heph plan revise <run> "<instructions>"
 heph run <run>
@@ -738,6 +742,8 @@ heph ui
 ```
 
 Every command supports `--json` with stable, versioned output schemas: `{ schema: 1, command, ok, data }` or `{ schema: 1, command, ok: false, error: { message } }` with a non-zero exit.
+
+`heph new --stack-on <run>` builds the run on another run's branch (section 4). `heph status <run>` prints `stacked on <parent> (<parent's status>)` for a stacked run and, when more than one attempt runs, `in flight: T1/a1, T2/a1`; `heph explain` shows it on the `run created` line. `heph watch <run>` ends a staged child of an unmerged parent with `waiting for <parent>`. `heph approve merge <child>` before its parent is merged says `waiting for <parent>`; after a stopped restack it restacks and returns `restacked` without merging, and the user approves again. `limits.parallel` (default 1) is shown by `heph config explain`.
 
 `heph run` on a run whose latest plan isn't approved yet waits for the approval, then builds; it prints the build's events from when it starts.
 
@@ -836,7 +842,8 @@ Small MMORPG across three projects: Go server, Godot client, web. Optional share
    6. CLI with `--json`
    7. Resume and idempotency
    8. Node model: coordinator/runner split, local fallback, sync, handoff
-3. **Then:** parallel fan-out, cross-node runners, routing tiers with escalation, MCP server, dashboard, MCP Apps widgets.
+3. **Then:** cross-node runners, routing tiers with escalation, MCP server, dashboard, MCP Apps widgets.
+   Built (2026-11-05): parallel fan-out (`limits.parallel`, drain, join) and stacking (`--stack-on`, restack, `pr_retarget`). Not built: multiple parents, optimistic joins, rate-limit throttling, cross-node runners.
 4. **v1.5:** approvals.
 5. **Later:** retro and constraint store, learned routing, additional worker backends.
 

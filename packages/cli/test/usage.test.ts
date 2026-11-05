@@ -27,6 +27,7 @@ describe("usage", () => {
       expect(text).toStartWith("usage: heph <command> [options]");
       expect(text).toContain("  new --brief <file>");
       expect(text).toContain("  approve merge <run>");
+      expect(text).toContain("--stack-on <run>");
       expect(text).toContain("  doctor");
       // Node plumbing stays out of the list.
       expect(text).not.toContain("  peer");
