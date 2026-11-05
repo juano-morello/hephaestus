@@ -26,6 +26,7 @@ const MILESTONES = new Set([
   "unit.returned",
   "unit.accepted",
   "unit.escalated",
+  "unit.stalled",
   "unit.needs_input",
   "merge.staged",
   "merge.committed",

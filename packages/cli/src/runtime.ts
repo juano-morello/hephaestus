@@ -652,6 +652,11 @@ export function describe(e: { type: string; data: unknown; attempt?: number | un
       return `attempt ${e.attempt} started (${d.role}, ${d.model})`;
     case "unit.returned":
       return `returned: ${((d.reasons as { gate: string; reason: string }[]) ?? []).map((r) => `${r.gate}: ${r.reason}`).join("; ")}`;
+    case "unit.stalled": {
+      const [a, b] = d.attempts as [number, number];
+      const gates = [...new Set((d.failing as { gate: string }[]).map((f) => f.gate))];
+      return `stalled: ${gates.join(", ")} failed the same way on a${a} and a${b}`;
+    }
     case "run.plan_ready":
       return `plan ready: ${((d.plan as Plan).tasks ?? []).map((t) => t.id).join(", ")}`;
     case "run.plan_escalated":

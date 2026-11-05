@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { describe as explainLine } from "../src/runtime.ts";
 import { isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
 
 const ev = (id: string, type: string, summary: string, unit_id?: string, attempt?: number) =>
@@ -42,6 +43,39 @@ describe("heph watch", () => {
       true,
     );
     expect(isMilestone(ev("5", "effect.done", "push done"))).toBe(false);
+  });
+
+  test("a stalled unit is a milestone and the run ends as waiting for you", async () => {
+    expect(isMilestone(ev("1", "unit.stalled", "stalled", "T2"))).toBe(true);
+    const stalled = ev(
+      "2",
+      "unit.stalled",
+      "stalled: tests failed the same way on a1 and a2",
+      "T2",
+    );
+    const paused = ev("3", "run.paused", "run paused: waiting for you");
+    const { lines, r } = await run([{ status: "paused", events: [stalled, paused] }]);
+    expect(lines).toEqual([
+      "r1: paused",
+      "T2 stalled: tests failed the same way on a1 and a2",
+      "run paused: waiting for you",
+      "r1: waiting for you; heph explain r1",
+    ]);
+    expect(r).toEqual({ run_id: "r1", status: "paused", reason: "waiting for you" });
+  });
+
+  test("explain says which gate failed the same way", () => {
+    const data = {
+      signature: "abc",
+      attempts: [1, 2],
+      failing: [
+        { gate: "impl", reason: "a" },
+        { gate: "impl", reason: "b" },
+      ],
+    };
+    expect(explainLine({ type: "unit.stalled", data })).toBe(
+      "stalled: impl failed the same way on a1 and a2",
+    );
   });
 
   test("prints new milestones and ends when staged", async () => {
