@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type Api, ApiError } from "../src/api.ts";
 import { App } from "../src/app.tsx";
@@ -50,7 +49,12 @@ describe("Run graph", () => {
       expect(n.textContent).toContain(status);
       expect(n.getAttribute("aria-label")).toContain(status);
     }
-    expect(node("T2").querySelector("rect[stroke='var(--accent)']")).toBeTruthy();
+    const body = (id: string) => node(id).querySelector("rect:not([data-ring])") as SVGRectElement;
+    expect(body("T1").getAttribute("stroke")).toBe("var(--primary)");
+    expect(body("T2").getAttribute("stroke")).toBe("var(--accent)");
+    expect(body("T3").getAttribute("stroke")).toBe("var(--border)");
+    expect(body("T3").getAttribute("stroke-dasharray")).toBeTruthy();
+    expect(body("T1").getAttribute("stroke-dasharray")).toBeNull();
     expect(document.querySelectorAll("[data-edge]").length).toBe(2);
   });
 
@@ -101,13 +105,35 @@ describe("Run unit panel", () => {
   });
 
   test("switching to another attempt tab shows that attempt", async () => {
-    render(<Run id="r-par" api={fakeApi(stalledRun)} />);
+    const two: Dashboard = {
+      ...stalledRun,
+      attempts: [
+        {
+          unit_id: "T2",
+          attempt: 1,
+          status: "failed",
+          gates: [{ gate: "lint", verdict: "fail", reason: "R1 first reason", evidence: [] }],
+        },
+        {
+          unit_id: "T2",
+          attempt: 2,
+          status: "accepted",
+          gates: [{ gate: "lint", verdict: "pass", reason: "R2 second reason", evidence: [] }],
+        },
+      ],
+    };
+    render(<Run id="r-stall" api={fakeApi(two)} />);
     await screen.findByLabelText("Unit graph");
-    fireEvent.click(node("T1"));
-    const panel = screen.getByRole("region", { name: "Unit T1" });
-    expect(within(panel).getAllByRole("tab").length).toBe(1);
-    expect(within(panel).getByText("pass")).toBeTruthy();
-    expect(within(panel).getByText("ok")).toBeTruthy();
+    fireEvent.click(node("T2"));
+    const panel = screen.getByRole("region", { name: "Unit T2" });
+    expect(within(panel).getByText("R2 second reason")).toBeTruthy();
+    expect(within(panel).queryByText("R1 first reason")).toBeNull();
+    const tab1 = within(panel).getByRole("tab", { name: "Attempt 1" });
+    expect(tab1.getAttribute("aria-selected")).toBe("false");
+    fireEvent.mouseDown(tab1, { button: 0 });
+    expect(tab1.getAttribute("aria-selected")).toBe("true");
+    expect(within(panel).getByText("R1 first reason")).toBeTruthy();
+    expect(within(panel).queryByText("R2 second reason")).toBeNull();
   });
 
   test('a unit not in the current plan is labeled "not in current plan"', async () => {
@@ -241,9 +267,31 @@ describe("Run routing", () => {
 });
 
 describe("reduced motion", () => {
-  test("the graph honors the user's reduced-motion setting", () => {
-    const src = readFileSync(new URL("../src/components/unit-graph.tsx", import.meta.url), "utf8");
-    expect(src).toContain('reducedMotion="user"');
-    expect(src).toContain("useReducedMotion");
+  const realMatch = window.matchMedia;
+  afterEach(() => {
+    window.matchMedia = realMatch;
+  });
+  const pulse = () => node("T2").querySelector("rect:not([data-ring])")?.getAttribute("data-pulse");
+
+  test("the running node pulses by default", async () => {
+    render(<Run id="r-par" api={fakeApi(parallelRun)} />);
+    await screen.findByLabelText("Unit graph");
+    expect(pulse()).toBe("on");
+  });
+
+  test("with prefers-reduced-motion: reduce the running node does not pulse", async () => {
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("prefers-reduced-motion"),
+      media: q,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      onchange: null,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    render(<Run id="r-par" api={fakeApi(parallelRun)} />);
+    await screen.findByLabelText("Unit graph");
+    expect(pulse()).toBe("off");
   });
 });

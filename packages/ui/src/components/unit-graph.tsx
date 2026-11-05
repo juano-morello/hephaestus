@@ -1,5 +1,5 @@
-import { MotionConfig, motion, useReducedMotion } from "motion/react";
-import { useId } from "react";
+import { MotionConfig, motion } from "motion/react";
+import { useEffect, useId, useState } from "react";
 import { type Layout, NODE_H, NODE_W } from "../graph-layout.ts";
 
 type Look = { glyph: string; stroke: string; fill: string; dash?: string; text: string };
@@ -31,6 +31,24 @@ const LOOKS: Record<string, Look> = {
 const FALLBACK: Look = { ...LOOKS.pending, glyph: "·" } as Look;
 export const lookOf = (status: string): Look => LOOKS[status] ?? FALLBACK;
 
+const QUERY = "(prefers-reduced-motion: reduce)";
+
+const mql = () => (typeof matchMedia === "function" ? matchMedia(QUERY) : undefined);
+
+/** Live prefers-reduced-motion, read from matchMedia on each mount (motion's own hook caches it). */
+function usePrefersReducedMotion(): boolean {
+  const [reduce, set] = useState(() => mql()?.matches ?? false);
+  useEffect(() => {
+    const m = mql();
+    if (!m) return;
+    const on = () => set(m.matches);
+    on();
+    m.addEventListener?.("change", on);
+    return () => m.removeEventListener?.("change", on);
+  }, []);
+  return reduce;
+}
+
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 export type UnitGraphProps = {
@@ -43,7 +61,7 @@ export type UnitGraphProps = {
 
 export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }: UnitGraphProps) {
   const marker = useId();
-  const reduce = useReducedMotion();
+  const reduce = usePrefersReducedMotion();
   const at = new Map(layout.nodes.map((n) => [n.id, n]));
   return (
     <MotionConfig reducedMotion="user">
