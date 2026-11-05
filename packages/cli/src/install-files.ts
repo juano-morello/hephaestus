@@ -111,3 +111,74 @@ export function withApproveDenied(settings: Settings | undefined): Settings {
   if (deny.includes(APPROVE_DENY)) return s;
   return { ...s, permissions: { ...s.permissions, deny: [...deny, APPROVE_DENY] } };
 }
+
+/** Runs a command; undefined when it can't be started (not installed). */
+export type Runner = (cmd: string[]) => { exitCode: number; stdout: string } | undefined;
+
+/** The manual command that registers heph's MCP server with Claude Code. */
+export const claudeMcpAddCommand = (heph: string) => [
+  "claude",
+  "mcp",
+  "add",
+  "--scope",
+  "user",
+  "heph",
+  "--",
+  heph,
+  "mcp",
+];
+
+/**
+ * Registers `heph mcp` with Claude Code through its CLI, once: nothing when it is already
+ * registered with this command, a re-add when it differs, a manual command to print when
+ * `claude` is not installed or refuses. Never throws.
+ */
+export function registerClaudeMcp(run: Runner, heph: string): { done: boolean; message: string } {
+  const manual = claudeMcpAddCommand(heph).join(" ");
+  const got = run(["claude", "mcp", "get", "heph"]);
+  if (!got)
+    return { done: false, message: `claude is not on PATH; register heph's tools with: ${manual}` };
+  if (got.exitCode === 0) {
+    const same = got.stdout.split("\n").some((l) => l.trim() === `Command: ${heph}`);
+    if (same)
+      return { done: true, message: "heph's MCP server already registered with Claude Code" };
+    run(["claude", "mcp", "remove", "--scope", "user", "heph"]);
+    const r = run(claudeMcpAddCommand(heph));
+    return r?.exitCode === 0
+      ? {
+          done: true,
+          message: "re-registered heph's MCP server with Claude Code (its command differed)",
+        }
+      : {
+          done: false,
+          message: `could not update heph's MCP server in Claude Code; run: ${manual}`,
+        };
+  }
+  const r = run(claudeMcpAddCommand(heph));
+  return r?.exitCode === 0
+    ? { done: true, message: "registered heph's MCP server with Claude Code" }
+    : {
+        done: false,
+        message: `could not register heph's MCP server with Claude Code; run: ${manual}`,
+      };
+}
+
+const tomlString = (s: string) => JSON.stringify(s);
+
+/**
+ * Codex's config.toml with a `[mcp_servers.heph]` table running `heph mcp`: any existing heph
+ * table (and its sub-tables) is replaced, everything else kept as it was.
+ */
+export function withHephMcp(toml: string | undefined, heph: string): string {
+  const table = `[mcp_servers.heph]\ncommand = ${tomlString(heph)}\nargs = ["mcp"]\n`;
+  const lines = (toml ?? "").split("\n");
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    const header = line.match(/^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/);
+    if (header) skipping = /^mcp_servers\s*\.\s*"?heph"?(\s*\.|$)/.test(header[1] ?? "");
+    if (!skipping) kept.push(line);
+  }
+  const rest = kept.join("\n").replace(/\s+$/, "");
+  return rest === "" ? table : `${rest}\n\n${table}`;
+}

@@ -32,8 +32,11 @@ import {
   LAUNCHD_LABEL,
   launchdPlist,
   nodeIdFrom,
+  type Runner,
+  registerClaudeMcp,
   systemdUnit,
   withApproveDenied,
+  withHephMcp,
   withHephUnsandboxed,
 } from "../src/install-files.ts";
 
@@ -187,6 +190,27 @@ async function installHere() {
     say(
       `Claude Code: skill in ${skill}; in ${settingsFile}, heph approve denied and heph run outside the Bash sandbox`,
     );
+  }
+
+  // The MCP server (`heph mcp`) for the agents' hosts: Claude Code through its CLI, Codex in config.toml.
+  if (!values["no-claude"]) {
+    const run: Runner = (cmd) => {
+      try {
+        const r = Bun.spawnSync(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        return { exitCode: r.exitCode ?? 1, stdout: r.stdout.toString() };
+      } catch {
+        return undefined;
+      }
+    };
+    say(registerClaudeMcp(run, heph).message);
+    const codex = join(home, ".codex");
+    if (existsSync(codex)) {
+      const file = join(codex, "config.toml");
+      const before = existsSync(file) ? readFileSync(file, "utf8") : undefined;
+      const after = withHephMcp(before, heph);
+      if (after !== before) writeFileSync(file, after);
+      say(`Codex: heph's MCP server in ${file}`);
+    }
   }
 
   say(sh([heph, "--version"]).trim());
