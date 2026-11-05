@@ -641,6 +641,76 @@ describe("heph_watch", () => {
     });
   }
 
+  for (const [name, parent, lines, next] of [
+    [
+      "waiting_for_parent",
+      "staged",
+      ["r1: staged", "staged", "waiting for P"],
+      "wait for P: tell the user to merge it first (`heph approve merge P`, themselves); then r1 is restacked and the user approves it",
+    ],
+    [
+      "blocked_by_parent",
+      "failed",
+      ["r1: staged", "staged", "stacked on P (failed): rebuild r1"],
+      "explain to the user that its parent cannot land, so r1 has to be rebuilt; ask; do not retry",
+    ],
+  ] as const) {
+    test(`a stacked run with a ${parent} parent is ${name}, in valid structured output`, async () => {
+      const { client: d } = fakeDaemon({
+        status: () => ({ ...statusOf("staged"), stack_on: { run_id: "P", status: parent } }),
+        explain: () => ({ run_id: "r1", events: [ev("e1", "merge.staged", "staged")] }),
+      });
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+      for (const tool of ["heph_watch", "heph_run"]) {
+        const r = await client.callTool({ name: tool, arguments: { run: "r1" } });
+        expect(r.isError).toBeFalsy();
+        expect(r.structuredContent).toMatchObject({ outcome: name, lines: [...lines] });
+        expect(textOf(r)).toContain(`next: ${next}`);
+      }
+      await client.close();
+    });
+  }
+
+  test("a stalled pause is waiting_for_you", async () => {
+    const { client: d } = outcomeCase("paused", [
+      ev("e1", "unit.stalled", "stalled: tests failed the same way on a1 and a2", {
+        unit_id: "u1",
+      }),
+      ev("e2", "run.paused", "run paused: waiting for you"),
+    ]);
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1", since: "e0" } });
+    expect(r.structuredContent).toEqual({
+      run_id: "r1",
+      status: "paused",
+      lines: ["u1 stalled: tests failed the same way on a1 and a2", "run paused: waiting for you"],
+      cursor: "e2",
+      outcome: "waiting_for_you",
+    });
+    expect(textOf(r)).toContain("next: explain to the user and ask; do not retry");
+    await client.close();
+  });
+
+  test("the heph_watch description lists every outcome", async () => {
+    const { client: d } = fakeDaemon({});
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const { tools } = await client.listTools();
+    const desc = tools.find((t) => t.name === "heph_watch")?.description ?? "";
+    for (const o of [
+      "running",
+      "awaiting_plan_approval",
+      "waiting_for_you",
+      "planner_escalated",
+      "waiting_for_parent",
+      "blocked_by_parent",
+      "staged",
+      "finished",
+      "failed",
+    ])
+      expect(desc).toContain(o);
+    await client.close();
+  });
+
   test("a daemon that fails 5 times then recovers gives a normal result", async () => {
     let fails = 5;
     const clock = fakeClock();

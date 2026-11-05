@@ -261,7 +261,7 @@ describe("watchStep", () => {
       { status: "staged", events: [A], stack_on: { run_id: "P", status: "staged" } },
     ]);
     const r = await watchStep("r1", s.view, { waitMs: 0, ...clock() });
-    expect(r.outcome).toBe("staged");
+    expect(r.outcome).toBe("waiting_for_parent");
     expect(r.lines.at(-1)).toBe("waiting for P");
   });
 
@@ -284,5 +284,78 @@ describe("watchStep", () => {
     expect(text).toContain("wait for P");
     expect(text).toContain("heph approve merge P");
     expect(text).not.toContain("review, then run");
+  });
+
+  test("stacked behind an unmerged parent: waiting_for_parent, even without news", async () => {
+    const staged = ev("05", "merge.staged", "staged");
+    const s = script([
+      { status: "staged", events: [A, staged], stack_on: { run_id: "P", status: "built" } },
+    ]);
+    const c = clock();
+    const t0 = c.now();
+    const r = await watchStep("r1", s.view, { since: "05", waitMs: 600_000, ...c });
+    expect(c.now() - t0).toBe(0);
+    expect(r).toMatchObject({ outcome: "waiting_for_parent", waiting_for: "P", cursor: "05" });
+    expect(r.blocked).toBeUndefined();
+    expect(r.lines).toEqual(["waiting for P"]);
+    expect(watchText(r)).toContain(
+      "next: wait for P: tell the user to merge it first (`heph approve merge P`, themselves); then r1 is restacked and the user approves it",
+    );
+  });
+
+  test("a parent that failed: blocked_by_parent with the rebuild line", async () => {
+    const staged = ev("05", "merge.staged", "staged");
+    const s = script([
+      { status: "staged", events: [A, staged], stack_on: { run_id: "P", status: "failed" } },
+    ]);
+    const r = await watchStep("r1", s.view, { since: "01", waitMs: 600_000, ...clock() });
+    expect(r).toMatchObject({
+      outcome: "blocked_by_parent",
+      blocked: "stacked on P (failed): rebuild r1",
+    });
+    expect(r.waiting_for).toBeUndefined();
+    expect(r.lines).toEqual(["staged", "stacked on P (failed): rebuild r1"]);
+    const text = watchText(r);
+    expect(text).toContain(
+      "next: explain to the user that its parent cannot land, so r1 has to be rebuilt; ask; do not retry",
+    );
+    expect(text).not.toMatch(/approve/);
+  });
+
+  test("a cancelled parent blocks too; a finished one leaves a plain staged run", async () => {
+    const cancelled = await watchStep(
+      "r1",
+      script([{ status: "staged", events: [A], stack_on: { run_id: "P", status: "cancelled" } }])
+        .view,
+      { waitMs: 0, ...clock() },
+    );
+    expect(cancelled.outcome).toBe("blocked_by_parent");
+    expect(cancelled.lines.at(-1)).toBe("stacked on P (cancelled): rebuild r1");
+    const landed = await watchStep(
+      "r1",
+      script([{ status: "staged", events: [A], stack_on: { run_id: "P", status: "finished" } }])
+        .view,
+      { waitMs: 0, ...clock() },
+    );
+    expect(landed.outcome).toBe("staged");
+    expect(landed.lines).toEqual(["r1: staged", "run resumed"]);
+  });
+
+  test("a stalled unit pauses the run: waiting_for_you, with the stall line", async () => {
+    const stalled = ev(
+      "05",
+      "unit.stalled",
+      "stalled: tests failed the same way on a1 and a2",
+      "T2",
+    );
+    const paused = ev("06", "run.paused", "run paused: waiting for you");
+    const s = script([{ status: "paused", events: [A, stalled, paused] }]);
+    const r = await watchStep("r1", s.view, { since: "01", waitMs: 600_000, ...clock() });
+    expect(r.outcome).toBe("waiting_for_you");
+    expect(r.lines).toEqual([
+      "T2 stalled: tests failed the same way on a1 and a2",
+      "run paused: waiting for you",
+    ]);
+    expect(watchText(r)).toContain("next: explain to the user and ask; do not retry");
   });
 });

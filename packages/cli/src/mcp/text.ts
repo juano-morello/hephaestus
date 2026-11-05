@@ -94,11 +94,11 @@ export const nextFor = (
     case "waiting_for_you":
     case "planner_escalated":
       return "explain to the user and ask; do not retry";
+    case "waiting_for_parent":
+      return `wait for ${stack.waiting_for ?? "its parent"}: tell the user to merge it first (\`heph approve merge ${stack.waiting_for ?? "<parent>"}\`, themselves); then ${runId} is restacked and the user approves it`;
+    case "blocked_by_parent":
+      return `explain to the user that its parent cannot land, so ${runId} has to be rebuilt; ask; do not retry`;
     case "staged":
-      if (stack.waiting_for)
-        return `wait for ${stack.waiting_for}: tell the user to merge it first (\`heph approve merge ${stack.waiting_for}\`, themselves); then ${runId} is restacked and the user approves it`;
-      if (stack.blocked)
-        return "explain to the user that its parent cannot land; ask; do not retry";
       return `tell the user to review, then run \`heph approve merge ${runId}\` themselves`;
     case "finished":
       return "tell the user the run finished";

@@ -382,7 +382,7 @@ Feedback from using heph inside Claude Code: nothing told the agent what a backg
 
 ### MCP server: follow-ups and known issues (2026-11-05)
 
-- `mcp/watch.ts` duplicates the status-to-outcome mapping from the CLI's `watch.ts`. Extract a shared `watchStep` once the stall-detection change in `watch.ts` lands, so both surfaces get it.
+- `heph watch` and `heph_watch` share one classification step, `classifyRun` in `watch.ts` (plus `heartbeatLine`), so stalled pauses and stacked runs come out the same on both. `heph_watch` reports a stacked child as `waiting_for_parent` or `blocked_by_parent`; it used to say `staged`.
 - The installer does not register the server with hosts yet: `claude mcp add heph -- heph mcp` for Claude Code, a config entry for Codex.
 - The skill and AGENTS.md should get a paragraph preferring the tools when present. The two files must change together (a test keeps them identical).
 - `heph_watch` ignores request cancellation (`extra.signal`); a cancelled call runs out its poll.

@@ -1,15 +1,16 @@
-// A cursor-based long-poll of a run's milestones, for the MCP heph_watch tool. Same polling and
-// classification as `watchRun` (src/watch.ts), but stateless: the caller carries the cursor.
-import { blockedByParent, isMilestone, type WatchView, waitingFor, watchLine } from "../watch.ts";
+// A cursor-based long-poll of a run's milestones, for the MCP heph_watch tool. Same polling as
+// `watchRun` (src/watch.ts) and the same classification (classifyRun), but stateless: the caller
+// carries the cursor.
+import {
+  classifyRun,
+  heartbeatLine,
+  isMilestone,
+  type WatchOutcome,
+  type WatchView,
+  watchLine,
+} from "../watch.ts";
 
-export type Outcome =
-  | "running"
-  | "awaiting_plan_approval"
-  | "waiting_for_you"
-  | "planner_escalated"
-  | "staged"
-  | "finished"
-  | "failed";
+export type Outcome = WatchOutcome;
 
 export type WatchStepResult = {
   run_id: string;
@@ -72,19 +73,10 @@ export async function watchStep(
     if (catchUp) say(`${id}: ${status}`);
     for (const e of fresh) say(watchLine(e));
 
-    const lastPause = events.findLast((e) => e.type === "run.paused");
-    let outcome: Outcome = "running";
-    if (status === "planned" && !s.plan_approved) outcome = "awaiting_plan_approval";
-    else if (status === "escalated") outcome = "planner_escalated";
-    else if (status === "paused" && lastPause?.summary.includes("waiting for you"))
-      outcome = "waiting_for_you";
-    else if (status === "staged" || status === "finished" || status === "failed") outcome = status;
-
-    const blocked = blockedByParent(id, s);
-    if (blocked && (catchUp || fresh.length > 0 || outcome !== "running")) say(blocked);
-    const parent = waitingFor(s);
-    if (parent && (catchUp || fresh.length > 0 || outcome !== "running"))
-      say(`waiting for ${parent}`);
+    const c = classifyRun(id, s, events);
+    const outcome = c.outcome;
+    // Only a stop has notes (a stacked child's parent line), so they always end the step.
+    for (const l of c.notes) say(l);
 
     const done = (): WatchStepResult => ({
       run_id: id,
@@ -92,28 +84,14 @@ export async function watchStep(
       lines,
       cursor,
       outcome,
-      waiting_for: parent,
-      blocked,
+      waiting_for: c.waiting_for,
+      blocked: c.blocked,
     });
     if (catchUp || fresh.length > 0 || outcome !== "running") return done();
 
     if (now() >= deadline) {
       // Attempts run for minutes without an event: say so, or the caller thinks the run is dead.
-      if (status === "running" && now() - start >= beat) {
-        const open = events.findLast((e) => e.type === "unit.attempt.started");
-        const closed =
-          open &&
-          events.some(
-            (e) =>
-              e.id > open.id &&
-              e.unit_id === open.unit_id &&
-              (e.type === "unit.attempt.finished" || e.type === "unit.attempt.interrupted"),
-          );
-        if (open && !closed) {
-          const min = open.ts ? Math.round((now() - Date.parse(open.ts)) / 60_000) : 0;
-          say(watchLine({ ...open, summary: `still working, ${min} min into this attempt` }));
-        } else say(`${id}: still running`);
-      }
+      if (status === "running" && now() - start >= beat) say(heartbeatLine(id, events, now()));
       return done();
     }
     await sleep(Math.min(interval, Math.max(0, deadline - now())));

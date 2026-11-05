@@ -72,6 +72,101 @@ export type WatchView = {
 
 export type Watched = { run_id: string; status: string; reason?: string };
 
+/** Where a run stands for a watcher; every value but `running` is a stop (see classifyRun). */
+export type WatchOutcome =
+  | "running"
+  | "awaiting_plan_approval"
+  | "waiting_for_you"
+  | "planner_escalated"
+  | "waiting_for_parent"
+  | "blocked_by_parent"
+  | "staged"
+  | "finished"
+  | "failed";
+
+export type Classified = {
+  outcome: WatchOutcome;
+  /** Lines both watchers print at this stop: a stacked child's parent line. */
+  notes: string[];
+  /** Why the watch stopped, when the status alone does not say. */
+  reason?: string;
+  /** The parent a staged child still waits for to land. */
+  waiting_for?: string;
+  /** Why a staged child's parent can never land as it is. */
+  blocked?: string;
+};
+
+/**
+ * The one status-to-outcome step `heph watch` (watchRun) and the MCP heph_watch (mcp/watch.ts)
+ * share. Pure: a status answer and the run's events in, the outcome out. `built` (the instant
+ * before staging) and a pause that is not for the user (a rate limit) are still `running`.
+ * `awaiting_plan_approval` stops the MCP step; watchRun says it once and keeps watching.
+ */
+export function classifyRun(
+  id: string,
+  s: Awaited<ReturnType<WatchView["status"]>>,
+  events: WatchEvent[],
+): Classified {
+  const status = s.run.status;
+  if (status === "planned" && !s.plan_approved)
+    return { outcome: "awaiting_plan_approval", notes: [] };
+  if (status === "escalated")
+    return { outcome: "planner_escalated", notes: [], reason: "planner escalated" };
+  const last = events.findLast((e) => e.type === "run.paused");
+  // A stalled unit pauses the run with this summary too.
+  if (status === "paused" && last?.summary.includes("waiting for you"))
+    return { outcome: "waiting_for_you", notes: [], reason: "waiting for you" };
+  if (status === "staged") {
+    const blocked = blockedByParent(id, s);
+    if (blocked)
+      return { outcome: "blocked_by_parent", notes: [blocked], reason: blocked, blocked };
+    const parent = waitingFor(s);
+    if (parent)
+      return {
+        outcome: "waiting_for_parent",
+        notes: [`waiting for ${parent}`],
+        reason: `waiting for ${parent}`,
+        waiting_for: parent,
+      };
+    return { outcome: "staged", notes: [] };
+  }
+  if (status === "finished" || status === "failed") return { outcome: status, notes: [] };
+  return { outcome: "running", notes: [] };
+}
+
+/** heph watch's closing lines for a stop, with the CLI command to run next. */
+const stopLines = (id: string, status: string, c: Classified): string[] => {
+  switch (c.outcome) {
+    case "planner_escalated":
+      return [`${id}: the planner escalated; heph explain ${id}`];
+    case "waiting_for_you":
+      return [`${id}: waiting for you; heph explain ${id}`];
+    case "waiting_for_parent":
+    case "blocked_by_parent":
+      return [`${id}: staged`, ...c.notes];
+    case "staged":
+      return [`${id}: staged; review, then heph approve merge ${id}`];
+    default:
+      return [`${id}: ${status}`];
+  }
+};
+
+/** The line for a run that has been quiet a while: the open attempt and its age, or the run. */
+export const heartbeatLine = (id: string, events: WatchEvent[], now: number): string => {
+  const open = events.findLast((e) => e.type === "unit.attempt.started");
+  const closed =
+    open &&
+    events.some(
+      (e) =>
+        e.id > open.id &&
+        e.unit_id === open.unit_id &&
+        (e.type === "unit.attempt.finished" || e.type === "unit.attempt.interrupted"),
+    );
+  if (!open || closed) return `${id}: still running`;
+  const min = open.ts ? Math.round((now - Date.parse(open.ts)) / 60_000) : 0;
+  return watchLine({ ...open, summary: `still working, ${min} min into this attempt` });
+};
+
 /**
  * Prints new milestones until the run ends or needs the user: staged, finished, failed, the
  * planner's escalation, or a pause that waits for the user. Other pauses (a rate limit) are
@@ -122,37 +217,13 @@ export async function watchRun(
       seen = [seen ?? "", ...events.map((e) => e.id)].sort().at(-1) as string;
       const status = s.run.status;
       current = status;
-      const last = events.findLast((e) => e.type === "run.paused");
-      const waitingForUser = status === "paused" && last?.summary.includes("waiting for you");
-      if (status === "planned" && !s.plan_approved) {
+      const c = classifyRun(id, s, events);
+      if (c.outcome === "awaiting_plan_approval") {
         if (!told) say(`waiting for your approval: heph approve plan ${id}`);
         told = true;
-      } else if (status === "escalated") {
-        say(`${id}: the planner escalated; heph explain ${id}`);
-        return { run_id: id, status, reason: "planner escalated" };
-      } else if (waitingForUser) {
-        say(`${id}: waiting for you; heph explain ${id}`);
-        return { run_id: id, status, reason: "waiting for you" };
-      } else if (["staged", "finished", "failed", "built"].includes(status)) {
-        // `built` is the instant before staging; wait one more look for the staged line.
-        if (status !== "built") {
-          const blocked = blockedByParent(id, s);
-          if (blocked) {
-            say(`${id}: staged`);
-            say(blocked);
-            return { run_id: id, status, reason: blocked };
-          }
-          const parent = waitingFor(s);
-          if (parent) {
-            say(`${id}: staged`);
-            say(`waiting for ${parent}`);
-            return { run_id: id, status, reason: `waiting for ${parent}` };
-          }
-          say(
-            `${id}: ${status}${status === "staged" ? `; review, then heph approve merge ${id}` : ""}`,
-          );
-          return { run_id: id, status };
-        }
+      } else if (c.outcome !== "running") {
+        for (const l of stopLines(id, status, c)) say(l);
+        return { run_id: id, status, ...(c.reason ? { reason: c.reason } : {}) };
       }
     } catch (e) {
       if (++failures > (opts.retries ?? 30)) throw e;
@@ -161,21 +232,7 @@ export async function watchRun(
     if (current === "running" && now() - lastOut >= beat) {
       try {
         const { events } = await view.explain(id);
-        const open = events.findLast((e) => e.type === "unit.attempt.started");
-        const closed =
-          open &&
-          events.some(
-            (e) =>
-              e.id > open.id &&
-              e.unit_id === open.unit_id &&
-              (e.type === "unit.attempt.finished" || e.type === "unit.attempt.interrupted"),
-          );
-        const since = open?.ts && !closed ? Math.round((now() - Date.parse(open.ts)) / 60_000) : 0;
-        say(
-          open && !closed
-            ? `${watchLine({ ...open, summary: `still working, ${since} min into this attempt` })}`
-            : `${id}: still running`,
-        );
+        say(heartbeatLine(id, events, now()));
       } catch {
         // The next poll reports a real failure.
       }

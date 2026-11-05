@@ -18,7 +18,7 @@ import {
   statusText,
   watchText,
 } from "./text.ts";
-import { watchStep } from "./watch.ts";
+import { type Outcome, watchStep } from "./watch.ts";
 
 export type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -63,10 +63,15 @@ const OUTCOMES = [
   "awaiting_plan_approval",
   "waiting_for_you",
   "planner_escalated",
+  "waiting_for_parent",
+  "blocked_by_parent",
   "staged",
   "finished",
   "failed",
-] as const;
+] as const satisfies readonly Outcome[];
+// Every outcome watchStep can give is in the enum, or structured output would reject that stop.
+const _everyOutcome: [Exclude<Outcome, (typeof OUTCOMES)[number]>] extends [never] ? true : false =
+  true;
 const RunToolResult = z
   .object({
     run_id: z.string(),
@@ -356,7 +361,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
   server.registerTool(
     "heph_watch",
     {
-      description: `Wait up to wait_s seconds (default ${DEFAULT_WAIT_S}, at most ${MAX_WAIT_S}) for a run's next milestones and say what it needs. Pass the returned cursor as since on the next call; omit since the first time to catch up. When no cursor is returned, call again with since omitted, but not in a tight loop. Stop watching when the outcome is not running and do what next says; approvals are always the user's.`,
+      description: `Wait up to wait_s seconds (default ${DEFAULT_WAIT_S}, at most ${MAX_WAIT_S}) for a run's next milestones and say what it needs. Pass the returned cursor as since on the next call; omit since the first time to catch up. When no cursor is returned, call again with since omitted, but not in a tight loop. Outcomes: running (call again); awaiting_plan_approval; waiting_for_you (paused for the user, e.g. a stalled unit); planner_escalated; waiting_for_parent (a stacked run staged behind a parent that has not merged; waiting_for names it); blocked_by_parent (a stacked run whose parent failed or was cancelled; it needs a rebuild); staged; finished; failed. Stop watching when the outcome is not running and do what next says; approvals are always the user's.`,
       inputSchema: {
         run: z.string().describe("The run id, e.g. r1"),
         since: z
