@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type SpawnInput, type SpawnOutput, Stopped, type Worker } from "@hephaestus/engine";
+import { openLedger } from "@hephaestus/ledger";
 import { type PlannerInput, type PlannerSession, runPlanner } from "@hephaestus/workers";
 import type { z } from "zod";
 import { type Io, run } from "../src/main.ts";
@@ -163,6 +164,23 @@ async function heph(args: string[], deps: Deps = {}): Promise<Envelope & { code:
   return { ...env, code };
 }
 
+/** The planner's answers for a run, in order, as the ledger recorded them. */
+async function planAnswers(runId: string) {
+  const ledger = openLedger(home, { nodeId: "test-node" });
+  try {
+    return ledger.read({ run_id: runId, types: ["plan.answer"] }).map(
+      (e) =>
+        (e as unknown as { event: { data: unknown } }).event.data as {
+          attempt: number;
+          outcome: string;
+          failures: string[];
+        },
+    );
+  } finally {
+    ledger.close();
+  }
+}
+
 async function initWithTests() {
   await heph(["init"]);
   put(
@@ -243,16 +261,56 @@ describe("heph lifecycle", () => {
     expect(r.data).toMatchObject({ status: "escalated", escalate: ["AC1 contradicts decision 1"] });
   });
 
-  test("an invalid plan is retried with the gate evidence, then the run fails", async () => {
+  test("an invalid plan gets one correction with its own output and the gate evidence, then the run fails", async () => {
     await initWithTests();
     const noTest = JSON.stringify({ schema: 1, tasks: [JSON.parse(PLAN).tasks[1]], risks: [] });
     const p = planner([noTest, noTest, noTest]);
     const r = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3"], {
       planner: p.fn,
     });
-    expect(r.data).toMatchObject({ status: "failed", planner_attempts: 3 });
-    expect(p.prompts).toHaveLength(3);
+    expect(r.data).toMatchObject({ status: "failed", planner_attempts: 2 });
+    expect(p.prompts).toHaveLength(2);
     expect(p.prompts[1]).toContain("Your previous answer failed these checks");
+    expect(p.prompts[1]).toContain(noTest);
+    expect(await planAnswers("R3")).toMatchObject([
+      { attempt: 1, outcome: "invalid" },
+      { attempt: 2, outcome: "invalid" },
+    ]);
+  });
+
+  test("the correction can fix the plan; the answers are recorded by attempt", async () => {
+    await initWithTests();
+    const noTest = JSON.stringify({ schema: 1, tasks: [JSON.parse(PLAN).tasks[1]], risks: [] });
+    const p = planner([noTest, PLAN]);
+    const r = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3b"], {
+      planner: p.fn,
+    });
+    expect(r.data).toMatchObject({ status: "planned", planner_attempts: 2 });
+    const answers = await planAnswers("R3b");
+    expect(answers).toMatchObject([
+      { attempt: 1, outcome: "invalid" },
+      { attempt: 2, outcome: "valid", failures: [] },
+    ]);
+    expect(answers[0]?.failures.length).toBeGreaterThan(0);
+  });
+
+  test("a first-try valid plan records one valid answer and an escalation on the correction is honored", async () => {
+    await initWithTests();
+    const noTest = JSON.stringify({ schema: 1, tasks: [JSON.parse(PLAN).tasks[1]], risks: [] });
+    const esc = JSON.stringify({ schema: 1, escalate: ["AC1 contradicts decision 1"] });
+    const r = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3c"], {
+      planner: planner([noTest, esc]).fn,
+    });
+    expect(r.data).toMatchObject({ status: "escalated", planner_attempts: 2 });
+    expect(await planAnswers("R3c")).toMatchObject([
+      { attempt: 1, outcome: "invalid" },
+      { attempt: 2, outcome: "escalated" },
+    ]);
+    const ok = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3d"], {
+      planner: planner([PLAN]).fn,
+    });
+    expect(ok.data).toMatchObject({ planner_attempts: 1 });
+    expect(await planAnswers("R3d")).toMatchObject([{ attempt: 1, outcome: "valid" }]);
   });
 
   test("a revision resets the approval; hints reach the next attempt; cancel stops the run", async () => {

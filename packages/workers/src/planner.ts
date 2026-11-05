@@ -50,6 +50,8 @@ export type PlannerInput = {
   instructions?: string;
   /** Plan gates the previous answer failed, fed back so the planner can fix them. */
   feedback?: GateResult[];
+  /** The raw invalid answer the feedback is about, shown back to the planner (the correction edge). */
+  previousOutput?: string;
   promptPath?: string;
   timeoutMs?: number;
   modelPattern?: (model: string) => string;
@@ -76,6 +78,21 @@ export function repoMapFromFiles(files: Record<string, string[]>, maxLines = 200
     .join("\n\n");
 }
 
+/** The previous answer is shown in full up to this size; a runaway answer is cut. */
+const MAX_PREVIOUS_OUTPUT = 40_000;
+const previousAnswer = (output: string) => {
+  const cut = output.length > MAX_PREVIOUS_OUTPUT;
+  return [
+    "### Your previous answer",
+    "",
+    "```",
+    cut ? output.slice(0, MAX_PREVIOUS_OUTPUT) : output,
+    ...(cut ? ["(truncated)"] : []),
+    "```",
+    "",
+  ].join("\n");
+};
+
 const yaml = (v: unknown) => Bun.YAML.stringify(v, null, 2).trim();
 
 export function renderPlannerPrompt(template: string, input: PlannerInput): string {
@@ -96,13 +113,14 @@ export function renderPlannerPrompt(template: string, input: PlannerInput): stri
     : "";
   const feedback = input.feedback?.length
     ? [
+        ...(input.previousOutput ? [previousAnswer(input.previousOutput)] : []),
         "### Your previous answer failed these checks",
         "",
         ...input.feedback.map((g) =>
           [`- ${g.gate}: ${g.reason}`, ...g.evidence.map((e) => `  - ${e}`)].join("\n"),
         ),
         "",
-        "Fix every one of them and answer again with the whole Plan.",
+        "Fix every one of them and return the corrected whole Plan (or an Escalation), not a diff.",
       ].join("\n")
     : "";
   return template

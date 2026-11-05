@@ -147,6 +147,23 @@ describe("renderPlannerPrompt", () => {
       "- criteria_covered: criteria are not covered\n  - AC2: no test task covers it",
     );
   });
+
+  test("feedback shows the previous output, truncated when huge, and asks for a correction", () => {
+    const feedback: GateResult[] = [{ gate: "g", verdict: "fail", reason: "r", evidence: [] }];
+    const text = renderPlannerPrompt(
+      template,
+      input(planJson, { feedback, previousOutput: '{"schema":1,"tasks":[]}' }),
+    );
+    expect(text).toContain("### Your previous answer");
+    expect(text).toContain('{"schema":1,"tasks":[]}');
+    expect(text).toContain("corrected");
+    const big = renderPlannerPrompt(
+      template,
+      input(planJson, { feedback, previousOutput: "x".repeat(100_000) }),
+    );
+    expect(big.length).toBeLessThan(60_000);
+    expect(big).toContain("truncated");
+  });
 });
 
 describe("repoMapFromFiles", () => {

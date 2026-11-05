@@ -3,7 +3,12 @@
 //
 //   bun run packages/workers/scripts/plan-proto.ts --brief <file> --workspace <file> [--runs N]
 //     [--model opus] [--thinking high] [--prompt <file>] [--gates <file>] [--repo-maps <dir>]
-//     [--out <dir>] [--workspace-root <dir>]
+//     [--out <dir>] [--workspace-root <dir>] [--correct] [--seed-faults]
+//
+// --correct: when the first answer is invalid, send its output and gate evidence back once and
+// report first-try, second-try and overall validity (the planner correction edge).
+// --seed-faults: also take each valid first answer, break it with one known fault, and run only
+// the correction. A mechanism test of the edge; reported apart from the model's natural rate.
 //
 // --workspace-root points at the real repos (resolved like workspace.yaml's repo paths); the plan
 // gates then check scopes against each project's tracked files.
@@ -12,12 +17,19 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  answerOutcome,
   Brief,
   briefGate,
   briefHash,
   type ComplexityResult,
+  type CorrectionRecord,
+  correctionStats,
+  DEFAULT_LIMITS,
   deriveEdges,
   type Evaluation,
+  evaluatePlannerOutput,
+  type GateResult,
+  type Plan,
   ProjectGates,
   topoOrder,
   Workspace,
@@ -37,6 +49,8 @@ const { values } = parseArgs({
     "repo-maps": { type: "string" },
     out: { type: "string" },
     "workspace-root": { type: "string" },
+    correct: { type: "boolean", default: false },
+    "seed-faults": { type: "boolean", default: false },
   },
 });
 
@@ -115,9 +129,13 @@ type RunRecord = {
   evaluation: Evaluation;
 };
 
-async function callPlanner(): Promise<Omit<RunRecord, "run">> {
+async function callPlanner(correction?: {
+  feedback: GateResult[];
+  previousOutput: string;
+}): Promise<Omit<RunRecord, "run">> {
   const started = Date.now();
   const r = await runPlanner({
+    ...(correction ?? {}),
     brief,
     workspace,
     projectGates,
@@ -176,7 +194,97 @@ console.log(
 );
 console.log(`brief_hash ${hash}`);
 
+const failedGates = (ev: Evaluation): GateResult[] => {
+  const failed = ev.gates.filter((g) => g.verdict === "fail");
+  if (ev.error)
+    failed.unshift({
+      gate: "plan_schema",
+      verdict: "fail",
+      reason: "the answer is not a valid Plan",
+      evidence: [ev.error],
+    });
+  return failed;
+};
+
+/** One correction for an invalid answer: its output and gate evidence go back to the planner. */
+async function correct(
+  run: number,
+  first: Omit<RunRecord, "run">,
+  label: string,
+): Promise<CorrectionRecord> {
+  let call: Omit<RunRecord, "run">;
+  try {
+    call = await callPlanner({
+      feedback: failedGates(first.evaluation),
+      previousOutput: first.output,
+    });
+  } catch (e) {
+    const error = `planner call failed: ${e}`;
+    call = {
+      model: values.model,
+      duration_ms: 0,
+      output: error,
+      evaluation: { valid: false, failures: ["json_parse"], error, gates: [] },
+    };
+  }
+  const record = { run, ...call };
+  console.log(`\n-- ${label}`);
+  printRun(record);
+  await Bun.write(
+    join(outDir, `run-${run}-${label.replace(/\W+/g, "-")}.json`),
+    JSON.stringify(record, null, 2),
+  );
+  const before = new Set(first.evaluation.failures);
+  const after = new Set(call.evaluation.failures);
+  return {
+    first: answerOutcome(first.evaluation),
+    second: answerOutcome(call.evaluation),
+    fixed: [...before].filter((f) => !after.has(f)),
+    introduced: [...after].filter((f) => !before.has(f)),
+  };
+}
+
+/** Known faults, each a plan edit the gates must catch. First one that breaks the plan wins. */
+const FAULTS: { name: string; apply: (plan: Plan) => Plan }[] = [
+  {
+    name: "drop_consumes",
+    apply: (p) => ({
+      ...p,
+      tasks: p.tasks.map((t) => (t.kind === "implement" ? { ...t, consumes: [] } : t)),
+    }),
+  },
+  {
+    name: "uncover_criterion",
+    apply: (p) => ({ ...p, tasks: p.tasks.map((t) => ({ ...t, covers: t.covers.slice(1) })) }),
+  },
+  { name: "drop_tasks", apply: (p) => ({ ...p, tasks: p.tasks.slice(0, 1) }) },
+];
+
+async function seedFault(plan: Plan): Promise<(CorrectionRecord & { fault: string }) | undefined> {
+  const ctx = {
+    brief,
+    workspace,
+    limits: DEFAULT_LIMITS,
+    projectGates,
+    ...(files ? { files } : {}),
+  };
+  for (const fault of FAULTS) {
+    const output = JSON.stringify(fault.apply(plan));
+    const evaluation = evaluatePlannerOutput(output, ctx, hash);
+    if (evaluation.valid) continue;
+    const record = await correct(
+      0,
+      { model: values.model, duration_ms: 0, output, evaluation },
+      `seeded ${fault.name}`,
+    );
+    return { ...record, first: "invalid", fault: fault.name };
+  }
+  return undefined;
+}
+
 const records: RunRecord[] = [];
+const corrections: CorrectionRecord[] = [];
+const seededRecords: (CorrectionRecord & { fault: string })[] = [];
 for (let run = 1; run <= runs; run++) {
   let call: Omit<RunRecord, "run">;
   try {
@@ -194,6 +302,17 @@ for (let run = 1; run <= runs; run++) {
   records.push(record);
   printRun(record);
   await Bun.write(join(outDir, `run-${run}.json`), JSON.stringify(record, null, 2));
+
+  if (values.correct && !call.evaluation.valid && !call.evaluation.escalate) {
+    const fixedRecord = await correct(run, call, `run ${run} correction`);
+    corrections.push(fixedRecord);
+  } else if (values.correct) {
+    corrections.push({ first: answerOutcome(call.evaluation) });
+  }
+  if (values["seed-faults"] && call.evaluation.plan && call.evaluation.valid) {
+    const seeded = await seedFault(call.evaluation.plan);
+    if (seeded) seededRecords.push(seeded);
+  }
 }
 
 const valid = records.filter((r) => r.evaluation.valid).length;
@@ -226,6 +345,15 @@ const summary = {
     0,
   ),
   duration_ms: records.reduce((n, r) => n + r.duration_ms, 0),
+  ...(values.correct ? { correction: correctionStats(corrections) } : {}),
+  ...(values["seed-faults"]
+    ? {
+        seeded_faults: {
+          ...correctionStats(seededRecords),
+          faults: seededRecords.map((r) => `${r.fault}: ${r.second}`),
+        },
+      }
+    : {}),
 };
 await Bun.write(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
 
@@ -233,6 +361,19 @@ console.log(
   `\n== ${briefName}: ${valid}/${runs} valid on first try (${Math.round(summary.validity_rate * 100)}%)`,
 );
 console.log(`   escalated: ${escalated}`);
+const pct = (n: number | null) => (n === null ? "n/a" : `${Math.round(n * 100)}%`);
+if (summary.correction) {
+  const c = summary.correction;
+  console.log(
+    `   first-try ${pct(c.first_try_validity)}, second-try ${pct(c.second_try_validity)} (${c.second_try_valid}/${c.first_try_failures} failures fixed), overall ${pct(c.overall_validity)}`,
+  );
+}
+if (summary.seeded_faults) {
+  const c = summary.seeded_faults;
+  console.log(
+    `   seeded faults (mechanism test, not the natural rate): ${c.second_try_valid}/${c.first_try_failures} fixed by one correction`,
+  );
+}
 for (const [gate, n] of Object.entries(summary.failures_by_gate))
   console.log(`   ${gate}: failed ${n}x`);
 console.log(`   complexity bumps: ${bumps.length}`);
