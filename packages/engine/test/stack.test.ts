@@ -5,7 +5,7 @@ import { type Ledger, openLedger } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { integrationGate, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
-import { baseRef, ontoFor, UnresolvedStack } from "../src/stack.ts";
+import { ancestorRefs, ancestorsOf, baseRef, ontoFor, UnresolvedStack } from "../src/stack.ts";
 import type { Worker } from "../src/worker.ts";
 import { initRepo, tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, threeRepos, writeScript } from "./workspace.ts";
@@ -323,6 +323,38 @@ describe("stacked builds", () => {
     finish("A");
     await f.build("E", [task("E1", "server", ["e.sh"])], "B");
     expect(resets(f.ledger, "E")).toEqual({ server: await f.sha("server", "main") });
+    f.ledger.close();
+  });
+
+  test("an ancestor's leftover branch in a repo its latest plan no longer touches is no base", async () => {
+    const f = await stackFixture();
+    // A first built in proto and server, then revised to server only and rebuilt.
+    await f.build("A", [task("A1", "proto", ["loot.txt"]), task("A2", "server", ["a.sh"])]);
+    const stale = await f.sha("proto", "heph/A");
+    expect((await f.build("A", [task("A3", "server", ["a3.sh"])])).status).toBe("built");
+    expect(await f.sha("proto", "heph/A")).toBe(stale);
+    const protoMain = await f.sha("proto", "main");
+    expect(ancestorsOf(f.ledger, "C", "A")).toEqual([
+      { runId: "A", status: "built", repos: ["server"] },
+    ]);
+
+    // C in proto starts at the target there; the gate sees proto's target, not A's old work.
+    expect((await f.build("C", [task("C1", "proto", ["c.txt"])], "A")).status).toBe("built");
+    expect(resets(f.ledger, "C")).toEqual({ proto: protoMain });
+    expect(await f.git("proto").lsTree("heph/C")).not.toContain("loot.txt");
+    expect((await f.build("D", [task("D1", "web", ["d.html"])], "A")).status).toBe("built");
+    expect(f.seen.at(-1)).toEqual({
+      proto: protoMain,
+      server: await f.sha("server", "heph/A"),
+      web: await f.sha("web", "heph/D"),
+    });
+    expect(
+      await ancestorRefs({
+        workspace: f.workspace,
+        workspaceRoot: f.root,
+        ancestors: ancestorsOf(f.ledger, "D"),
+      }),
+    ).toEqual({ server: "heph/A" });
     f.ledger.close();
   });
 

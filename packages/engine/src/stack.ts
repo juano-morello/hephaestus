@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import type { Workspace } from "@hephaestus/core";
 import type { Ledger } from "@hephaestus/ledger";
 import { Stopped } from "./effects.ts";
-import { runBranch, targetBase } from "./engine.ts";
+import { runBranch, sinceLatestPlan, targetBase } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import {
   abortLanding,
@@ -16,8 +16,28 @@ import {
 /** A parent run can be built on only while its changeset is built or staged (not yet landed). */
 export const STACKABLE = new Set(["built", "staged"]);
 
-/** One run up a stack: its id and status. */
-export type Ancestor = { runId: string; status?: string | undefined };
+/**
+ * One run up a stack: its id, status and, when known, the repos its latest plan touches (only
+ * there is its branch its work: one in another repo is left over from an earlier plan).
+ */
+export type Ancestor = {
+  runId: string;
+  status?: string | undefined;
+  repos?: readonly string[] | undefined;
+};
+
+/** The repos a run's latest plan built in: its run_branch_reset effects since that plan. */
+export function latestPlanRepos(ledger: Ledger, runId: string): string[] {
+  const repos = sinceLatestPlan(ledger, runId)
+    .filter(
+      (e) =>
+        e.type === "effect.intended" &&
+        (e.data as { effect?: string }).effect === "run_branch_reset" &&
+        e.repo !== undefined,
+    )
+    .map((e) => e.repo as string);
+  return [...new Set(repos)];
+}
 
 /**
  * The runs a run is stacked on, nearest first: its parent (`stackOn`, else its recorded
@@ -30,7 +50,7 @@ export function ancestorsOf(ledger: Ledger, runId: string, stackOn?: string): An
   while (next && !seen.has(next)) {
     seen.add(next);
     const row = ledger.run(next);
-    out.push({ runId: next, status: row?.status });
+    out.push({ runId: next, status: row?.status, repos: latestPlanRepos(ledger, next) });
     next = row?.stack_on ?? undefined;
   }
   return out;
@@ -56,19 +76,23 @@ export class UnresolvedStack extends Error {
 }
 
 /**
- * The branch a stacked run builds on in this repo: the nearest ancestor that is unmerged (built
- * or staged) and has a branch here. A parent's branch holds its ancestors' work only in repos it
- * touched itself, so a repo it skipped falls through to the next ancestor; a landed (finished)
- * ancestor is skipped too, since its work is in the target. None: the target is the base. Any
- * other ancestor status throws UnresolvedStack: the base is unknown, never silently the target.
+ * The branch a stacked run builds on in `repo`: the nearest ancestor that is unmerged (built or
+ * staged) and has a branch here that its latest plan touches. A parent's branch holds its
+ * ancestors' work only in repos it touched itself, so a repo it skipped falls through to the next
+ * ancestor, as does a leftover branch from an earlier plan (that work will never ship); a landed
+ * (finished) ancestor is skipped too, since its work is in the target. None: the target is the
+ * base. Any other ancestor status throws UnresolvedStack: the base is unknown, never silently the
+ * target.
  */
 export async function ancestorBranch(
   git: Git,
   ancestors: readonly Ancestor[],
+  repo: string | undefined,
 ): Promise<string | undefined> {
   for (const a of ancestors) {
     if (a.status === "finished") continue;
     if (!a.status || !STACKABLE.has(a.status)) throw new UnresolvedStack(unresolvedReason(a));
+    if (a.repos && repo !== undefined && !a.repos.includes(repo)) continue;
     const branch = runBranch(a.runId);
     if (await git.refSha(branch)) return branch;
   }
@@ -81,13 +105,15 @@ export async function ancestorBranch(
  */
 export async function baseRef(o: {
   git: Git;
+  /** The repo `git` is: an ancestor's branch counts only where its latest plan touches. */
+  repo?: string | undefined;
   stackOn?: string | undefined;
   parentStatus?: string | undefined;
   ancestors?: readonly Ancestor[] | undefined;
   target: string;
 }): Promise<string> {
   const chain = o.ancestors ?? (o.stackOn ? [{ runId: o.stackOn, status: o.parentStatus }] : []);
-  return (await ancestorBranch(o.git, chain)) ?? targetBase(o.git, o.target);
+  return (await ancestorBranch(o.git, chain, o.repo)) ?? targetBase(o.git, o.target);
 }
 
 /**
@@ -97,6 +123,7 @@ export async function baseRef(o: {
  */
 export async function ontoFor(o: {
   git: Git;
+  repo?: string | undefined;
   stackOn?: string | undefined;
   parentStatus?: string | undefined;
   ancestors?: readonly Ancestor[] | undefined;
@@ -104,7 +131,7 @@ export async function ontoFor(o: {
   targetTip: string;
 }): Promise<{ onto: string; base: string }> {
   const chain = o.ancestors ?? (o.stackOn ? [{ runId: o.stackOn, status: o.parentStatus }] : []);
-  const branch = await ancestorBranch(o.git, chain);
+  const branch = await ancestorBranch(o.git, chain, o.repo);
   return branch
     ? { onto: await o.git.revParse(branch), base: branch }
     : { onto: o.targetTip, base: o.target };
@@ -120,7 +147,7 @@ type StackInput = {
 export async function ancestorRefs(o: StackInput): Promise<Record<string, string>> {
   const refs: Record<string, string> = {};
   for (const [r, path] of Object.entries(o.workspace.repos)) {
-    const branch = await ancestorBranch(createGit(resolve(o.workspaceRoot, path)), o.ancestors);
+    const branch = await ancestorBranch(createGit(resolve(o.workspaceRoot, path)), o.ancestors, r);
     if (branch) refs[r] = branch;
   }
   return refs;
@@ -143,6 +170,7 @@ export async function stackRefs(
       ? runBranch(o.runId)
       : await baseRef({
           git: createGit(resolve(o.workspaceRoot, path)),
+          repo: r,
           ancestors: o.ancestors,
           target: o.targets?.[r] ?? "main",
         });

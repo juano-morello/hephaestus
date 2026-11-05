@@ -117,7 +117,7 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   for (const r of repos) {
     const git = gits.get(r) as Git;
     if (!ancestors.length || (await git.remoteUrl(remote)) === undefined) continue;
-    const on = await ancestorBranch(git, ancestors);
+    const on = await ancestorBranch(git, ancestors, r);
     const parent = on && ancestors.find((a) => runBranch(a.runId) === on);
     if (parent && parent.status !== "staged")
       return abort(
@@ -153,6 +153,7 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
     const tip = await git.revParse(hasRemote ? `${remote}/${target(r)}` : target(r));
     const { onto, base: prBase } = await ontoFor({
       git,
+      repo: r,
       ancestors,
       target: target(r),
       targetTip: tip,

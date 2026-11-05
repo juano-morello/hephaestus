@@ -466,7 +466,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     // nearest unmerged ancestor's branch for a stacked run (design 3.1).
     for (const [repo, git] of gits) {
       const target = opts.targets?.[repo] ?? "main";
-      const at = await git.revParse(await baseRef({ git, ancestors, target }));
+      const at = await git.revParse(await baseRef({ git, repo, ancestors, target }));
       await effect(
         scope,
         {
