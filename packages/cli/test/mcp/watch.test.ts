@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { DaemonError, DaemonTimeoutError } from "../../src/daemon.ts";
+import { NoDaemonError } from "../../src/mcp/guard.ts";
 import { watchText } from "../../src/mcp/text.ts";
 import { watchStep } from "../../src/mcp/watch.ts";
 import type { WatchEvent } from "../../src/watch.ts";
@@ -201,7 +203,7 @@ describe("watchStep", () => {
   });
 
   test("retries transient status errors, then rejects", async () => {
-    const boom = new Error("daemon down");
+    const boom = new NoDaemonError();
     const ok: Step = { status: "running", events: [A] };
     const r = await watchStep(
       "r1",
@@ -232,7 +234,7 @@ describe("watchStep", () => {
   });
 
   test("retries stop one interval past the deadline, whatever retries allows", async () => {
-    const boom = new Error("daemon down");
+    const boom = new NoDaemonError();
     const fast = script([{ status: "running", events: [A], fail: boom }]);
     const c = clock();
     await expect(watchStep("r1", fast.view, { waitMs: 0, retries: 30, ...c })).rejects.toBe(boom);
@@ -246,6 +248,46 @@ describe("watchStep", () => {
     );
     expect(slow.polls()).toBe(12);
     expect(c2.now() - 1_000_000).toBe(22_000);
+  });
+
+  test("an answered daemon error (unknown run) fails at once, without retries", async () => {
+    const unknown = new DaemonError("unknown run r9");
+    const s = script([{ status: "running", events: [A], fail: unknown }]);
+    const c = clock();
+    await expect(watchStep("r9", s.view, { waitMs: 20_000, retries: 8, ...c })).rejects.toBe(
+      unknown,
+    );
+    expect(s.polls()).toBe(1);
+    expect(c.now() - 1_000_000).toBe(0);
+  });
+
+  test("a non-daemon error (a drifted answer) is not retried either", async () => {
+    const drift = new Error("Invalid input: expected object");
+    const s = script([{ status: "running", events: [A], fail: drift }]);
+    await expect(watchStep("r1", s.view, { waitMs: 20_000, ...clock() })).rejects.toBe(drift);
+    expect(s.polls()).toBe(1);
+  });
+
+  test("a connection error is retried", async () => {
+    const refused = Object.assign(new TypeError("ECONNREFUSED: connection refused"), {
+      code: "ECONNREFUSED",
+    });
+    const ok: Step = { status: "running", events: [A] };
+    const s = script([{ ...ok, fail: refused }, ok]);
+    const c = clock();
+    const r = await watchStep("r1", s.view, { waitMs: 20_000, retries: 8, ...c });
+    expect(r.status).toBe("running");
+    expect(s.polls()).toBe(2);
+    expect(c.now() - 1_000_000).toBe(2000);
+  });
+
+  test("a timed-out call is retried", async () => {
+    const slow = new DaemonTimeoutError("status", 20_000);
+    const ok: Step = { status: "running", events: [A] };
+    const s = script([{ ...ok, fail: slow }, { ...ok, fail: slow }, ok]);
+    const r = await watchStep("r1", s.view, { waitMs: 20_000, retries: 8, ...clock() });
+    expect(r.status).toBe("running");
+    expect(s.polls()).toBe(3);
   });
 
   test("onLine receives each line", async () => {

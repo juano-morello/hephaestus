@@ -1,6 +1,7 @@
 // A cursor-based long-poll of a run's milestones, for the MCP heph_watch tool. Same polling as
 // `watchRun` (src/watch.ts) and the same classification (classifyRun), but stateless: the caller
 // carries the cursor.
+
 import {
   classifyRun,
   heartbeatLine,
@@ -9,6 +10,7 @@ import {
   type WatchView,
   watchLine,
 } from "../watch.ts";
+import { isTransient } from "./guard.ts";
 
 export type Outcome = WatchOutcome;
 
@@ -58,8 +60,9 @@ export async function watchStep(
       ({ events } = await view.explain(id));
       failures = 0;
     } catch (e) {
-      // Retry a daemon restart, but not past the caller's wait: waitMs 0 with a dead daemon fails fast.
-      if (++failures > retries || now() >= deadline + interval) throw e;
+      // Retry a daemon restart, but not past the caller's wait: waitMs 0 with a dead daemon fails
+      // fast. An answer the daemon gave (an unknown run) fails at once.
+      if (!isTransient(e) || ++failures > retries || now() >= deadline + interval) throw e;
       await sleep(interval);
       continue;
     }

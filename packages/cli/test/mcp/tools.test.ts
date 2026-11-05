@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { DaemonError } from "../../src/daemon.ts";
 import { ALLOWED_METHODS, NoDaemonError } from "../../src/mcp/guard.ts";
 import { createMcpServer } from "../../src/mcp/server.ts";
 import { connectTestClient, fakeDaemon } from "./harness.ts";
@@ -537,6 +538,31 @@ describe("heph_run on a run that cannot run", () => {
       await client.close();
     });
 
+  test("an answered error in the progress step fails at once; a down daemon is retried", async () => {
+    for (const [err, elapsed] of [
+      [new DaemonError("unknown run r1"), 0],
+      [new NoDaemonError(), 2000],
+    ] as const) {
+      const clock = fakeClock();
+      const { client: d } = fakeDaemon({
+        status: (() => {
+          let n = 0;
+          return () => {
+            if (n++ > 0) throw err;
+            return statusOf("running");
+          };
+        })(),
+        run: () => ({ run_id: "r1", started: true, after: "e1" }),
+      });
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+      const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toBe(err.message);
+      expect(clock.elapsed()).toBe(elapsed);
+      await client.close();
+    }
+  });
+
   test("a run that stops right after starting says so", async () => {
     const events = [ev("e1", "run.plan_ready", "plan ready")];
     let ran = false;
@@ -716,7 +742,7 @@ describe("heph_watch", () => {
     const clock = fakeClock();
     const { client: d } = fakeDaemon({
       status: () => {
-        if (fails-- > 0) throw new Error("daemon restarting");
+        if (fails-- > 0) throw new NoDaemonError();
         return statusOf("running");
       },
       explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
@@ -732,18 +758,35 @@ describe("heph_watch", () => {
     await client.close();
   });
 
-  test("a daemon that keeps failing is an error after the retry window", async () => {
+  test("a daemon that stays down is an error after the retry window", async () => {
     const clock = fakeClock();
-    const { client: d } = fakeDaemon({
+    const { client: d, calls } = fakeDaemon({
       status: () => {
-        throw new Error("unknown run r9");
+        throw new NoDaemonError();
+      },
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r9" } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("heph daemon is not running");
+    expect(clock.elapsed()).toBe(16_000);
+    expect(calls).toHaveLength(9);
+    await client.close();
+  });
+
+  test("an unknown run id is an error at once, with no retries", async () => {
+    const clock = fakeClock();
+    const { client: d, calls } = fakeDaemon({
+      status: () => {
+        throw new DaemonError("unknown run r9");
       },
     });
     const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
     const r = await client.callTool({ name: "heph_watch", arguments: { run: "r9" } });
     expect(r.isError).toBe(true);
     expect(textOf(r)).toBe("unknown run r9");
-    expect(clock.elapsed()).toBe(16_000);
+    expect(clock.elapsed()).toBe(0);
+    expect(calls).toHaveLength(1);
     await client.close();
   });
 

@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { DaemonClient } from "../../src/daemon.ts";
+import { type DaemonClient, DaemonError, DaemonTimeoutError } from "../../src/daemon.ts";
 import {
   ALLOWED_METHODS,
   type AllowedMethod,
   guardedClient,
+  isTransient,
   NoDaemonError,
 } from "../../src/mcp/guard.ts";
 import { buildClient } from "../../src/mcp/serve.ts";
@@ -84,5 +85,48 @@ describe("serve wiring", () => {
     expect(await c.call("status", ["r1"], "/ws")).toEqual({ ok: "status" });
     expect(homes).toEqual(["/home"]);
     expect(calls).toEqual([{ method: "status", args: ["r1"], cwd: "/ws" }]);
+  });
+});
+
+describe("per-method timeouts", () => {
+  test("quick methods get 20 s, newRun and revise none", async () => {
+    const seen: Record<string, unknown> = {};
+    const client: DaemonClient = {
+      async call(method, _args, _cwd, opts) {
+        seen[method] = opts?.timeoutMs;
+        return null;
+      },
+    };
+    const mcp = guardedClient(async () => client);
+    for (const m of ALLOWED_METHODS) await mcp.call(m, []);
+    expect(seen).toEqual({
+      newRun: undefined,
+      revise: undefined,
+      planShow: 20_000,
+      run: 20_000,
+      status: 20_000,
+      explain: 20_000,
+      hint: 20_000,
+      cancel: 20_000,
+    });
+  });
+});
+
+describe("isTransient", () => {
+  const coded = (code: string, message = `${code}: x`) =>
+    Object.assign(new TypeError(message), { code });
+  test("no daemon, a timeout and connection failures are transient", () => {
+    expect(isTransient(new NoDaemonError())).toBe(true);
+    expect(isTransient(new DaemonTimeoutError("status", 20_000))).toBe(true);
+    for (const c of ["ECONNREFUSED", "ENOENT", "ECONNRESET", "ENOTSOCK", "EPIPE"])
+      expect(isTransient(coded(c))).toBe(true);
+    expect(isTransient(new TypeError("The socket connection was closed unexpectedly"))).toBe(true);
+  });
+  test("an answered daemon error and anything else are not", () => {
+    expect(isTransient(new DaemonError("unknown run r9"))).toBe(false);
+    expect(isTransient(new DaemonError("socket closed"))).toBe(false);
+    expect(isTransient(new Error("boom"))).toBe(false);
+    expect(isTransient("ECONNREFUSED")).toBe(false);
+    expect(isTransient(undefined)).toBe(false);
   });
 });

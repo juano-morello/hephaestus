@@ -109,9 +109,10 @@ const RunStarted = z
 const MAX_WAIT_S = 25;
 const DEFAULT_WAIT_S = 20;
 /**
- * Daemon errors retried within one step, about 16 s at watchStep's 2 s interval: long enough to
- * ride out a daemon restart, short enough for host timeouts and for a mistyped run id. watchStep
- * also stops one interval past the step's wait, so heph_run (wait 0) gives up after about 2 s.
+ * Transient daemon errors (no daemon, a timeout, a dropped socket) retried within one step, about
+ * 16 s at watchStep's 2 s interval: long enough to ride out a daemon restart, short enough for
+ * host timeouts. An error the daemon answers (an unknown run) is not retried. watchStep also stops
+ * one interval past the step's wait, so heph_run (wait 0) gives up after about 2 s.
  */
 const STEP_RETRIES = 8;
 /** Run statuses `run` would only reject after already answering `started` (runtime.ts build). */
