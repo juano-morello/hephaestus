@@ -51,6 +51,10 @@ export async function toolResult<C extends keyof typeof OUTPUT>(
   };
 }
 
+const { $schema: _dialect, ...briefJsonSchema } = z.toJSONSchema(Brief) as Record<string, unknown>;
+// Built from the real schema, so what the model is told cannot drift from what heph_new accepts.
+const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; list fields are required, empty arrays allowed). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
+
 export function registerTools(server: McpServer, ctx: McpCtx): void {
   server.registerTool(
     "heph_plan_show",
@@ -99,9 +103,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       description:
         "Plan a new heph run from a Brief. The plan waits for the user's approval; show it to them and let them approve it themselves.",
       inputSchema: {
-        brief: z
-          .unknown()
-          .describe("The Brief object: schema, goal, context, acceptance, source, and so on"),
+        brief: z.unknown().describe(BRIEF_DESCRIPTION),
         workspace: z
           .string()
           .optional()

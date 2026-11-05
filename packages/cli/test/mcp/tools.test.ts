@@ -288,4 +288,16 @@ describe("mutating tools", () => {
     expect(textOf(r)).toBe("cancelled r1\n");
     await client.close();
   });
+
+  test("heph_new tells the model the real Brief shape", async () => {
+    const { client: d } = fakeDaemon({});
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const { tools } = await client.listTools();
+    const props = (tools.find((t) => t.name === "heph_new")?.inputSchema.properties ??
+      {}) as Record<string, { description?: string }>;
+    const desc = props.brief?.description ?? "";
+    for (const w of ["decisions", "out_of_scope", "open_questions", "claude-code", "strict"])
+      expect(desc).toContain(w);
+    await client.close();
+  });
 });

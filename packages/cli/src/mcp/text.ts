@@ -64,13 +64,12 @@ export const planResultText = (r: PlanResult): string =>
     ...(r.tasks ? [tasksText(r.tasks)] : []),
     ...(r.escalate ?? []).map((x) => `  - ${x}`),
     ...(r.reason ? [`  ${r.reason}`] : []),
-    r.status === "planned"
-      ? `next: show the plan to the user (heph_plan_show) and wait for them to approve it; the user runs heph approve plan ${r.run_id} themselves — never approve it yourself`
-      : "",
-    "",
-  ]
-    .filter((l) => l !== "")
-    .join("\n")}\n`;
+    ...(r.status === "planned"
+      ? [
+          `next: show the plan to the user (heph_plan_show) and wait for them to approve it; the user runs heph approve plan ${r.run_id} themselves — never approve it yourself`,
+        ]
+      : []),
+  ].join("\n")}\n`;
 
 export const hintText = (h: Hint): string =>
   `recorded ${h.recorded.join(" and ")} for ${h.unit} in ${h.run_id}${h.scope ? ` (it may also change ${h.scope.join(", ")})` : ""}\n`;
