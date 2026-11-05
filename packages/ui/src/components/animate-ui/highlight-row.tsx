@@ -3,20 +3,29 @@
  * Authored locally: the upstream source could not be fetched when this was written, so this is
  * not a copy of upstream code and carries no upstream license text.
  */
-import { motion } from "motion/react";
-import type { ReactNode } from "react";
+import { MotionConfig, motion } from "motion/react";
+import { type ReactNode, useState } from "react";
 
-/** A table row whose background eases to the highlight color on hover and keyboard focus. */
+/**
+ * A table row whose background eases to the highlight color on hover and while focus is inside
+ * it (a row is not focusable itself; focus events from its link bubble up to it).
+ */
 export function HighlightRow({ children }: { children: ReactNode }) {
+  const [focused, setFocused] = useState(false);
   return (
-    <motion.tr
-      className="border-b border-line"
-      initial={{ backgroundColor: "rgba(0,0,0,0)" }}
-      whileHover={{ backgroundColor: "var(--surface-2)" }}
-      whileFocus={{ backgroundColor: "var(--surface-2)" }}
-      transition={{ duration: 0.15 }}
-    >
-      {children}
-    </motion.tr>
+    <MotionConfig reducedMotion="user">
+      <motion.tr
+        className="border-b border-line"
+        data-highlighted={focused}
+        initial={{ backgroundColor: "rgba(0,0,0,0)" }}
+        animate={{ backgroundColor: focused ? "var(--surface-2)" : "rgba(0,0,0,0)" }}
+        whileHover={{ backgroundColor: "var(--surface-2)" }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        transition={{ duration: 0.15 }}
+      >
+        {children}
+      </motion.tr>
+    </MotionConfig>
   );
 }

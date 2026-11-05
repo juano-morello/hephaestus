@@ -87,6 +87,10 @@ body {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
+
+  .heph-pulse {
+    animation: none;
+  }
 }
 
 @keyframes heph-pulse {

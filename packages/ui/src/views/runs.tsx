@@ -23,13 +23,14 @@ const when = (iso: string | undefined) => {
 };
 
 export function Runs({ api }: { api: Api }) {
-  const { data, error } = usePoll<StatusList>(() => api.call<StatusList>("status"), {
+  const { data, error, loading } = usePoll<StatusList>(() => api.call<StatusList>("status"), {
     fastMs: 2000,
     slowMs: 10000,
     fast: (d) => !!d?.runs.some((r) => r.status === "running"),
   });
   const runs = data ? [...data.runs].sort(byRecent) : undefined;
-  const failure = error instanceof ApiError ? error : undefined;
+  const failure =
+    error && (error instanceof ApiError ? error : new ApiError("daemon", String(error)));
 
   return (
     <div>
@@ -39,6 +40,7 @@ export function Runs({ api }: { api: Api }) {
           {failure.message}
         </p>
       )}
+      {loading && !runs && !failure && <p className="text-muted">Loading…</p>}
       {runs && runs.length === 0 && <p className="text-muted">No runs yet.</p>}
       {runs && runs.length > 0 && (
         <ScrollArea.Root className="w-full overflow-hidden">

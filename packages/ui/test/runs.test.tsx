@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { type Api, ApiError } from "../src/api.ts";
 import { StatusBadge } from "../src/components/status-badge.tsx";
 import { Runs } from "../src/views/runs.tsx";
@@ -57,6 +58,66 @@ describe("Runs", () => {
   test('shows "no runs yet" for an empty list', async () => {
     render(<Runs api={fakeApi({ runs: [] })} />);
     await waitFor(() => expect(screen.getByText(/no runs yet/i)).toBeTruthy());
+  });
+});
+
+describe("Runs states", () => {
+  test("shows a loading line before the first response", async () => {
+    const api: Api = { call: (() => new Promise(() => {})) as Api["call"] };
+    render(<Runs api={api} />);
+    expect(screen.getByText(/loading/i)).toBeTruthy();
+  });
+
+  test("a plain Error from the api renders exactly one alert", async () => {
+    const api: Api = {
+      call: (async () => {
+        throw new Error("boom");
+      }) as Api["call"],
+    };
+    render(<Runs api={api} />);
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.length).toBe(1);
+    expect(alerts[0]?.textContent).toContain("boom");
+  });
+
+  test("a daemon error renders exactly one alert", async () => {
+    render(<Runs api={fakeApi(new ApiError("daemon", "no such thing"))} />);
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.length).toBe(1);
+  });
+});
+
+describe("row highlight", () => {
+  test("focusing the row link highlights the row, blur clears it", async () => {
+    render(<Runs api={fakeApi(statusList)} />);
+    const link = await screen.findByRole("link", { name: "r-live" });
+    const row = link.closest("tr");
+    expect(row?.getAttribute("data-highlighted")).toBe("false");
+    await act(async () => {
+      link.focus();
+    });
+    expect(row?.getAttribute("data-highlighted")).toBe("true");
+    await act(async () => {
+      link.blur();
+    });
+    expect(row?.getAttribute("data-highlighted")).toBe("false");
+  });
+});
+
+describe("reduced motion", () => {
+  const css = readFileSync(new URL("../src/theme.css", import.meta.url), "utf8");
+  const block = /@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+
+  test("the reduced-motion rule turns the running pulse off", () => {
+    expect(block).toMatch(/\.heph-pulse\s*\{[^}]*animation:\s*none/);
+  });
+
+  test("the row highlight honors the user's reduced-motion setting", () => {
+    const src = readFileSync(
+      new URL("../src/components/animate-ui/highlight-row.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(src).toContain('reducedMotion="user"');
   });
 });
 
