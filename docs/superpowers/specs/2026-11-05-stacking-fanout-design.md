@@ -70,7 +70,8 @@ Effect keys: rebase becomes `rebase:<repo>:<onto sha, 7 chars>` because a repo m
 1. Every derived-edge predecessor is accepted.
 2. **`tests_passable` holds over the accepted set.** Every criterion checked by an accepted `test` task is covered by an accepted non-test task of any project (the same count the plan gate makes), or by this unit. The `tests` gate runs the whole project suite, so the plan gate's sequential-order guarantee has to hold dynamically over what is actually accepted. The check reuses the plan gate's logic from `@hephaestus/core` (extracted into a shared function, not duplicated).
 3. Its scope (task scope plus `hint --scope` additions) does not overlap an in-flight unit's scope in the same repo, compared repo-relative the way the plan gate does. Widening a scope can break the plan-time disjointness guarantee, so it is checked at start.
-4. A slot is free.
+4. **Within a project a test unit is exclusive** (added 2026-11-05 after a live run). Each unit's `tests` gate, and a join's re-gate, runs the project's whole suite, so a new red test from one chain fails every other unit of the project. A `test` unit of project P is not ready while P has an open criterion (one checked by an accepted test task of P, covered by no accepted non-test task but by a remaining one, the same count rule 2 makes) or while any other unit of P is in flight or was just picked; a non-test unit of P is not ready while a test unit of P is in flight or was just picked. Non-test units of one project still run in parallel under rules 1-3, and units of different projects never hold each other back this way. Two independent test-to-implement chains in one project therefore run one chain step at a time (T1, T2, T3, T4), as the plan gate's sequential order assumes.
+5. A slot is free.
 
 Locked paths are unchanged: they come from accepted test tasks that precede the unit in the derived graph.
 
