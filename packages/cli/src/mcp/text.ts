@@ -61,7 +61,7 @@ export const explainText = (x: Explain): string =>
 export const planResultText = (r: PlanResult): string =>
   `${[
     `run ${r.run_id}: ${r.status} after ${r.planner_attempts} planner attempt(s)${r.node ? ` on ${r.node}` : ""}`,
-    ...(r.tasks ? [tasksText(r.tasks)] : []),
+    ...(r.tasks?.length ? [tasksText(r.tasks)] : []),
     ...(r.escalate ?? []).map((x) => `  - ${x}`),
     ...(r.reason ? [`  ${r.reason}`] : []),
     ...(r.status === "planned"

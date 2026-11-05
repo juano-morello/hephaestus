@@ -53,7 +53,7 @@ export async function toolResult<C extends keyof typeof OUTPUT>(
 
 const { $schema: _dialect, ...briefJsonSchema } = z.toJSONSchema(Brief) as Record<string, unknown>;
 // Built from the real schema, so what the model is told cannot drift from what heph_new accepts.
-const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; list fields are required, empty arrays allowed). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
+const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; every list field is required, but the brief gate rejects an empty acceptance, any open_questions left unresolved, duplicate criterion ids, and known_paths projects not in the workspace). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
 
 export function registerTools(server: McpServer, ctx: McpCtx): void {
   server.registerTool(

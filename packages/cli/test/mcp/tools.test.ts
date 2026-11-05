@@ -300,4 +300,20 @@ describe("mutating tools", () => {
       expect(desc).toContain(w);
     await client.close();
   });
+
+  test("a result with no tasks has no blank line", async () => {
+    const { client: d } = fakeDaemon({
+      newRun: () => ({
+        run_id: "r3",
+        status: "failed",
+        planner_attempts: 1,
+        tasks: [],
+        reason: "x",
+      }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({ name: "heph_new", arguments: { brief } });
+    expect(textOf(r)).toBe("run r3: failed after 1 planner attempt(s)\n  x\n");
+    await client.close();
+  });
 });
