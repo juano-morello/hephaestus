@@ -1,7 +1,7 @@
 // Stacked runs (design 3.1): a run built on another run's branch instead of the target.
 import { resolve } from "node:path";
 import type { Workspace } from "@hephaestus/core";
-import type { Ledger } from "@hephaestus/ledger";
+import { type Ledger, NotOwnerError } from "@hephaestus/ledger";
 import { Stopped } from "./effects.ts";
 import { runBranch, sinceLatestPlan, targetBase } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
@@ -271,6 +271,12 @@ export async function pendingRestack(opts: LandOptions): Promise<Record<string, 
 
 export type RestackOutcome = LandOutcome | { status: "skipped"; reason: string };
 
+/** A child another node owns is restacked there, never written to from here (SPEC section 7). */
+const ownedElsewhere = (id: string, owner: string): RestackOutcome => ({
+  status: "skipped",
+  reason: `owned by ${owner}; run heph approve merge ${id} there`,
+});
+
 /**
  * After `parentId` landed: restacks each of its staged children, oldest first. `around` wraps
  * each child's restack (the CLI takes the child's run lock); one that fails before the restack
@@ -298,6 +304,8 @@ export async function restackChildren(o: {
         const parent = ancestorsOf(o.ledger, id)[0];
         if (parent?.status !== "finished")
           return { status: "skipped", reason: `${id}'s parent ${parent?.runId} has not landed` };
+        const owner = o.ledger.run(id)?.owner_node;
+        if (owner && owner !== o.ledger.nodeId) return ownedElsewhere(id, owner);
         if (!Object.keys(await pendingRestack(o.options(id))).length) return undefined;
         started = true;
         return restack(o.options(id));
@@ -305,6 +313,10 @@ export async function restackChildren(o: {
       if (r) out[id] = r;
     } catch (e) {
       if (e instanceof Stopped) throw e;
+      if (e instanceof NotOwnerError) {
+        out[id] = ownedElsewhere(id, e.owner);
+        continue;
+      }
       if (!started) {
         out[id] = { status: "skipped", reason: message(e) };
         continue;

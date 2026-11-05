@@ -774,7 +774,8 @@ describe("landing a stacked run", () => {
         await runOk(["git", "remote", "add", "origin", origin], { cwd: join(root, r) });
       }
     }
-    const ledger = openLedger(join(dir(), "node"), { nodeId: "devserver" });
+    const node = join(dir(), "node");
+    const ledger = openLedger(node, { nodeId: "devserver" });
     const plans = new Map<string, Plan>();
     const fake = fakePrs();
     const opts = (runId: string, extra: Partial<RunPlanOptions> = {}): RunPlanOptions => ({
@@ -858,7 +859,20 @@ describe("landing a stacked run", () => {
       await runOk(["git", "push", "-q", "origin", `${sha}:refs/heads/main`], { cwd: repoDir });
       return sha;
     };
-    return { root, server, ledger, opts, build, git, fake, upstream, finished, commits, regates };
+    return {
+      root,
+      server,
+      node,
+      ledger,
+      opts,
+      build,
+      git,
+      fake,
+      upstream,
+      finished,
+      commits,
+      regates,
+    };
   }
 
   test("stacked_pr_opens_with_parent_branch_as_base", async () => {
@@ -1248,6 +1262,26 @@ describe("landing a stacked run", () => {
         status: "not_ready",
         reasons: ["waiting for B"],
       });
+      f.ledger.close();
+    });
+
+    test("a child owned by another node is skipped untouched, saying where to restack it", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      // This node sees B (synced) but does not own it.
+      const here = openLedger(f.node, { nodeId: "laptop" });
+      const events = here.read({ run_id: "B" }).length;
+      const out = await restackChildren({
+        ledger: here,
+        parentId: "A",
+        options: (id) => f.opts(id, { ledger: here }),
+      });
+      expect(out).toEqual({
+        B: { status: "skipped", reason: "owned by devserver; run heph approve merge B there" },
+      });
+      expect(here.read({ run_id: "B" })).toHaveLength(events);
+      expect(f.fake.calls.some((x) => x.startsWith("setBase"))).toBe(false);
+      here.close();
       f.ledger.close();
     });
 
