@@ -17,6 +17,10 @@ export type ScheduleOutcome =
 /** Which pause the run reports when several units stop: the one needing the most attention. */
 export const PAUSE_RANK: Record<PauseReason, number> = { handoff: 3, user: 2, rate_limit: 1 };
 
+/** Whether `reason` names a pause (own keys only: `toString` and friends are not pauses). */
+export const isPauseReason = (reason: string): reason is PauseReason =>
+  Object.hasOwn(PAUSE_RANK, reason);
+
 const later = (a: string | undefined, b: string | undefined) => {
   if (!a) return b;
   if (!b) return a;

@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { deriveEdges, type Plan, type Task, topoOrder, type Workspace } from "@hephaestus/core";
 import { Stopped } from "../src/effects.ts";
-import { rampStart, rateLimitRamp, schedule, type UnitResult } from "../src/scheduler.ts";
+import {
+  isPauseReason,
+  rampStart,
+  rateLimitRamp,
+  schedule,
+  type UnitResult,
+} from "../src/scheduler.ts";
 
 const workspace: Workspace = {
   repos: { game: "." },
@@ -375,5 +381,16 @@ describe("schedule", () => {
     await tick();
     expect(accepted.size).toBe(0);
     expect(c.started).toEqual(["T2"]);
+  });
+
+  test("isPauseReason matches the pause reasons only, never an object prototype key", () => {
+    expect(["handoff", "user", "rate_limit"].map(isPauseReason)).toEqual([true, true, true]);
+    expect(["crash", "toString", "constructor", "__proto__", ""].map(isPauseReason)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 });

@@ -27,6 +27,7 @@ import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
 import {
+  isPauseReason,
   PAUSE_RANK,
   type PauseReason,
   rateLimitRamp,
@@ -392,7 +393,7 @@ function lostPause(
     const pause: { reason: PauseReason; detail: string } | undefined =
       e.type === "unit.escalated" || e.type === "unit.stalled"
         ? { reason: "user", detail: `${e.unit_id}: ${reason}` }
-        : e.type === "unit.attempt.interrupted" && reason in PAUSE_RANK
+        : e.type === "unit.attempt.interrupted" && isPauseReason(reason)
           ? { reason: reason as PauseReason, detail: `${e.unit_id}: ${reason}` }
           : undefined;
     if (pause && (!lost || PAUSE_RANK[pause.reason] > PAUSE_RANK[lost.reason])) lost = pause;
