@@ -89,6 +89,8 @@ export async function startDaemon(
     log?: (line: string) => void;
     /** The dashboard bundle; without it no UI listener starts. */
     uiAssets?: UiAssets;
+    /** Test injection: the preferred dashboard port. */
+    uiPort?: number;
   },
 ): Promise<Daemon> {
   const unix = socketOf(o.home);
@@ -117,28 +119,45 @@ export async function startDaemon(
       }
     },
   });
-  const ui = o.uiAssets
-    ? await startUiServer({
-        home: o.home,
-        call: (m, a) => host.api.call(m, a, undefined),
-        assets: o.uiAssets,
-        ...(o.log ? { log: o.log } : {}),
-      })
-    : undefined;
-  if (ui) o.log?.(`dashboard on http://127.0.0.1:${ui.port}`);
-  const resumed = await host.resumeOnStart();
-  if (resumed.length) o.log?.(`resumed ${resumed.join(", ")}`);
-  let syncing = false;
-  const timer = setInterval(async () => {
-    if (syncing) return;
-    syncing = true;
+  let ui: Awaited<ReturnType<typeof startUiServer>>;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  // Whatever fails from here on must not leave the socket or the listener running behind a throw.
+  try {
     try {
-      for (const r of await host.syncAll())
-        if (!r.ok) o.log?.(`sync with ${r.node} failed: ${r.error}`);
-    } finally {
-      syncing = false;
+      ui = o.uiAssets
+        ? await startUiServer({
+            home: o.home,
+            call: (m, a) => host.api.call(m, a, undefined),
+            assets: o.uiAssets,
+            ...(o.uiPort !== undefined ? { port: o.uiPort } : {}),
+            ...(o.log ? { log: o.log } : {}),
+          })
+        : undefined;
+    } catch (e) {
+      // The dashboard is optional: the daemon runs without it.
+      o.log?.(`dashboard not started: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, o.intervalS * 1000);
+    if (ui) o.log?.(`dashboard on http://127.0.0.1:${ui.port}`);
+    const resumed = await host.resumeOnStart();
+    if (resumed.length) o.log?.(`resumed ${resumed.join(", ")}`);
+    let syncing = false;
+    timer = setInterval(async () => {
+      if (syncing) return;
+      syncing = true;
+      try {
+        for (const r of await host.syncAll())
+          if (!r.ok) o.log?.(`sync with ${r.node} failed: ${r.error}`);
+      } finally {
+        syncing = false;
+      }
+    }, o.intervalS * 1000);
+  } catch (e) {
+    clearInterval(timer);
+    await ui?.stop();
+    await server.stop(true);
+    rmSync(unix, { force: true });
+    throw e;
+  }
   return {
     socket: unix,
     ...(ui ? { ui: { port: ui.port } } : {}),

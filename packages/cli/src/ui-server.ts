@@ -3,7 +3,7 @@
 // bearer token for them, and refuses any Host header that is not the loopback address (which
 // also defeats DNS rebinding). The static bundle needs no token; the token lives in $HEPH_HOME/ui.json.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** The only api methods the listener forwards; everything that writes stays off the network. */
@@ -28,6 +28,26 @@ export function readUiFile(home: string): UiFile | undefined {
   return undefined;
 }
 
+/** The token of a ui.json that is still private; one that is malformed or readable by others is not trusted. */
+function trustedToken(home: string): string | undefined {
+  try {
+    if (statSync(uiFileOf(home)).mode & 0o077) return undefined;
+  } catch {
+    return undefined;
+  }
+  return readUiFile(home)?.token;
+}
+
+// The static bundle carries no secrets, but it must not be sniffed into another type or framed.
+const staticHeaders = (type: string): Record<string, string> => ({
+  "content-type": type,
+  "x-content-type-options": "nosniff",
+  "content-security-policy": type.startsWith("text/html")
+    ? "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+      "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    : "frame-ancestors 'none'",
+});
+
 const sameToken = (given: string, token: string) => {
   const a = Buffer.from(given);
   const b = Buffer.from(token);
@@ -42,7 +62,7 @@ export async function startUiServer(o: {
   log?: (line: string) => void;
 }): Promise<{ port: number; token: string; stop(): Promise<void> } | undefined> {
   // The token outlives the daemon so an open dashboard tab keeps working across restarts.
-  const token = readUiFile(o.home)?.token ?? randomBytes(32).toString("base64url");
+  const token = trustedToken(o.home) ?? randomBytes(32).toString("base64url");
   let port = 0;
   const fetch = async (req: Request): Promise<Response> => {
     const host = req.headers.get("host");
@@ -52,22 +72,22 @@ export async function startUiServer(o: {
     if (!path.startsWith("/api/")) {
       const a = req.method === "GET" || req.method === "HEAD" ? o.assets[path] : undefined;
       if (!a) return new Response("not found", { status: 404 });
-      return new Response(a.body, { headers: { "content-type": a.type } });
+      return new Response(a.body, { headers: staticHeaders(a.type) });
     }
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
     const bearer = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "");
     if (!bearer?.[1] || !sameToken(bearer[1], token))
       return new Response("unauthorized", { status: 401 });
     const method = path.slice("/api/".length);
-    if (!(UI_METHODS as readonly string[]).includes(method))
-      return new Response("not found", { status: 404 });
+    if (!UI_METHODS.some((m) => m === method)) return new Response("not found", { status: 404 });
     const length = Number(req.headers.get("content-length") ?? 0);
     if (length > MAX_BODY) return new Response("body too large", { status: 400 });
     let args: unknown[];
     try {
-      const text = await req.text();
-      if (text.length > MAX_BODY) return new Response("body too large", { status: 400 });
-      const body = JSON.parse(text) as { args?: unknown };
+      // Bytes, not UTF-16 units; a chunked body has no content-length to check up front.
+      const bytes = await req.arrayBuffer();
+      if (bytes.byteLength > MAX_BODY) return new Response("body too large", { status: 400 });
+      const body = JSON.parse(new TextDecoder().decode(bytes)) as { args?: unknown };
       if (!Array.isArray(body.args)) return new Response("args must be an array", { status: 400 });
       args = body.args;
     } catch {
@@ -103,8 +123,19 @@ export async function startUiServer(o: {
   }
   port = server.port as number;
   const file = uiFileOf(o.home);
-  writeFileSync(file, JSON.stringify({ port, token }), { mode: 0o600 });
-  chmodSync(file, 0o600); // the mode above only applies to a new file, and the umask trims it
+  // Written to a private temp file and renamed over ui.json, so the token is never readable by
+  // others, not even briefly. The mode on create is subject to the umask, hence the chmod.
+  const tmp = join(o.home, `.ui.json.${process.pid}.tmp`);
+  try {
+    writeFileSync(tmp, JSON.stringify({ port, token }), { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    await server.stop(true);
+    o.log?.(`dashboard not started: ${e instanceof Error ? e.message : String(e)}`);
+    return undefined;
+  }
   return {
     port,
     token,
