@@ -26,10 +26,13 @@ import {
   mergeChangeset,
   normalizePath,
   type PullRequests,
+  parentOf,
+  parentRefs,
   projectFiles,
   type RunPlanOptions,
   recordEscalation,
   recordPlan,
+  STACKABLE,
   type Worker,
 } from "@hephaestus/engine";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
@@ -78,6 +81,8 @@ export type PlanResult = {
   escalate?: string[];
   reason?: string;
   planner_attempts: number;
+  /** Something the user should know about how the run was set up (e.g. a parent that landed). */
+  note?: string;
 };
 
 const summary = (plan: Plan): TaskSummary[] =>
@@ -233,7 +238,13 @@ export function openRuntime(opts: {
       actor: "human",
       ...extra,
     } as EventDraft);
-  const meta = (runId: string, brief: Brief, workspaceRoot: string, changesetId: string) => ({
+  const meta = (
+    runId: string,
+    brief: Brief,
+    workspaceRoot: string,
+    changesetId: string,
+    stackOn?: string,
+  ) => ({
     ledger,
     brief,
     runId,
@@ -243,7 +254,44 @@ export function openRuntime(opts: {
     config: engineConfig,
     gates,
     workspace,
+    ...(stackOn ? { stackOn } : {}),
   });
+  /**
+   * heph new --stack-on: the parent must be a run of this workspace that this node owns, built
+   * or staged (design 3.1). One that already landed means a normal run, with a note.
+   */
+  const stackParent = (parentId: string): { stackOn?: string; note?: string } => {
+    const fail = (why: string) => {
+      throw new Error(`--stack-on ${parentId}: ${why}`);
+    };
+    const parent = ledger.run(parentId);
+    if (!parent) return fail(`no run ${parentId} on ${config.node.id}`);
+    if (parent.owner_node !== config.node.id)
+      return fail(`${parentId} is owned by ${parent.owner_node}, not ${config.node.id}`);
+    const d = ledger.read({ run_id: parentId, types: ["run.created"] }).at(-1)?.event.data as
+      | { workspace_name?: string; workspace_root?: string }
+      | undefined;
+    const sameWorkspace = d?.workspace_name
+      ? d.workspace_name === config.workspace.name
+      : d?.workspace_root === opts.workspaceDir;
+    if (!sameWorkspace)
+      return fail(
+        `${parentId} is a run of workspace ${d?.workspace_name ?? d?.workspace_root ?? "?"}, not ${config.workspace.name}`,
+      );
+    if (parent.status === "finished")
+      return { note: `${parentId} already landed; this run starts from the target` };
+    if (parent.status === "failed") {
+      const reason = (
+        ledger.read({ run_id: parentId, types: ["run.failed"] }).at(-1)?.event.data as
+          | { reason?: string }
+          | undefined
+      )?.reason;
+      return fail(`${parentId} is failed${reason ? ` (${reason})` : ""}`);
+    }
+    if (!STACKABLE.has(parent.status))
+      return fail(`${parentId} is ${parent.status}; a parent must be built or staged`);
+    return { stackOn: parentId };
+  };
   const runOptions = (runId: string): Omit<RunPlanOptions, "brief" | "plan"> & { brief: Brief } => {
     const c = created(runId);
     return {
@@ -295,7 +343,9 @@ export function openRuntime(opts: {
     changesetId: string,
     extra: Partial<PlannerInput> = {},
   ): Promise<PlanResult> {
-    const files = await projectFiles(workspace, workspaceRoot);
+    // A stacked run is planned against the parent's branch where it has one (design 3.1).
+    const refs = await parentRefs({ workspace, workspaceRoot, ...parentOf(ledger, runId) });
+    const files = await projectFiles(workspace, workspaceRoot, refs);
     const route = config.routing.planner?.default ?? config.routing.planner?.standard;
     if (!route) throw new Error("no route for the planner role");
     const m = meta(runId, brief, workspaceRoot, changesetId);
@@ -399,14 +449,19 @@ export function openRuntime(opts: {
       if (ownLedger) ledger.close();
     },
 
-    async newRun(briefInput: unknown, o: { runId?: string } = {}): Promise<PlanResult> {
+    async newRun(
+      briefInput: unknown,
+      o: { runId?: string; stackOn?: string } = {},
+    ): Promise<PlanResult> {
       const brief = Brief.parse(briefInput);
       const gate = briefGate(brief, workspace, projectGates);
       if (gate.verdict === "fail") throw new Error(`brief gate: ${gate.evidence.join("; ")}`);
+      const stack = o.stackOn ? stackParent(o.stackOn) : {};
       const runId = o.runId ?? newRunId();
       if (ledger.run(runId)) throw new Error(`run ${runId} already exists`);
-      createRun(meta(runId, brief, opts.workspaceDir, runId));
-      return plan(runId, brief, opts.workspaceDir, runId);
+      createRun(meta(runId, brief, opts.workspaceDir, runId, stack.stackOn));
+      const result = await plan(runId, brief, opts.workspaceDir, runId);
+      return stack.note ? { ...result, note: stack.note } : result;
     },
 
     /**
@@ -526,6 +581,14 @@ export function openRuntime(opts: {
         attempts: ledger.attempts(runId),
         usage: ledger.usage(runId),
         ...(staged?.prs ? { prs: staged.prs } : {}),
+        ...(run.stack_on
+          ? {
+              stack_on: {
+                run_id: run.stack_on,
+                status: ledger.run(run.stack_on)?.status ?? "unknown",
+              },
+            }
+          : {}),
       };
     },
 

@@ -59,6 +59,7 @@ type Flags = {
   now: boolean;
   home?: string;
   on?: string;
+  stackOn?: string;
   tests: boolean;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
@@ -86,7 +87,7 @@ type Out<F extends (...a: never[]) => unknown> = Promise<Awaited<ReturnType<F>>>
 function remote(api: Api, follow: (line: string) => void) {
   const c = <T>(method: string, ...args: unknown[]) => api.call(method, args) as Promise<T>;
   return {
-    newRun: (brief: unknown, o: { runId?: string; on?: string }) =>
+    newRun: (brief: unknown, o: { runId?: string; on?: string; stackOn?: string }) =>
       c<Awaited<ReturnType<Runtime["newRun"]>> & { node?: string; placed?: string }>(
         "newRun",
         brief,
@@ -258,6 +259,7 @@ const planText = (r: Awaited<ReturnType<Runtime["newRun"]>> & { node?: string; p
   `${[
     `run ${r.run_id}: ${r.status} after ${r.planner_attempts} planner attempt(s)${r.node ? ` on ${r.node}` : ""}`,
     ...(r.placed ? [`  (${r.placed})`] : []),
+    ...(r.note ? [`  note: ${r.note}`] : []),
     ...(r.tasks ? [tasksText(r.tasks)] : []),
     ...(r.escalate ?? []).map((x) => `  - ${x}`),
     ...(r.reason ? [`  ${r.reason}`] : []),
@@ -279,6 +281,7 @@ const newCommand = command({
       return rt.newRun(data, {
         ...(ctx.flags.runId ? { runId: ctx.flags.runId } : {}),
         ...(ctx.flags.on ? { on: ctx.flags.on } : {}),
+        ...(ctx.flags.stackOn ? { stackOn: ctx.flags.stackOn } : {}),
       });
     }),
   render: planText,
@@ -310,8 +313,8 @@ const COMMANDS: Record<string, Command<unknown>> = {
   new: {
     ...newCommand,
     usage: [
-      "new --brief <file> [--on <node>]",
-      "Plan a run from a brief (--on local keeps it here); it waits for your approval",
+      "new --brief <file> [--on <node>] [--stack-on <run>]",
+      "Plan a run from a brief (--on local keeps it here; --stack-on builds on another run's branch); it waits for your approval",
     ],
   },
   "new feature": newCommand,
@@ -368,6 +371,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
         return `${s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}`).join("\n") || "no runs"}\n`;
       return [
         `run ${s.run.run_id}: ${s.run.status}${s.plan_approved ? "" : " (plan not approved)"}`,
+        ...(s.stack_on ? [`  stacked on ${s.stack_on.run_id} (${s.stack_on.status})`] : []),
         ...s.units.map(
           (u) => `  ${u.unit_id} ${u.status} (${u.attempts} attempt${u.attempts === 1 ? "" : "s"})`,
         ),
@@ -665,6 +669,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         now: { type: "boolean", default: false },
         home: { type: "string" },
         on: { type: "string" },
+        "stack-on": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         tests: { type: "boolean", default: false },
         version: { type: "boolean", default: false },
@@ -693,6 +698,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       tests: values.tests ?? false,
       ...(values.home ? { home: values.home } : {}),
       ...(values.on ? { on: values.on } : {}),
+      ...(values["stack-on"] ? { stackOn: values["stack-on"] } : {}),
       ...(values.brief ? { brief: values.brief } : {}),
       ...(values["run-id"] ? { runId: values["run-id"] } : {}),
       ...(values.budget ? { budget: Number.parseInt(values.budget, 10) } : {}),

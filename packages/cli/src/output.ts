@@ -38,6 +38,8 @@ export const PlanResult = z
     planner_attempts: z.int().positive(),
     /** The node that owns the run (SPEC section 7); `new` only. */
     node: z.string().optional(),
+    /** How the run was set up, when the user should know (e.g. --stack-on a parent that landed). */
+    note: z.string().optional(),
   })
   .strict();
 
@@ -83,6 +85,8 @@ export const StatusOne = z
     ),
     usage: z.array(z.object({ provider: z.string(), model: z.string() }).passthrough()),
     prs: z.record(z.string(), z.string()).optional(),
+    /** The run this one is stacked on (heph new --stack-on), and where that run stands. */
+    stack_on: z.object({ run_id: z.string(), status: z.string() }).strict().optional(),
     /** Set when the run's owner could not be reached to refresh it. */
     stale: z.string().optional(),
   })

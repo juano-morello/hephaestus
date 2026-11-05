@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type SpawnInput, type SpawnOutput, Stopped, type Worker } from "@hephaestus/engine";
+import { type Brief, briefHash, type Task } from "@hephaestus/core";
+import {
+  runPlan,
+  type SpawnInput,
+  type SpawnOutput,
+  Stopped,
+  type Worker,
+} from "@hephaestus/engine";
 import { openLedger } from "@hephaestus/ledger";
 import { type PlannerInput, type PlannerSession, runPlanner } from "@hephaestus/workers";
 import type { z } from "zod";
@@ -456,6 +463,122 @@ describe("heph lifecycle", () => {
     expect((await heph(["plan", "revise", "R10"], { planner: p.fn })).error?.message).toBe(
       "missing instructions",
     );
+  });
+
+  test("new --stack-on builds on a built parent's branch, and refuses a failed one", async () => {
+    await initWithTests();
+    // The parent, built straight through the engine (no command gates, so no sandbox needed).
+    const parentBrief = Bun.YAML.parse(BRIEF) as Brief;
+    const ledger = openLedger(home, { nodeId: "test-node" });
+    const config = {
+      routing: { implementer: { default: { model: "claude/sonnet" } } },
+      maxAttempts: 1,
+      parallel: 1,
+      budgetTokens: 1000,
+      tools: [],
+      commands: {},
+    };
+    const parent = await runPlan({
+      ledger,
+      workspace: {
+        repos: { calc: "." },
+        projects: { calc: { repo: "calc", path: ".", stack: "sh" } },
+      },
+      workspaceRoot: ws,
+      brief: parentBrief,
+      plan: {
+        schema: 1,
+        brief_hash: briefHash(parentBrief),
+        tasks: [
+          task({
+            id: "A1",
+            title: "a",
+            kind: "implement",
+            scope: ["only-on-a.txt"],
+            spec: "a",
+          }) as Task,
+        ],
+        risks: [],
+      },
+      runId: "A",
+      changesetId: "A",
+      worker: {
+        async spawn(input) {
+          put(join(input.workdir, "only-on-a.txt"), "a\n");
+          return {
+            output: { schema: 1, summary: "", claims: [], touched: ["only-on-a.txt"] },
+            transcript: "",
+            usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+            exit: "ok",
+          };
+        },
+      },
+      gates: [],
+      config,
+      worktreesDir: join(home, "worktrees"),
+    });
+    ledger.close();
+    expect(parent.status).toBe("built");
+
+    const p = planner([PLAN, PLAN]);
+    const stacked = await heph(
+      ["new", "--brief", join(root, "brief.yaml"), "--run-id", "B", "--stack-on", "A"],
+      { planner: p.fn },
+    );
+    expect(stacked).toMatchObject({ ok: true, data: { run_id: "B", status: "planned" } });
+    // The planner sees the parent's branch, not the checkout.
+    expect(p.prompts[0]).toContain("only-on-a.txt");
+    expect((await heph(["status", "B"])).data).toMatchObject({
+      run: { run_id: "B", stack_on: "A" },
+      stack_on: { run_id: "A", status: "built" },
+    });
+    expect((await heph(["status", "A"])).data).not.toHaveProperty("stack_on");
+
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "F"], {
+      planner: planner([PLAN]).fn,
+    });
+    await heph(["cancel", "F"]);
+    const refused = await heph(
+      ["new", "--brief", join(root, "brief.yaml"), "--run-id", "G", "--stack-on", "F"],
+      { planner: planner([PLAN]).fn },
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.error?.message).toContain("F is failed (cancelled by user)");
+    expect((await heph(["status", "G"])).ok).toBe(false);
+
+    const planned = await heph(
+      ["new", "--brief", join(root, "brief.yaml"), "--run-id", "H", "--stack-on", "B"],
+      { planner: planner([PLAN]).fn },
+    );
+    expect(planned.error?.message).toContain("B is planned");
+    expect(
+      (
+        await heph(["new", "--brief", join(root, "brief.yaml"), "--stack-on", "A", "--on", "far"], {
+          planner: planner([PLAN]).fn,
+        })
+      ).error?.message,
+    ).toContain("runs on test-node");
+
+    // A parent that already landed: a normal run from the target, and the result says so.
+    const l2 = openLedger(home, { nodeId: "test-node" });
+    l2.append({
+      run_id: "A",
+      changeset_id: "A",
+      config_hash: "x",
+      actor: "engine",
+      type: "run.finished",
+      data: {},
+    });
+    l2.close();
+    const landed = await heph(
+      ["new", "--brief", join(root, "brief.yaml"), "--run-id", "C", "--stack-on", "A"],
+      { planner: planner([PLAN]).fn },
+    );
+    expect(landed.data).toMatchObject({ run_id: "C", status: "planned" });
+    expect((landed.data as { note?: string }).note).toContain("A already landed");
+    expect(
+      ((await heph(["status", "C"])).data as { run: { stack_on: unknown } }).run.stack_on,
+    ).toBe(null);
   });
 
   test("errors use the envelope", async () => {

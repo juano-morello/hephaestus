@@ -279,10 +279,18 @@ export function openHost(o: HostOptions) {
       }
       return api.call(p.method, p.args, undefined);
     },
-    "run.new": async (p: { workspace: WorkspaceDescription; brief: unknown; runId?: string }) => {
+    "run.new": async (p: {
+      workspace: WorkspaceDescription;
+      brief: unknown;
+      runId?: string;
+      stackOn?: string;
+    }) => {
       const { dir } = await prepare(p.workspace);
       const { rt } = await runtimeFor(dir);
-      return rt.newRun(p.brief, p.runId ? { runId: p.runId } : {});
+      return rt.newRun(p.brief, {
+        ...(p.runId ? { runId: p.runId } : {}),
+        ...(p.stackOn ? { stackOn: p.stackOn } : {}),
+      });
     },
   });
 
@@ -303,42 +311,58 @@ export function openHost(o: HostOptions) {
     async call(method: string, args: unknown[], cwd: string | undefined): Promise<unknown> {
       switch (method) {
         case "newRun": {
-          const [brief, opts] = args as [unknown, { runId?: string; on?: string }];
+          const [brief, opts] = args as [
+            unknown,
+            { runId?: string; on?: string; stackOn?: string },
+          ];
           if (!cwd) throw new Error("newRun needs a workspace");
+          const runOpts = {
+            ...(opts?.runId ? { runId: opts.runId } : {}),
+            ...(opts?.stackOn ? { stackOn: opts.stackOn } : {}),
+          };
           const here = async (placed?: string) => {
             const { rt } = await runtimeFor(cwd);
             return {
-              ...(await rt.newRun(brief, opts?.runId ? { runId: opts.runId } : {})),
+              ...(await rt.newRun(brief, runOpts)),
               node: me,
               ...(placed ? { placed } : {}),
             };
           };
-          if (opts?.on === "local" || opts?.on === me) return here();
+          // A stacked run goes where its parent is: the parent's branches are on that node.
+          const parentOwner = opts?.stackOn ? ownerOf(opts.stackOn) : undefined;
+          if (parentOwner) {
+            const asked = opts?.on === "local" ? me : opts?.on;
+            if (asked && asked !== parentOwner)
+              throw new Error(
+                `--stack-on ${opts?.stackOn} runs on ${parentOwner}, its parent's owner, not on ${asked}`,
+              );
+          }
+          if (parentOwner === me || opts?.on === "local" || opts?.on === me) return here();
           const { workspace } = await runtimeFor(cwd);
           let description: WorkspaceDescription;
           try {
             description = await describeWorkspace(cwd, workspace);
           } catch (e) {
             // Can't leave this node (a repo has no remote): fine unless a node was asked for.
-            if (opts?.on || !(e instanceof Error)) throw e;
+            if (opts?.on || parentOwner || !(e instanceof Error)) throw e;
             const preferred = Object.entries(o.config.nodes).find(([, n]) => n.preferred)?.[0];
             if (!preferred || preferred === me) return here();
             return here(
               `here: ${e.message.replace("a run on another node", `a run on ${preferred}`)}`,
             );
           }
-          const node = await placeNew(opts?.on);
+          const node = parentOwner ?? (await placeNew(opts?.on));
           if (node === me) return here();
           const result = await withPeer(node, async (t) => {
             const r = await t.request<Record<string, unknown>>("run.new", {
               workspace: description,
               brief,
-              ...(opts?.runId ? { runId: opts.runId } : {}),
+              ...runOpts,
             });
             await syncWith(ledger, t);
             return r;
           }).catch((e: unknown) => {
-            if (opts?.on || !(e instanceof Error)) throw e;
+            if (opts?.on || parentOwner || !(e instanceof Error)) throw e;
             // The preferred node, picked for you: say how to keep the run here instead.
             throw new Error(`${e.message}\n(heph new --on local keeps the run on ${me})`);
           });

@@ -27,6 +27,7 @@ import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
 import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
+import { baseRef, parentOf, stackRefs } from "./stack.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -82,6 +83,11 @@ export type RunPlanOptions = {
   runner?: Runner;
   /** Tests only: called before and after every effect (see effects.ts). */
   chaos?: Chaos;
+  /**
+   * The run this one is stacked on (design 3.1). Default: the run's recorded `stack_on`. Repos
+   * the parent touched start from its branch while it is built or staged.
+   */
+  stackOn?: string;
 };
 
 export type RunOutcome = {
@@ -130,7 +136,15 @@ export async function runPlan(opts: RunPlanOptions): Promise<RunOutcome> {
 
 type RunMeta = Pick<
   RunPlanOptions,
-  "ledger" | "brief" | "runId" | "changesetId" | "workspaceRoot" | "config" | "gates" | "eval"
+  | "ledger"
+  | "brief"
+  | "runId"
+  | "changesetId"
+  | "workspaceRoot"
+  | "config"
+  | "gates"
+  | "eval"
+  | "stackOn"
 > & { workspaceName?: string | undefined };
 
 const runEvent = (o: Pick<RunPlanOptions, "runId" | "changesetId" | "config" | "gates">) => ({
@@ -167,6 +181,7 @@ export function createRun(o: RunMeta): void {
       brief: o.brief,
       workspace_root: o.workspaceRoot,
       ...(o.workspaceName ? { workspace_name: o.workspaceName } : {}),
+      ...(o.stackOn ? { stack_on: o.stackOn } : {}),
     },
   });
 }
@@ -436,9 +451,12 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const lost = resuming && statusBefore === "running" ? lostPause(ledger, runId) : undefined;
   const scope = { ledger, base, chaos: opts.chaos };
   if (!resuming) {
-    // One changeset branch per touched repo, from its target (SPEC section 4).
+    // One changeset branch per touched repo, from its target (SPEC section 4), or from the
+    // parent's branch for a stacked run (design 3.1).
+    const parent = parentOf(ledger, runId, opts.stackOn);
     for (const [repo, git] of gits) {
-      const at = await git.revParse(await targetBase(git, opts.targets?.[repo] ?? "main"));
+      const target = opts.targets?.[repo] ?? "main";
+      const at = await git.revParse(await baseRef({ git, repo, ...parent, target }));
       await effect(
         scope,
         {
@@ -574,7 +592,6 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   return { status: "built", runBranch: branch, heads: await heads() };
 }
 
-/** Integration gate over the changeset: touched repos at their run branch, the rest at target. */
 /**
  * Where a repo's work starts from: `origin/<target>` when the repo has that remote (fetched
  * first, since this node's local branch may be stale), else the local target branch.
@@ -587,9 +604,15 @@ export async function targetBase(git: Git, target: string): Promise<string> {
   return target;
 }
 
+/**
+ * Integration gate over the changeset: touched repos at their run branch, the rest at the
+ * parent's branch for a stacked run (where it has one), else at target.
+ */
 export async function integrationGate(
   opts: Pick<
     RunPlanOptions,
+    | "ledger"
+    | "stackOn"
     | "workspace"
     | "workspaceRoot"
     | "targets"
@@ -600,12 +623,14 @@ export async function integrationGate(
   >,
   touched: string[],
 ) {
-  const refs: Record<string, string> = {};
-  for (const [r, path] of Object.entries(opts.workspace.repos)) {
-    refs[r] = touched.includes(r)
-      ? runBranch(opts.runId)
-      : await targetBase(createGit(resolve(opts.workspaceRoot, path)), opts.targets?.[r] ?? "main");
-  }
+  const refs = await stackRefs({
+    workspace: opts.workspace,
+    workspaceRoot: opts.workspaceRoot,
+    targets: opts.targets,
+    runId: opts.runId,
+    touched,
+    ...parentOf(opts.ledger, opts.runId, opts.stackOn),
+  });
   return runIntegrationGate({
     workspace: opts.workspace,
     workspaceRoot: opts.workspaceRoot,
