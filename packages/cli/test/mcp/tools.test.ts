@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { NoDaemonError } from "../../src/mcp/guard.ts";
+import { ALLOWED_METHODS, NoDaemonError } from "../../src/mcp/guard.ts";
 import { connectTestClient, fakeDaemon } from "./harness.ts";
 
 describe("heph mcp server", () => {
@@ -314,6 +314,305 @@ describe("mutating tools", () => {
     const client = await connectTestClient({ client: d, workspace: () => "/ws" });
     const r = await client.callTool({ name: "heph_new", arguments: { brief } });
     expect(textOf(r)).toBe("run r3: failed after 1 planner attempt(s)\n  x\n");
+    await client.close();
+  });
+});
+
+const statusOf = (status: string, plan_approved = true) => ({
+  run: { run_id: "r1", status },
+  plan_approved,
+  units: [],
+  attempts: [],
+  usage: [],
+});
+const ev = (id: string, type: string, summary: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  ts: "2026-11-05T10:00:00Z",
+  type,
+  summary,
+  ...extra,
+});
+/** A clock that only moves when the code under test sleeps. */
+const fakeClock = () => {
+  let t = 1_000_000;
+  return {
+    elapsed: () => t - 1_000_000,
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms;
+    },
+  };
+};
+
+describe("heph_run", () => {
+  test("an unapproved plan is not run: the user approves it themselves", async () => {
+    const { client: d, calls } = fakeDaemon({ status: () => statusOf("planned", false) });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(r.isError).toBeFalsy();
+    expect(calls.map((c) => c.method)).toEqual(["status"]);
+    expect(calls[0]).toEqual({ method: "status", args: ["r1"], cwd: "/ws" });
+    expect(r.structuredContent).toMatchObject({
+      run_id: "r1",
+      state: "awaiting_plan_approval",
+      status: "planned",
+      lines: [],
+    });
+    expect(textOf(r)).toContain("ask the user to run `heph approve plan r1` themselves");
+    await client.close();
+  });
+
+  test("an approved plan is run once and its first lines come back", async () => {
+    const clock = fakeClock();
+    const events = [ev("e1", "run.plan_ready", "plan ready")];
+    const { client: d, calls } = fakeDaemon({
+      status: () => statusOf("running"),
+      run: () => {
+        events.push(
+          ev("e2", "unit.attempt.started", "attempt started", { unit_id: "u1", attempt: 1 }),
+        );
+        return { run_id: "r1", started: true, after: "e1" };
+      },
+      explain: () => ({ run_id: "r1", events }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(r.isError).toBeFalsy();
+    const runs = calls.filter((c) => c.method === "run");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toEqual({ method: "run", args: ["r1", {}], cwd: "/ws" });
+    expect(r.structuredContent).toEqual({
+      run_id: "r1",
+      state: "started",
+      status: "running",
+      lines: ["u1/a1 attempt started"],
+      cursor: "e2",
+    });
+    expect(clock.elapsed()).toBe(0);
+    expect(textOf(r)).toContain("u1/a1 attempt started");
+    expect(textOf(r)).toContain("heph_watch");
+    await client.close();
+  });
+
+  test("a run that is already going is already_running, not an error", async () => {
+    const clock = fakeClock();
+    const { client: d } = fakeDaemon({
+      status: () => statusOf("running"),
+      run: () => ({ run_id: "r1", started: false, running: true, after: "e1" }),
+      explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({ state: "already_running", cursor: "e1" });
+    expect(textOf(r)).toContain("already running");
+    await client.close();
+  });
+
+  test("a daemon refusal is an error with its message", async () => {
+    const { client: d } = fakeDaemon({
+      status: () => statusOf("escalated"),
+      run: () => {
+        throw new Error("the planner escalated r1; see heph explain r1");
+      },
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe("the planner escalated r1; see heph explain r1");
+    await client.close();
+  });
+});
+
+describe("heph_watch", () => {
+  const quiet = () =>
+    fakeDaemon({
+      status: () => statusOf("running"),
+      explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
+    });
+
+  test("passes since: only newer milestones come back, with the next cursor", async () => {
+    const clock = fakeClock();
+    const { client: d } = fakeDaemon({
+      status: () => statusOf("running"),
+      explain: () => ({
+        run_id: "r1",
+        events: [
+          ev("e1", "run.plan_ready", "plan ready"),
+          ev("e2", "unit.attempt.started", "attempt started", { unit_id: "u1", attempt: 1 }),
+        ],
+      }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1", since: "e1" } });
+    expect(r.structuredContent).toEqual({
+      run_id: "r1",
+      status: "running",
+      lines: ["u1/a1 attempt started"],
+      cursor: "e2",
+      outcome: "running",
+    });
+    expect(textOf(r)).toContain("since");
+    expect(textOf(r)).toContain("e2");
+    await client.close();
+  });
+
+  for (const [wait_s, ms] of [
+    [999, 25_000],
+    [-3, 0],
+    [undefined, 20_000],
+  ] as const) {
+    test(`wait_s ${wait_s} waits ${ms} ms`, async () => {
+      const clock = fakeClock();
+      const { client: d } = quiet();
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+      const r = await client.callTool({
+        name: "heph_watch",
+        arguments: { run: "r1", since: "e1", ...(wait_s === undefined ? {} : { wait_s }) },
+      });
+      expect(r.isError).toBeFalsy();
+      expect(clock.elapsed()).toBe(ms);
+      expect((r.structuredContent as { lines: string[] }).lines).toEqual(["r1: still running"]);
+      await client.close();
+    });
+  }
+
+  const outcomeCase = (status: string, events: ReturnType<typeof ev>[], plan_approved = true) =>
+    fakeDaemon({
+      status: () => statusOf(status, plan_approved),
+      explain: () => ({ run_id: "r1", events }),
+    });
+  for (const [name, status, events, next] of [
+    [
+      "waiting_for_you",
+      "paused",
+      [ev("e1", "run.paused", "paused: waiting for you")],
+      "explain to the user and ask; do not retry",
+    ],
+    ["planner_escalated", "escalated", [], "explain to the user and ask; do not retry"],
+    [
+      "staged",
+      "staged",
+      [ev("e1", "merge.staged", "staged")],
+      "tell the user to review, then run `heph approve merge r1` themselves",
+    ],
+  ] as const) {
+    test(`outcome ${name} says what to do next`, async () => {
+      const { client: d } = outcomeCase(status, [...events]);
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+      const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1" } });
+      expect((r.structuredContent as { outcome: string }).outcome).toBe(name);
+      expect(textOf(r)).toContain(`next: ${next}`);
+      await client.close();
+    });
+  }
+
+  test("description says what to do when no cursor comes back", async () => {
+    const { client: d } = fakeDaemon({});
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const { tools } = await client.listTools();
+    const desc = tools.find((t) => t.name === "heph_watch")?.description ?? "";
+    expect(desc).toContain("no cursor");
+    expect(desc).toContain("tight");
+    await client.close();
+  });
+
+  test("progress: one notification per line with a token, none without", async () => {
+    const events = [
+      ev("e1", "run.plan_ready", "plan ready"),
+      ev("e2", "unit.attempt.started", "attempt started", { unit_id: "u1", attempt: 1 }),
+    ];
+    const mk = () =>
+      fakeDaemon({
+        status: () => statusOf("running"),
+        explain: () => ({ run_id: "r1", events }),
+      });
+    const withToken = await connectTestClient({
+      client: mk().client,
+      workspace: () => "/ws",
+      ...fakeClock(),
+    });
+    const seen: { progress: number; message?: string }[] = [];
+    const a = await withToken.callTool(
+      { name: "heph_watch", arguments: { run: "r1" } },
+      undefined,
+      {
+        onprogress: (p) => seen.push({ progress: p.progress, message: p.message }),
+      },
+    );
+    const lines = (a.structuredContent as { lines: string[] }).lines;
+    expect(lines.length).toBeGreaterThan(1);
+    expect(seen).toEqual(lines.map((message, i) => ({ progress: i + 1, message })));
+
+    const without = await connectTestClient({
+      client: mk().client,
+      workspace: () => "/ws",
+      ...fakeClock(),
+    });
+    const notes: unknown[] = [];
+    without.fallbackNotificationHandler = async (n) => {
+      notes.push(n);
+    };
+    const b = await without.callTool({ name: "heph_watch", arguments: { run: "r1" } });
+    expect(notes).toEqual([]);
+    expect(b).toEqual(a);
+    await withToken.close();
+    await without.close();
+  });
+});
+
+describe("tool-set safety", () => {
+  const NINE = [
+    "heph_cancel",
+    "heph_explain",
+    "heph_hint",
+    "heph_new",
+    "heph_plan_revise",
+    "heph_plan_show",
+    "heph_run",
+    "heph_status",
+    "heph_watch",
+  ];
+
+  test("exactly the nine tools, none of them approves", async () => {
+    const { client: d } = fakeDaemon({});
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name).sort();
+    expect(names).toEqual(NINE);
+    for (const n of names) expect(n).not.toMatch(/approve/i);
+    await client.close();
+  });
+
+  test("calling every tool reaches only allowed daemon methods", async () => {
+    const { client: d, calls } = fakeDaemon({
+      newRun: () => planned,
+      planShow: () => plan(true),
+      revise: () => planned,
+      run: () => ({ run_id: "r1", started: true, after: "e1" }),
+      status: () => statusOf("running"),
+      explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
+      hint: () => ({ run_id: "r1", unit: "u1", recorded: ["a hint"] }),
+      cancel: () => ({ run_id: "r1", status: "failed" }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+    const args: Record<string, Record<string, unknown>> = {
+      heph_new: { brief },
+      heph_plan_show: { run: "r1" },
+      heph_plan_revise: { run: "r1", instructions: "x" },
+      heph_run: { run: "r1" },
+      heph_watch: { run: "r1", wait_s: 0 },
+      heph_status: { run: "r1" },
+      heph_explain: { run: "r1" },
+      heph_hint: { run: "r1", unit: "u1", text: "x" },
+      heph_cancel: { run: "r1" },
+    };
+    for (const name of NINE) {
+      const r = await client.callTool({ name, arguments: args[name] });
+      expect({ name, isError: r.isError }).toEqual({ name, isError: undefined });
+    }
+    expect(calls.length).toBeGreaterThanOrEqual(NINE.length);
+    for (const c of calls) expect(ALLOWED_METHODS as readonly string[]).toContain(c.method);
     await client.close();
   });
 });

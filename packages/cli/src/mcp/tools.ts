@@ -1,9 +1,10 @@
-// The tools a chat host sees. Every one goes through toolResult: daemon call, schema check, text + structured answer.
+// The tools a chat host sees. One-call tools go through toolResult (daemon call, schema check, text + structured answer); heph_run and heph_watch compose several calls through the same guarded client.
 
 import { Brief } from "@hephaestus/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { OUTPUT } from "../output.ts";
+import { Explain, OUTPUT, StatusOne } from "../output.ts";
+import type { WatchView } from "../watch.ts";
 import type { AllowedMethod } from "./guard.ts";
 import type { McpCtx } from "./server.ts";
 import {
@@ -12,8 +13,11 @@ import {
   hintText,
   planResultText,
   planShowText,
+  runText,
   statusText,
+  watchText,
 } from "./text.ts";
+import { watchStep } from "./watch.ts";
 
 export type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -25,6 +29,8 @@ const failure = (text: string): ToolResult => ({
   isError: true,
   content: [{ type: "text", text }],
 });
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * Runs one daemon call, checks its answer against OUTPUT[command], and renders it.
@@ -39,7 +45,7 @@ export async function toolResult<C extends keyof typeof OUTPUT>(
   try {
     raw = await ctx.client.call(call.method, call.args, call.cwd ?? ctx.workspace());
   } catch (e) {
-    return failure(e instanceof Error ? e.message : String(e));
+    return failure(errorText(e));
   }
   const parsed = OUTPUT[call.command].safeParse(raw);
   if (!parsed.success)
@@ -50,6 +56,61 @@ export async function toolResult<C extends keyof typeof OUTPUT>(
     structuredContent: data as Record<string, unknown>,
   };
 }
+
+const OUTCOMES = [
+  "running",
+  "awaiting_plan_approval",
+  "waiting_for_you",
+  "planner_escalated",
+  "staged",
+  "finished",
+  "failed",
+] as const;
+const RunToolResult = z
+  .object({
+    run_id: z.string(),
+    state: z.enum(["awaiting_plan_approval", "started", "already_running"]),
+    status: z.string(),
+    lines: z.array(z.string()),
+    cursor: z.string().optional(),
+  })
+  .strict();
+const WatchToolResult = z
+  .object({
+    run_id: z.string(),
+    status: z.string(),
+    lines: z.array(z.string()),
+    cursor: z.string().optional(),
+    outcome: z.enum(OUTCOMES),
+  })
+  .strict();
+/** What the daemon's `run` answers: a build job started on it, or one already going. */
+const RunStarted = z
+  .object({
+    run_id: z.string(),
+    started: z.boolean(),
+    running: z.boolean().optional(),
+    after: z.string().optional(),
+  })
+  .strict();
+
+/** A long poll waits at most this long, under common host tool-call timeouts. */
+const MAX_WAIT_S = 25;
+const DEFAULT_WAIT_S = 20;
+/** Daemon hiccups retried within one step; a missing run should fail fast, not after a minute. */
+const STEP_RETRIES = 3;
+
+/** status and explain through the guarded client, checked against the CLI's schemas. */
+function daemonView(ctx: McpCtx): WatchView {
+  const cwd = () => ctx.workspace();
+  return {
+    status: async (id) => StatusOne.parse(await ctx.client.call("status", [id], cwd())),
+    explain: async (id) => Explain.parse(await ctx.client.call("explain", [id], cwd())),
+  };
+}
+
+const withoutUndefined = <T extends Record<string, unknown>>(o: T): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
 const { $schema: _dialect, ...briefJsonSchema } = z.toJSONSchema(Brief) as Record<string, unknown>;
 // Built from the real schema, so what the model is told cannot drift from what heph_new accepts.
@@ -194,5 +255,121 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       inputSchema: { run: z.string().describe("The run id, e.g. r1") },
     },
     ({ run }) => toolResult(ctx, { method: "cancel", args: [run], command: "cancel" }, cancelText),
+  );
+
+  server.registerTool(
+    "heph_run",
+    {
+      description:
+        "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. Follow the build with heph_watch.",
+      inputSchema: { run: z.string().describe("The run id, e.g. r1") },
+      outputSchema: RunToolResult.shape,
+    },
+    async ({ run }) => {
+      const view = daemonView(ctx);
+      let s: Awaited<ReturnType<WatchView["status"]>>;
+      try {
+        s = await view.status(run);
+      } catch (e) {
+        return failure(errorText(e));
+      }
+      if (s.run.status === "planned" && !s.plan_approved) {
+        const r = {
+          run_id: run,
+          state: "awaiting_plan_approval" as const,
+          status: s.run.status,
+          lines: [],
+        };
+        return { content: [{ type: "text", text: runText(r) }], structuredContent: r };
+      }
+      let started: z.infer<typeof RunStarted>;
+      try {
+        const raw = await ctx.client.call("run", [run, {}], ctx.workspace());
+        const parsed = RunStarted.safeParse(raw);
+        if (!parsed.success)
+          return failure(`unexpected daemon answer for run: ${parsed.error.message}`);
+        started = parsed.data;
+      } catch (e) {
+        return failure(errorText(e));
+      }
+      if (!started.started && !started.running)
+        return failure(`the daemon did not start ${run} and it is not running`);
+      try {
+        const w = await watchStep(run, view, {
+          since: started.after,
+          waitMs: 0,
+          retries: STEP_RETRIES,
+          sleep: ctx.sleep,
+          now: ctx.now,
+        });
+        const r = {
+          run_id: run,
+          state: started.started ? ("started" as const) : ("already_running" as const),
+          status: w.status,
+          lines: w.lines,
+          cursor: w.cursor,
+        };
+        return {
+          content: [{ type: "text", text: runText(r) }],
+          structuredContent: withoutUndefined(r),
+        };
+      } catch (e) {
+        return failure(errorText(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "heph_watch",
+    {
+      description: `Wait up to wait_s seconds (default ${DEFAULT_WAIT_S}, at most ${MAX_WAIT_S}) for a run's next milestones and say what it needs. Pass the returned cursor as since on the next call; omit since the first time to catch up. When no cursor is returned, call again with since omitted, but not in a tight loop. Stop watching when the outcome is not running and do what next says; approvals are always the user's.`,
+      inputSchema: {
+        run: z.string().describe("The run id, e.g. r1"),
+        since: z
+          .string()
+          .optional()
+          .describe("The cursor from the previous heph_watch or heph_run; omit to catch up"),
+        wait_s: z
+          .number()
+          .optional()
+          .describe(`Seconds to wait for news, 0 to ${MAX_WAIT_S}; default ${DEFAULT_WAIT_S}`),
+      },
+      outputSchema: WatchToolResult.shape,
+    },
+    async ({ run, since, wait_s }, extra) => {
+      const waitS = Math.min(MAX_WAIT_S, Math.max(0, wait_s ?? DEFAULT_WAIT_S));
+      const token = extra._meta?.progressToken;
+      const sent: Promise<void>[] = [];
+      let progress = 0;
+      try {
+        const w = await watchStep(run, daemonView(ctx), {
+          since,
+          waitMs: waitS * 1000,
+          retries: STEP_RETRIES,
+          sleep: ctx.sleep,
+          now: ctx.now,
+          ...(token === undefined
+            ? {}
+            : {
+                onLine: (line: string) => {
+                  sent.push(
+                    extra.sendNotification({
+                      method: "notifications/progress",
+                      params: { progressToken: token, progress: ++progress, message: line },
+                    }),
+                  );
+                },
+              }),
+        });
+        await Promise.all(sent);
+        return {
+          content: [{ type: "text", text: watchText(w) }],
+          structuredContent: withoutUndefined(w),
+        };
+      } catch (e) {
+        await Promise.allSettled(sent);
+        return failure(errorText(e));
+      }
+    },
   );
 }
