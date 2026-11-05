@@ -8,6 +8,7 @@ export * from "./graph/edges.ts";
 export * from "./graph/ready.ts";
 export * from "./planner/correction.ts";
 export * from "./planner/evaluate.ts";
+export * from "./planner/faults.ts";
 export * from "./schemas/brief.ts";
 export * from "./schemas/config.ts";
 export * from "./schemas/eval.ts";
