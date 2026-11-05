@@ -22,12 +22,12 @@ import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
 import { type JoinLock, joinLocks } from "./join.ts";
-import { landChangeset, mergeChangeset } from "./land.ts";
+import { type LandOptions, landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
 import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
-import { ancestorsOf, baseRef, stackRefs, unresolvedStack } from "./stack.ts";
+import { ancestorsOf, baseRef, restackChildren, stackRefs, unresolvedStack } from "./stack.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -587,8 +587,12 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
       };
     }
     const merged = await mergeChangeset(opts);
-    if (merged.status === "merged")
+    if (merged.status === "merged") {
+      // Staged children of this run are restacked onto the target and retargeted, as after
+      // `heph approve merge` (design 3.3); one that fails is paused on its own, never thrown.
+      await restackChildren({ ledger, parentId: runId, options: (id) => childOptions(opts, id) });
       return { status: "landed", runBranch: branch, heads: await heads(), ...prs };
+    }
     if (merged.status === "not_ready")
       return { status: "staged", runBranch: branch, heads: await heads(), ...prs };
     return {
@@ -600,6 +604,23 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     };
   }
   return { status: "built", runBranch: branch, heads: await heads() };
+}
+
+/**
+ * Landing options for a run stacked on the one `opts` built, from what the ledger holds about it:
+ * its own brief, changeset and latest plan, in the same workspace, with the same gates and PRs.
+ */
+function childOptions(opts: RunPlanOptions, runId: string): LandOptions {
+  const { worker: _w, autoMerge: _a, stackOn: _s, ...rest } = opts;
+  const created = opts.ledger.read({ run_id: runId, types: ["run.created"] }).at(-1)?.event;
+  const brief = (created?.data as { brief?: Brief } | undefined)?.brief;
+  const plan = (
+    opts.ledger.read({ run_id: runId, types: ["run.plan_ready"] }).at(-1)?.event.data as
+      | { plan: Plan }
+      | undefined
+  )?.plan;
+  if (!created || !brief || !plan) throw new Error(`run ${runId} has no recorded brief or plan`);
+  return { ...rest, runId, changesetId: created.changeset_id, brief, plan };
 }
 
 /**
