@@ -1,7 +1,7 @@
 import type { Db } from "../db.ts";
 
 /** Bump when a table or reducer changes; open() then rebuilds every projection from events. */
-export const PROJECTION_VERSION = 3;
+export const PROJECTION_VERSION = 4;
 
 const TABLES = ["runs", "units", "attempts", "gate_stats", "usage"] as const;
 
@@ -19,6 +19,7 @@ export function createProjectionTables(db: Db): void {
       status TEXT NOT NULL,
       eval INTEGER NOT NULL,
       brief_hash TEXT NOT NULL,
+      stack_on TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

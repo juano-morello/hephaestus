@@ -40,6 +40,22 @@ describe("event schemas", () => {
     ).toMatchObject({ ok: false });
   });
 
+  test("run.created round-trips stack_on and pr_retarget is a valid effect kind", () => {
+    const created = samples["run.created"];
+    const stacked = stamp({ ...created, data: { ...created.data, stack_on: "R0" } });
+    expect(validateEvent(stacked)).toMatchObject({ ok: true });
+    const parsed = parseStoredEvent(JSON.parse(JSON.stringify(stacked)));
+    expect(parsed).toMatchObject({ known: true });
+    expect(JSON.stringify(parsed)).toContain('"stack_on":"R0"');
+    expect(
+      validateEvent(stamp({ ...created, data: { ...created.data, stack_on: "" } })),
+    ).toMatchObject({ ok: false });
+    const intended = samples["effect.intended"];
+    expect(
+      validateEvent(stamp({ ...intended, data: { ...intended.data, effect: "pr_retarget" } })),
+    ).toMatchObject({ ok: true });
+  });
+
   test("rejects an unknown type on write", () => {
     const result = validateEvent(stamp({ ...samples["run.finished"], type: "run.exploded" }));
     expect(result).toEqual({ ok: false, issues: ['type: unknown event type "run.exploded"'] });

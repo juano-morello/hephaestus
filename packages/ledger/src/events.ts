@@ -71,6 +71,7 @@ export const EffectKind = z.enum([
   "pr_open",
   "pr_edit",
   "pr_merge",
+  "pr_retarget",
   "target_advance",
 ]);
 export type EffectKind = z.infer<typeof EffectKind>;
@@ -94,6 +95,8 @@ export const EVENT_TYPES = {
         workspace_root: z.string().min(1).optional(),
         /** How other nodes find their own checkout of the workspace (SPEC section 7). */
         workspace_name: z.string().min(1).optional(),
+        /** The run this one is stacked on: its branch is this run's base. */
+        stack_on: Id.optional(),
       })
       .strict(),
   ),

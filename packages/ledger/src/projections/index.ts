@@ -19,6 +19,7 @@ export type RunRow = {
     | "failed";
   eval: boolean;
   brief_hash: string;
+  stack_on: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -126,6 +127,12 @@ export function queries(db: Db) {
       const row = db.prepare("SELECT * FROM runs WHERE run_id = ?").get<RunRow>(id);
       return row ? (bool(row) as RunRow) : undefined;
     },
+    /** Run ids stacked on this one, oldest first. */
+    stackedOn: (runId: string): string[] =>
+      db
+        .prepare("SELECT run_id FROM runs WHERE stack_on = ? ORDER BY created_at, run_id")
+        .all<{ run_id: string }>(runId)
+        .map((r) => r.run_id),
     units: (runId: string) =>
       db.prepare("SELECT * FROM units WHERE run_id = ? ORDER BY unit_id").all<UnitRow>(runId),
     attempts: (runId: string, unitId?: string) =>

@@ -210,6 +210,41 @@ describe("projections", () => {
     reopened.close();
   });
 
+  test("a ledger projected at the previous version is rebuilt on open with stack_on", () => {
+    const d = dir();
+    const ledger = open(d);
+    ledger.append({ ...samples["run.created"], ...run("R0") });
+    ledger.append({
+      ...samples["run.created"],
+      ...run("R1"),
+      data: { ...samples["run.created"].data, stack_on: "R0" },
+    });
+    ledger.close();
+    const db = openDb(join(d, "ledger.db"));
+    db.exec(
+      "ALTER TABLE runs DROP COLUMN stack_on; UPDATE projection_meta SET version = 3, last_seq = 0",
+    );
+    db.close();
+    const reopened = open(d);
+    expect(reopened.run("R1")?.stack_on).toBe("R0");
+    expect(reopened.run("R0")?.stack_on).toBeNull();
+    reopened.close();
+  });
+
+  test("stackedOn lists child runs oldest first, and nothing for a run with no children", () => {
+    const ledger = open(dir());
+    const child = (id: string, on?: string) => ({
+      ...samples["run.created"],
+      ...run(id),
+      data: { ...samples["run.created"].data, ...(on ? { stack_on: on } : {}) },
+    });
+    ledger.appendMany([child("R0"), child("R1", "R0"), child("R3"), child("R2", "R0")]);
+    expect(ledger.stackedOn("R0")).toEqual(["R1", "R2"]);
+    expect(ledger.stackedOn("R1")).toEqual([]);
+    expect(ledger.stackedOn("nope")).toEqual([]);
+    ledger.close();
+  });
+
   test("events written without projections are applied on the next open", () => {
     const d = dir();
     const ledger = open(d);

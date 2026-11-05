@@ -42,14 +42,15 @@ export function applyEvent(db: Db, e: LedgerEvent): void {
     case "run.created":
       db.prepare(
         `INSERT OR IGNORE INTO runs
-         (run_id, changeset_id, owner_node, status, eval, brief_hash, created_at, updated_at)
-         VALUES (?, ?, ?, 'created', ?, ?, ?, ?)`,
+         (run_id, changeset_id, owner_node, status, eval, brief_hash, stack_on, created_at, updated_at)
+         VALUES (?, ?, ?, 'created', ?, ?, ?, ?, ?)`,
       ).run(
         e.run_id,
         e.changeset_id,
         e.data.owner_node,
         e.data.eval ? 1 : 0,
         e.data.brief_hash,
+        e.data.stack_on ?? null,
         e.ts,
         e.ts,
       );

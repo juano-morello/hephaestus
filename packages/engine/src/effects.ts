@@ -192,7 +192,8 @@ async function check(e: Intended, reality: Reality): Promise<Verdict> {
         : { state: "abandoned" };
     }
     case "pr_edit":
-      // Editing a body again is harmless; the step that wanted it runs again.
+    case "pr_retarget":
+      // Editing a body or retargeting again is harmless; the step that wanted it runs again.
       return { state: "abandoned" };
   }
 }
