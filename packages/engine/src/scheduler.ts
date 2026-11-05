@@ -25,6 +25,33 @@ const later = (a: string | undefined, b: string | undefined) => {
 type Settled = { id: string; result?: UnitResult; error?: unknown };
 
 /**
+ * Where a build resuming from a rate-limit pause starts its parallelism (SPEC section 17):
+ * half the configured value (at least 1), plus one per unit accepted since that resume, at most
+ * `parallel`. `acceptedSince` comes from the ledger, so a crash mid-ramp resumes at the same value.
+ */
+export const rampStart = (parallel: number, acceptedSince: number) =>
+  Math.min(parallel, Math.max(1, Math.floor(parallel / 2)) + acceptedSince);
+
+/**
+ * The throttled start for a build, from its events since the latest plan alone: when the latest
+ * `run.resumed` that is not a crash resume says `rate_limit`, rampStart over the units accepted
+ * since it (a crash mid-ramp resumes as `crash`, so the ramp carries on where it was). Otherwise
+ * undefined: unthrottled.
+ */
+export function rateLimitRamp(
+  events: readonly { type: string; data: unknown }[],
+  parallel: number,
+): number | undefined {
+  const at = events.findLastIndex(
+    (e) => e.type === "run.resumed" && (e.data as { reason?: string }).reason !== "crash",
+  );
+  const resumed = events[at];
+  if (!resumed || (resumed.data as { reason?: string }).reason !== "rate_limit") return undefined;
+  const acceptedSince = events.slice(at + 1).filter((e) => e.type === "unit.accepted").length;
+  return rampStart(parallel, acceptedSince);
+}
+
+/**
  * Runs units from the ready set over a pool of `parallel` slots (SPEC section 4.1). The first
  * unit that doesn't end accepted, or `stopped()`, starts the drain: nothing new starts, units in
  * flight finish and are kept if accepted. Returns one outcome for the whole build: cancelled wins,
@@ -35,6 +62,11 @@ export async function schedule(o: {
   plan: Plan;
   workspace: Workspace;
   parallel: number;
+  /**
+   * Throttled start after a rate limit (see rampStart): the build runs at most this many units
+   * at once, one more after each unit accepted here, up to `parallel`. Default: `parallel`.
+   */
+  ramp?: number;
   accepted: Map<string, string[]>;
   scopeOf(id: string): string[];
   start(id: string): Promise<UnitResult>;
@@ -46,6 +78,7 @@ export async function schedule(o: {
   let paused: { reason: PauseReason; detail: string } | undefined;
   let retryAfter: string | undefined;
   let failure: { error: unknown } | undefined;
+  let limit = Math.min(o.parallel, o.ramp ?? o.parallel);
 
   const launch = async (id: string): Promise<Settled> => {
     try {
@@ -66,7 +99,7 @@ export async function schedule(o: {
           inFlight: new Set(inFlight.keys()),
           scopeOf: o.scopeOf,
         },
-        Math.max(0, o.parallel - inFlight.size),
+        Math.max(0, limit - inFlight.size),
       );
       for (const id of ready) inFlight.set(id, launch(id));
     }
@@ -79,6 +112,7 @@ export async function schedule(o: {
       draining = true;
     } else if (result.status === "accepted") {
       o.accepted.set(id, result.files);
+      limit = Math.min(o.parallel, limit + 1);
     } else if (result.status === "cancelled") {
       cancelled ??= result.reason;
       draining = true;

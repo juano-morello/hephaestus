@@ -8,7 +8,7 @@ import { run, runOk, type Sandbox } from "@hephaestus/sandbox";
 import { builtinGates, lintGate, testsGate, typecheckGate } from "../src/builtin-gates.ts";
 import type { EngineConfig } from "../src/config.ts";
 import { pendingEffects, reconcile } from "../src/effects.ts";
-import { type RunPlanOptions, realityOf, runPlan } from "../src/engine.ts";
+import { buildRun, type RunPlanOptions, realityOf, runPlan } from "../src/engine.ts";
 import type { UnitGate } from "../src/gates.ts";
 import { joinLocks } from "../src/join.ts";
 import { localRunner, type Runner } from "../src/runner.ts";
@@ -435,6 +435,78 @@ describe("join", () => {
       ),
     ).toEqual([]);
     expect(await log(repoDir, ["rev-list", "main..heph/R1"])).toHaveLength(1);
+    ledger.close();
+  });
+});
+
+describe("rate-limit throttle", () => {
+  test("a build resuming from a rate limit starts at half its parallelism and ramps up", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    let limited = true;
+    let inFlight = 0;
+    const spawned: string[] = [];
+    const overlap = new Map<string, number>();
+    const worker: Worker = {
+      async spawn(input: SpawnInput) {
+        const id = input.brief.task.id;
+        spawned.push(id);
+        inFlight++;
+        try {
+          if (limited) {
+            await until(() => spawned.length >= 3);
+            return { output: undefined, transcript: "", usage, exit: "rate_limited" };
+          }
+          // T1 runs a while; T2 and T3 hold on until both are in flight.
+          if (id === "T1") await new Promise((r) => setTimeout(r, 60));
+          if (id === "T2") await until(() => spawned.includes("T3"));
+          overlap.set(id, Math.max(overlap.get(id) ?? 0, inFlight));
+          if (id === "T3") await until(() => overlap.has("T2"));
+          const file = `${id.toLowerCase()}.txt`;
+          writeFiles(input.workdir, { [file]: `${id}\n` });
+          return {
+            output: { schema: 1, summary: id, claims: [], touched: [file] },
+            transcript: id,
+            usage,
+            exit: "ok",
+          };
+        } finally {
+          inFlight--;
+        }
+      },
+    };
+    const ids = ["T1", "T2", "T3", "T4"];
+    const p = plan(ids.map((id) => task(id, [`${id.toLowerCase()}.txt`])));
+    const first = await go(p, { worker, config: config(3), gates: [] });
+    expect(first.status).toBe("paused");
+    // Unthrottled: three at once.
+    expect(spawned.toSorted()).toEqual(["T1", "T2", "T3"]);
+    expect(ledger.read({ types: ["run.paused"] }).at(-1)?.event.data).toMatchObject({
+      reason: "rate_limit",
+    });
+
+    limited = false;
+    spawned.length = 0;
+    const second = await buildRun({
+      ledger,
+      workspace,
+      workspaceRoot: repoDir,
+      runId: "R1",
+      changesetId: "C1",
+      gates: [],
+      worktreesDir,
+      worker,
+      config: config(3),
+    });
+    expect(second.status).toBe("built");
+    expect(ledger.read({ types: ["run.resumed"] }).at(-1)?.event.data).toEqual({
+      reason: "rate_limit",
+    });
+    // floor(3 / 2) = 1: T1 alone; one accepted, 2: T2 and T3 together; then up to 3.
+    expect(spawned[0]).toBe("T1");
+    expect(overlap.get("T1")).toBe(1);
+    expect(overlap.get("T2")).toBe(2);
+    expect(spawned.toSorted()).toEqual(ids);
+    for (const id of ids) expect(accepted(ledger, id)).toBe(true);
     ledger.close();
   });
 });

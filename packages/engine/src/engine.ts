@@ -26,7 +26,13 @@ import { type LandOptions, landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
-import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
+import {
+  PAUSE_RANK,
+  type PauseReason,
+  rateLimitRamp,
+  schedule,
+  type UnitResult,
+} from "./scheduler.ts";
 import { ancestorsOf, baseRef, restackChildren, stackRefs, unresolvedStack } from "./stack.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
@@ -536,11 +542,15 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     return runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
   };
 
-  // Units in flight together join the run branch under ctx.join (see runUnit).
+  // Units in flight together join the run branch under ctx.join (see runUnit). Resumed from a
+  // rate limit, the build starts at half its parallelism and ramps back up (SPEC section 17).
+  const parallel = opts.config.parallel ?? 3;
+  const ramp = rateLimitRamp(sinceLatestPlan(ledger, runId), parallel);
   const out = await schedule({
     plan: opts.plan,
     workspace: opts.workspace,
-    parallel: opts.config.parallel ?? 3,
+    parallel,
+    ...(ramp !== undefined ? { ramp } : {}),
     accepted,
     scopeOf: (id) => humanInput(ctx, byId.get(id) as Task).scope,
     start,
