@@ -2,8 +2,16 @@
 import { resolve } from "node:path";
 import type { Workspace } from "@hephaestus/core";
 import type { Ledger } from "@hephaestus/ledger";
+import { Stopped } from "./effects.ts";
 import { runBranch, targetBase } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
+import {
+  abortLanding,
+  type LandOptions,
+  type LandOutcome,
+  landChangeset,
+  retargetPullRequests,
+} from "./land.ts";
 
 /** A parent run can be built on only while its changeset is built or staged (not yet landed). */
 export const STACKABLE = new Set(["built", "staged"]);
@@ -140,4 +148,71 @@ export async function stackRefs(
         });
   }
   return refs;
+}
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Restacks a staged run whose parent just landed (design 3.3): lands it again, which now rebases
+ * it `--onto` the target past its fork point, re-gates if anything moved and pushes with lease,
+ * then points each of its pull requests at the target (pr_retarget). Mechanical: it needs no
+ * approval and merges nothing; the run stays staged for its own `heph approve merge`. A failure
+ * is recorded on this run (merge.aborted, run paused) and returned, never thrown.
+ */
+export async function restack(opts: LandOptions): Promise<LandOutcome> {
+  const status = opts.ledger.run(opts.runId)?.status;
+  const parent = ancestorsOf(opts.ledger, opts.runId, opts.stackOn)[0];
+  if (!parent) throw new Error(`run ${opts.runId} is not stacked`);
+  if (status !== "staged") throw new Error(`run ${opts.runId} is ${status}, not staged`);
+  if (parent.status !== "finished")
+    throw new Error(`run ${opts.runId} is stacked on ${parent.runId}, which has not landed`);
+  try {
+    const out = await landChangeset(opts);
+    if (out.status !== "staged" || !out.prs) return out;
+    await retargetPullRequests(opts, out.prs);
+    return out;
+  } catch (e) {
+    if (e instanceof Stopped) throw e;
+    return abortLanding(opts, `restack failed: ${message(e)}`);
+  }
+}
+
+export type RestackOutcome = LandOutcome | { status: "skipped"; reason: string };
+
+/**
+ * After `parentId` landed: restacks each of its staged children, oldest first. `around` wraps
+ * each child's restack (the CLI takes the child's run lock); one that fails before the restack
+ * starts skips that child untouched. A child that fails is aborted on its own: never thrown.
+ */
+export async function restackChildren(o: {
+  ledger: Ledger;
+  parentId: string;
+  options: (runId: string) => LandOptions;
+  around?: <T>(runId: string, fn: () => Promise<T>) => Promise<T>;
+}): Promise<Record<string, RestackOutcome>> {
+  const out: Record<string, RestackOutcome> = {};
+  const around = o.around ?? ((_id, fn) => fn());
+  for (const id of o.ledger.stackedOn(o.parentId)) {
+    if (o.ledger.run(id)?.status !== "staged") continue;
+    let started = false;
+    try {
+      out[id] = await around(id, async () => {
+        started = true;
+        return restack(o.options(id));
+      });
+    } catch (e) {
+      if (e instanceof Stopped) throw e;
+      if (!started) {
+        out[id] = { status: "skipped", reason: message(e) };
+        continue;
+      }
+      const reason = `restack failed: ${message(e)}`;
+      try {
+        out[id] = abortLanding(o.options(id), reason);
+      } catch {
+        out[id] = { status: "aborted", refs: {}, reason };
+      }
+    }
+  }
+  return out;
 }

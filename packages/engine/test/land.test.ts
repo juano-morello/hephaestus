@@ -8,6 +8,7 @@ import { type RunPlanOptions, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
 import { checkChangeset, landChangeset, mergeChangeset } from "../src/land.ts";
 import { ghPullRequests, type PrState, type PullRequests } from "../src/prs.ts";
+import { restack, restackChildren } from "../src/stack.ts";
 import type { Worker } from "../src/worker.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, crossRepoPlan, threeRepos, writer, writeScript } from "./workspace.ts";
@@ -28,6 +29,8 @@ function fakePrs() {
       calls.push(`open ${url} ${head}->${base} ${title}`);
       bodies.set(url, body);
       states.set(url, { state: "open" });
+      bases.set(url, base);
+      branches.set(url, { repoDir, head });
       heads.set(url, await createGit(repoDir).revParse(head));
       opened.set(`${repoDir} ${head}`, url);
       return { url };
@@ -43,17 +46,29 @@ function fakePrs() {
     },
     async setBase({ url, base }) {
       calls.push(`setBase ${url} ${base}`);
+      if (failSetBase.has(url)) throw new Error("base branch protected");
+      bases.set(url, base);
     },
     async status({ url }) {
-      return states.get(url) ?? { state: "open" };
+      const base = bases.get(url);
+      return { ...(states.get(url) ?? { state: "open" }), ...(base ? { base } : {}) };
     },
     async readiness({ url }) {
       const why = notReady.get(url);
-      return why ? { ready: false, reason: why } : { ready: true, head: heads.get(url) as string };
+      if (why) return { ready: false, reason: why };
+      // The head as pushed, once pushed: a restack moves it.
+      const b = branches.get(url);
+      const pushed = b ? await createGit(b.repoDir).remoteRef("origin", b.head) : undefined;
+      return { ready: true, head: pushed ?? (heads.get(url) as string) };
     },
     async merge({ url, head }) {
       calls.push(`merge ${url} at ${head.slice(0, 7)}`);
       if (failMerge.has(url)) throw new Error("merge blocked by branch protection");
+      const real = await hooks.onMerge?.(url, head);
+      if (real) {
+        states.set(url, { state: "merged", mergeCommit: real });
+        return { mergeCommit: real };
+      }
       const mergeCommit = String(n++).padStart(40, "0");
       states.set(url, { state: "merged", mergeCommit });
       return { mergeCommit };
@@ -61,7 +76,12 @@ function fakePrs() {
   };
   const heads = new Map<string, string>();
   const opened = new Map<string, string>();
-  return { prs, calls, bodies, states, notReady, failMerge, heads };
+  const bases = new Map<string, string>();
+  const branches = new Map<string, { repoDir: string; head: string }>();
+  const failSetBase = new Set<string>();
+  /** Set by a test: merges for real (returns the merge commit) instead of pretending. */
+  const hooks: { onMerge?: (url: string, head: string) => Promise<string | undefined> } = {};
+  return { prs, calls, bodies, states, notReady, failMerge, heads, bases, failSetBase, hooks };
 }
 
 async function built(
@@ -814,6 +834,23 @@ describe("landing a stacked run", () => {
       ledger
         .read({ run_id: runId, types: ["gate.result"] })
         .map((e) => e.event.data as { gate: string; verdict: string });
+    /** GitHub's merge button: a merge commit of the PR head into origin's main. */
+    fake.hooks.onMerge = async (_url, head) => {
+      if (!o.remote) return undefined;
+      await runOk(["git", "fetch", "-q", "origin", "main"], { cwd: server });
+      const tree = (
+        await runOk(["git", "merge-tree", "--write-tree", "origin/main", head], { cwd: server })
+      )
+        .trim()
+        .split("\n")[0] as string;
+      const sha = (
+        await runOk(["git", "commit-tree", tree, "-p", "origin/main", "-p", head, "-m", "Merge"], {
+          cwd: server,
+        })
+      ).trim();
+      await runOk(["git", "push", "-q", "origin", `${sha}:refs/heads/main`], { cwd: server });
+      return sha;
+    };
     return { root, server, ledger, opts, build, git, fake, upstream, finished, commits, regates };
   }
 
@@ -1046,5 +1083,157 @@ describe("landing a stacked run", () => {
     expect(await f.git.revParse("heph/B")).toBe(bBuilt);
     expect(effects(f.ledger).some((e) => e.startsWith("rebase"))).toBe(false);
     f.ledger.close();
+  });
+  describe("restack when the parent lands", () => {
+    /** A, and children on A (each its own file), all staged as pull requests. */
+    async function stagedStack(children: Record<string, string>) {
+      const f = await fixture({ remote: true });
+      await f.build("A", ["a.sh"]);
+      for (const [id, file] of Object.entries(children)) await f.build(id, [file], "A");
+      const urls: Record<string, string> = {};
+      for (const id of ["A", ...Object.keys(children)]) {
+        const out = await landChangeset(f.opts(id));
+        expect(out.status).toBe("staged");
+        urls[id] = out.prs?.server as string;
+      }
+      expect(f.fake.bases.get(urls.B as string)).toBe("heph/A");
+      const optionsFor = (runId: string) => f.opts(runId);
+      return { ...f, urls, optionsFor };
+    }
+    const mergesOf = (calls: string[], url: string) =>
+      calls.filter((c) => c.startsWith(`merge ${url} `));
+    const stagedEvents = (f: { ledger: ReturnType<typeof openLedger> }, runId: string) =>
+      f.ledger.read({ run_id: runId, types: ["merge.staged"] }).length;
+
+    test("parent_landing_retargets_child_pr_and_does_not_merge_it", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      const bBuilt = await f.git.revParse("heph/B");
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      expect(f.ledger.run("A")?.status).toBe("finished");
+      const humans = f.ledger.read({ run_id: "B", types: ["human.input"] }).length;
+
+      const out = await restack(f.opts("B"));
+      expect(out).toMatchObject({ status: "staged", prs: { server: f.urls.B } });
+      expect(f.fake.calls).toContain(`setBase ${f.urls.B} main`);
+      expect(f.fake.bases.get(f.urls.B as string)).toBe("main");
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);
+      expect(f.ledger.run("B")?.status).toBe("staged");
+      expect(stagedEvents(f, "B")).toBe(2);
+      expect(f.ledger.read({ run_id: "B", types: ["human.input"] })).toHaveLength(humans);
+      // Rebased --onto A's merge commit: only B's own commit on top of the target, re-gated, pushed.
+      const main = await f.git.remoteRef("origin", "main");
+      expect(await f.git.forkPoint("heph/B", "B")).toBe(main as string);
+      expect(await f.git.revParse("heph/B")).not.toBe(bBuilt);
+      expect(await f.commits("origin/main", "heph/B")).toEqual(["B1"]);
+      expect(await f.git.remoteRef("origin", "heph/B")).toBe(await f.git.revParse("heph/B"));
+      expect(f.regates("B").slice(-2)).toMatchObject([
+        { gate: "tests", verdict: "pass" },
+        { gate: "integration", verdict: "pass" },
+      ]);
+      expect(effects(f.ledger)).toContain("pr_retarget:server applied");
+      // The same PR, reused: no second one opened for B.
+      expect(
+        f.fake.calls.filter((c) => c.startsWith("open") && c.includes("heph/B->")),
+      ).toHaveLength(1);
+      f.ledger.close();
+    });
+
+    test("two_children_of_one_parent_both_restack", async () => {
+      const f = await stagedStack({ B: "b.sh", C: "c.sh" });
+      expect(f.ledger.stackedOn("A")).toEqual(["B", "C"]);
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      const out = await restackChildren({ ledger: f.ledger, parentId: "A", options: f.optionsFor });
+      expect(Object.keys(out)).toEqual(["B", "C"]);
+      expect(out.B?.status).toBe("staged");
+      expect(out.C?.status).toBe("staged");
+      expect(f.fake.calls.filter((c) => c.startsWith("setBase"))).toEqual([
+        `setBase ${f.urls.B} main`,
+        `setBase ${f.urls.C} main`,
+      ]);
+      for (const id of ["B", "C"]) {
+        expect(f.ledger.run(id)?.status).toBe("staged");
+        expect(await f.commits("origin/main", `heph/${id}`)).toEqual([`${id}1`]);
+      }
+      expect(f.fake.calls.filter((c) => c.startsWith("merge"))).toHaveLength(1);
+      f.ledger.close();
+    });
+
+    test("restack_conflict_aborts_child_only", async () => {
+      const f = await stagedStack({ B: "b.sh", C: "c.sh" });
+      // Someone else lands a b.sh on main: B's own commit no longer replays onto the target.
+      await f.upstream({ "b.sh": "upstream\n" });
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      // A child whose retarget fails is aborted too, not thrown.
+      f.fake.failSetBase.add(f.urls.C as string);
+
+      const out = await restackChildren({ ledger: f.ledger, parentId: "A", options: f.optionsFor });
+      expect(out.B).toMatchObject({ status: "aborted", reason: "rebase conflict in server: b.sh" });
+      expect(out.C).toMatchObject({
+        status: "aborted",
+        reason: "restack failed: base branch protected",
+      });
+      expect(f.ledger.run("A")?.status).toBe("finished");
+      for (const id of ["B", "C"]) {
+        expect(f.ledger.run(id)?.status).toBe("paused");
+        expect(f.ledger.read({ run_id: id, types: ["merge.aborted"] })).toHaveLength(1);
+        expect(f.ledger.read({ run_id: id, types: ["run.paused"] })).toHaveLength(1);
+      }
+      expect(f.fake.calls).not.toContain(`setBase ${f.urls.B} main`);
+      expect(f.fake.bases.get(f.urls.B as string)).toBe("heph/A");
+      expect(f.fake.calls.filter((c) => c.startsWith("merge"))).toHaveLength(1);
+      f.ledger.close();
+    });
+
+    for (const at of ["before", "after"] as const) {
+      test(`pr_retarget_reconcile: stopped ${at} the retarget, a restack again ends the same`, async () => {
+        const f = await stagedStack({ B: "b.sh" });
+        expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+        const key = "pr_retarget:server";
+        await expect(
+          restack(
+            f.opts("B", {
+              chaos: (p) => {
+                if (p === `${at}:${key}`) throw new Error(`stopped at ${p}`);
+              },
+            }),
+          ),
+        ).rejects.toThrow("stopped");
+        expect(f.fake.bases.get(f.urls.B as string)).toBe(at === "before" ? "heph/A" : "main");
+
+        const out = await restack(f.opts("B"));
+        expect(out).toMatchObject({ status: "staged", prs: { server: f.urls.B } });
+        expect(effects(f.ledger).filter((e) => e.startsWith(key))).toEqual([
+          `${key} ${at === "before" ? "abandoned" : "confirmed"}`,
+          `${key} applied`,
+        ]);
+        expect(f.fake.bases.get(f.urls.B as string)).toBe("main");
+        // An already-retargeted PR is never patched again.
+        expect(f.fake.calls.filter((c) => c.startsWith("setBase"))).toHaveLength(1);
+        expect(f.ledger.run("B")?.status).toBe("staged");
+        expect(await f.commits("origin/main", "heph/B")).toEqual(["B1"]);
+        expect(await f.git.remoteRef("origin", "heph/B")).toBe(await f.git.revParse("heph/B"));
+        expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);
+        f.ledger.close();
+      });
+    }
+
+    test("a child whose PR is still based on the landed parent's branch is not merged", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      const before = f.ledger.read().length;
+      expect(await mergeChangeset(f.opts("B"))).toEqual({
+        status: "not_ready",
+        reasons: [`server: pull request is based on heph/A, not main: restack first (${f.urls.B})`],
+      });
+      expect(f.ledger.read().length).toBe(before);
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);
+      expect(f.ledger.run("B")?.status).toBe("staged");
+
+      expect((await restack(f.opts("B"))).status).toBe("staged");
+      expect(await mergeChangeset(f.opts("B"))).toEqual({ status: "merged" });
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toHaveLength(1);
+      expect(f.ledger.run("B")?.status).toBe("finished");
+      f.ledger.close();
+    });
   });
 });

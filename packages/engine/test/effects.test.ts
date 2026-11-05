@@ -220,6 +220,36 @@ describe("reconcile", () => {
     expect(done[1]).toMatchObject({ sha: "a".repeat(40) });
     ledger.close();
   });
+
+  test("a retarget is confirmed when the PR's base already is the target, else redone", async () => {
+    const { repo, ledger, reality } = await setup();
+    const bases: Record<string, string> = {
+      "https://github.com/o/server/pull/1": "main",
+      "https://github.com/o/server/pull/2": "heph/A",
+    };
+    const prs = {
+      status: async ({ url }: { url: string }) => ({ state: "open", base: bases[url] }),
+    } as unknown as PullRequests;
+    for (const [n, key] of [
+      [1, "pr_retarget:server"],
+      [2, "pr_retarget:web"],
+    ] as const)
+      intend(ledger, {
+        effect: "pr_retarget",
+        key,
+        target: `https://github.com/o/server/pull/${n}`,
+        after: "main",
+      });
+    const out = await reconcile(ledger, "R1", { ...reality, prs, dirOf: () => repo });
+    expect(out).toEqual([
+      { key: "pr_retarget:server", state: "confirmed" },
+      { key: "pr_retarget:web", state: "abandoned" },
+    ]);
+    expect(ledger.read({ types: ["effect.done"] })[0]?.event.data).toMatchObject({
+      url: "https://github.com/o/server/pull/1",
+    });
+    ledger.close();
+  });
 });
 
 describe("clearWorktrees", () => {

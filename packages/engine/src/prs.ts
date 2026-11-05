@@ -1,6 +1,11 @@
 import { runOk } from "@hephaestus/sandbox";
 
-export type PrState = { state: "open" | "merged" | "closed"; mergeCommit?: string };
+export type PrState = {
+  state: "open" | "merged" | "closed";
+  mergeCommit?: string;
+  /** The branch the pull request is based on (merges into). */
+  base?: string;
+};
 export type PrReadiness = { ready: true; head: string } | { ready: false; reason: string };
 
 /** Where a changeset lands when its repos have a remote: one pull request per repo. */
@@ -104,13 +109,20 @@ export function ghPullRequests(run: Runner = runOk): PullRequests {
     setBase: ({ repoDir, url, base }) => patchPull(run, repoDir, url, `base=${base}`),
     async status({ repoDir, url }) {
       const raw = JSON.parse(
-        await run(["gh", "pr", "view", url, "--json", "state,mergeCommit"], { cwd: repoDir }),
+        await run(["gh", "pr", "view", url, "--json", "state,mergeCommit,baseRefName"], {
+          cwd: repoDir,
+        }),
       ) as {
         state: string;
         mergeCommit?: { oid?: string } | null;
+        baseRefName?: string;
       };
       const state = raw.state === "MERGED" ? "merged" : raw.state === "CLOSED" ? "closed" : "open";
-      return { state, ...(raw.mergeCommit?.oid ? { mergeCommit: raw.mergeCommit.oid } : {}) };
+      return {
+        state,
+        ...(raw.mergeCommit?.oid ? { mergeCommit: raw.mergeCommit.oid } : {}),
+        ...(raw.baseRefName ? { base: raw.baseRefName } : {}),
+      };
     },
     async readiness({ repoDir, url }) {
       const pr = JSON.parse(

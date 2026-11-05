@@ -191,9 +191,14 @@ async function check(e: Intended, reality: Reality): Promise<Verdict> {
         ? { state: "confirmed", sha: s.mergeCommit, url: d.target }
         : { state: "abandoned" };
     }
+    case "pr_retarget": {
+      // Already based on the branch it was pointed at: done. Else retargeting again is harmless.
+      if (!repo || !reality.prs || !d.after) return { state: "abandoned" };
+      const s = await reality.prs.status({ repoDir: reality.dirOf(repo), url: d.target });
+      return s.base === d.after ? { state: "confirmed", url: d.target } : { state: "abandoned" };
+    }
     case "pr_edit":
-    case "pr_retarget":
-      // Editing a body or retargeting again is harmless; the step that wanted it runs again.
+      // Editing a body again is harmless; the step that wanted it runs again.
       return { state: "abandoned" };
   }
 }

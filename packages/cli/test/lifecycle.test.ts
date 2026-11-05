@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Brief, briefHash, type Task } from "@hephaestus/core";
 import {
+  createGit,
+  landChangeset,
+  type PullRequests,
   runPlan,
   type SpawnInput,
   type SpawnOutput,
@@ -602,6 +605,160 @@ describe("heph lifecycle", () => {
     expect(
       ((await heph(["status", "C"])).data as { run: { stack_on: unknown } }).run.stack_on,
     ).toBe(null);
+  });
+
+  test("approve merge of a parent restacks its staged child onto the target and retargets its PR", async () => {
+    await heph(["init"]);
+    const origin = join(root, "calc.git");
+    sh(["git", "clone", "-q", "--bare", ws, origin], root);
+    sh(["git", "remote", "add", "origin", origin], ws);
+    const git = createGit(ws);
+
+    // Pull requests on origin: merging fast-forwards its main to the PR head.
+    const calls: string[] = [];
+    const pulls = new Map<string, { head: string; base: string; state: "open" | "merged" }>();
+    const prs: PullRequests = {
+      async open({ head, base }) {
+        const url = `https://github.com/acme/calc/pull/${pulls.size + 1}`;
+        pulls.set(url, { head, base, state: "open" });
+        calls.push(`open ${url} ${head}->${base}`);
+        return { url };
+      },
+      async find({ head }) {
+        const [url, pr] = [...pulls].find(([, p]) => p.head === head) ?? [];
+        return url && pr ? { url, state: pr.state } : undefined;
+      },
+      async edit() {},
+      async setBase({ url, base }) {
+        calls.push(`setBase ${url} ${base}`);
+        (pulls.get(url) as { base: string }).base = base;
+      },
+      async status({ url }) {
+        const pr = pulls.get(url);
+        if (!pr) throw new Error(`no ${url}`);
+        const sha = await git.remoteRef("origin", pr.head);
+        return {
+          state: pr.state,
+          base: pr.base,
+          ...(pr.state === "merged" && sha ? { mergeCommit: sha } : {}),
+        };
+      },
+      async readiness({ url }) {
+        return {
+          ready: true,
+          head: (await git.remoteRef("origin", pulls.get(url)?.head ?? "")) as string,
+        };
+      },
+      async merge({ url, head }) {
+        calls.push(`merge ${url}`);
+        sh(["git", "push", "-q", "origin", `${head}:refs/heads/main`], ws);
+        (pulls.get(url) as { state: string }).state = "merged";
+        return { mergeCommit: head };
+      },
+    };
+
+    // A, and B stacked on it, built and staged straight through the engine (no command gates,
+    // so no sandbox needed), the way heph run would.
+    const parentBrief = Bun.YAML.parse(BRIEF) as Brief;
+    const ledger = openLedger(home, { nodeId: "test-node" });
+    const config = {
+      routing: { implementer: { default: { model: "claude/sonnet" } } },
+      maxAttempts: 1,
+      parallel: 1,
+      budgetTokens: 1000,
+      tools: [],
+      commands: {},
+    };
+    const one = (runId: string, file: string, stackOn?: string) => {
+      const o = {
+        ledger,
+        workspace: {
+          repos: { calc: "." },
+          projects: { calc: { repo: "calc", path: ".", stack: "sh" } },
+        },
+        workspaceRoot: ws,
+        brief: parentBrief,
+        plan: {
+          schema: 1 as const,
+          brief_hash: briefHash(parentBrief),
+          tasks: [
+            task({
+              id: `${runId}1`,
+              title: runId,
+              kind: "implement",
+              scope: [file],
+              spec: runId,
+            }) as Task,
+          ],
+          risks: [],
+        },
+        runId,
+        changesetId: runId,
+        worker: {
+          async spawn(input: SpawnInput) {
+            put(join(input.workdir, file), `${runId}\n`);
+            return {
+              output: { schema: 1 as const, summary: "", claims: [], touched: [file] },
+              transcript: "",
+              usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+              exit: "ok" as const,
+            };
+          },
+        },
+        gates: [],
+        config,
+        worktreesDir: join(home, "worktrees"),
+        prs,
+        ...(stackOn ? { stackOn } : {}),
+      };
+      return o;
+    };
+    for (const [id, file, on] of [
+      ["A", "a.txt"],
+      ["B", "b.txt", "A"],
+    ] as const) {
+      const o = one(id, file, on);
+      expect((await runPlan(o)).status).toBe("built");
+      expect((await landChangeset(o)).status).toBe("staged");
+    }
+    ledger.close();
+    expect(calls).toEqual([
+      "open https://github.com/acme/calc/pull/1 heph/A->main",
+      "open https://github.com/acme/calc/pull/2 heph/B->heph/A",
+    ]);
+
+    const merged = await heph(["approve", "merge", "A"], { prs });
+    expect(merged.data).toMatchObject({
+      run_id: "A",
+      result: { status: "merged" },
+      restacked: { B: { status: "staged" } },
+    });
+    expect(calls.slice(2)).toEqual([
+      "merge https://github.com/acme/calc/pull/1",
+      "setBase https://github.com/acme/calc/pull/2 main",
+    ]);
+
+    const status = await heph(["status", "B"], { prs });
+    expect(status.data).toMatchObject({
+      run: { run_id: "B", status: "staged" },
+      prs: { calc: "https://github.com/acme/calc/pull/2" },
+      stack_on: { run_id: "A", status: "finished" },
+    });
+    expect(pulls.get("https://github.com/acme/calc/pull/2")?.base).toBe("main");
+    const main = (await git.remoteRef("origin", "main")) as string;
+    const bTip = (await git.remoteRef("origin", "heph/B")) as string;
+    expect(await git.isAncestor(main, bTip)).toBe(true);
+    expect(
+      sh(["git", "log", "--format=%s", `${main}..${bTip}`], ws)
+        .trim()
+        .split("\n"),
+    ).toHaveLength(1);
+
+    // B was not merged: that still waits for its own approval, which now goes through.
+    expect(calls.filter((c) => c.startsWith("merge"))).toHaveLength(1);
+    expect(await heph(["approve", "merge", "B"], { prs })).toMatchObject({
+      data: { result: { status: "merged" } },
+    });
   });
 
   test("errors use the envelope", async () => {

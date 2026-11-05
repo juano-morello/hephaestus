@@ -56,6 +56,16 @@ describe("event schemas", () => {
     ).toMatchObject({ ok: true });
   });
 
+  test("a pr_retarget names the branch it points the pull request at; other effects a sha", () => {
+    const intended = samples["effect.intended"];
+    const at = (effect: string, after: string) =>
+      validateEvent(stamp({ ...intended, data: { ...intended.data, effect, after } }));
+    expect(at("pr_retarget", "main")).toMatchObject({ ok: true });
+    expect(at("pr_retarget", "release/1.x")).toMatchObject({ ok: true });
+    expect(at("push", "main")).toMatchObject({ ok: false });
+    expect(at("push", "a".repeat(40))).toMatchObject({ ok: true });
+  });
+
   test("rejects an unknown type on write", () => {
     const result = validateEvent(stamp({ ...samples["run.finished"], type: "run.exploded" }));
     expect(result).toEqual({ ok: false, issues: ['type: unknown event type "run.exploded"'] });

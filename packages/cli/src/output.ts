@@ -143,7 +143,23 @@ export const Adopted = z
   .object({ run_id: z.string(), from: z.string(), fetched: z.array(z.string()) })
   .strict();
 export const MergeResult = z
-  .object({ run_id: z.string(), result: z.object({ status: z.string() }).passthrough() })
+  .object({
+    run_id: z.string(),
+    result: z.object({ status: z.string() }).passthrough(),
+    /** Once the run landed: its staged children, restacked onto the target (or why not). */
+    restacked: z
+      .record(
+        z.string(),
+        z
+          .object({
+            status: z.string(),
+            reason: z.string().optional(),
+            prs: z.record(z.string(), z.string()).optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
   .strict();
 
 /** Command name -> schema of its `data`. Every command registered in main.ts appears here. */

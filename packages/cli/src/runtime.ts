@@ -32,6 +32,7 @@ import {
   type RunPlanOptions,
   recordEscalation,
   recordPlan,
+  restackChildren,
   STACKABLE,
   unresolvedStack,
   type Worker,
@@ -323,6 +324,28 @@ export function openRuntime(opts: {
   const landOptions = (runId: string): LandOptions => {
     const o = runOptions(runId);
     return { ...o, plan: latestPlan(runId).plan, prs: prs() };
+  };
+  /**
+   * Once a run landed: restacks its staged children onto the target and retargets their pull
+   * requests (design 3.3), each under its own lock. A child that fails is paused on its own; the
+   * parent's result is never affected. Nothing to report: undefined.
+   */
+  const restacked = async (parentId: string) => {
+    const out = await restackChildren({
+      ledger,
+      parentId,
+      options: landOptions,
+      around: locked,
+    });
+    const entries = Object.entries(out).map(([id, r]) => [
+      id,
+      {
+        status: r.status,
+        ...(r.reason ? { reason: r.reason } : {}),
+        ...("prs" in r && r.prs ? { prs: r.prs } : {}),
+      },
+    ]);
+    return entries.length ? { restacked: Object.fromEntries(entries) } : {};
   };
 
   /** A run paused by a rate limit waits until the provider's retry_after; returns when that was. */
@@ -702,15 +725,24 @@ export function openRuntime(opts: {
         type: "human.input",
         data: { kind: "approve", target: "merge" },
       });
-      return locked(runId, async () => ({
-        run_id: runId,
-        result: await mergeChangeset(landOptions(runId)),
-      }));
+      return locked(runId, async () => {
+        const result = await mergeChangeset(landOptions(runId));
+        return {
+          run_id: runId,
+          result,
+          ...(result.status === "merged" ? await restacked(runId) : {}),
+        };
+      });
     },
 
     async mergeStatus(runId: string) {
       runRow(runId);
-      return { run_id: runId, result: await checkChangeset(landOptions(runId)) };
+      const result = await checkChangeset(landOptions(runId));
+      return {
+        run_id: runId,
+        result,
+        ...(result.status === "merged" ? await restacked(runId) : {}),
+      };
     },
   };
 }

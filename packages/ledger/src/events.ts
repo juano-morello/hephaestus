@@ -200,9 +200,18 @@ export const EVENT_TYPES = {
         /** What the effect changes: a ref, a branch or a pull request. */
         target: Id,
         before: CommitSha.optional(),
-        after: CommitSha.optional(),
+        /** The commit it moves to; for a pr_retarget, the branch the pull request is based on. */
+        after: Id.optional(),
       })
-      .strict(),
+      .strict()
+      .superRefine((d, ctx) => {
+        if (
+          d.after !== undefined &&
+          d.effect !== "pr_retarget" &&
+          !CommitSha.safeParse(d.after).success
+        )
+          ctx.addIssue({ code: "custom", path: ["after"], message: "must be a commit sha" });
+      }),
   ),
   /**
    * applied: done now. confirmed: a resume found it had already happened. abandoned: a resume

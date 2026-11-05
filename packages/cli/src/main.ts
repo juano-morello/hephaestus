@@ -217,13 +217,24 @@ type MergeView = {
     | { status: "open"; open: string[] }
     | { status: "half_landed"; merged?: string[]; reason: string }
     | { status: "aborted"; reason: string };
+  restacked?: Record<string, { status: string; reason?: string }>;
 };
 
+/** A landed run's restacked children, in words. */
+const restackText = (restacked: MergeView["restacked"] = {}) =>
+  Object.entries(restacked)
+    .map(([id, c]) =>
+      c.status === "staged"
+        ? `  ${id}: restacked onto the target; review, then heph approve merge ${id}\n`
+        : `  ${id}: not restacked (${c.status}): ${c.reason ?? "unknown"}\n`,
+    )
+    .join("");
+
 /** `heph approve merge` and `heph merge status`, in words. */
-export function mergeText({ run_id, result: r }: MergeView): string {
+export function mergeText({ run_id, result: r, restacked }: MergeView): string {
   switch (r.status) {
     case "merged":
-      return `${run_id}: merged\n`;
+      return `${run_id}: merged\n${restackText(restacked)}`;
     case "closed":
       return `${run_id}: a pull request was closed without merging; the run is aborted\n`;
     case "not_ready":

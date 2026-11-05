@@ -91,6 +91,11 @@ function abort(
   return { status: "aborted", refs, reason };
 }
 
+/** Records a landing step that failed outside landChangeset (a restack): aborted, run paused. */
+export function abortLanding(opts: LandOptions, reason: string): LandOutcome {
+  return abort(opts.ledger, context(opts).base, reason, {});
+}
+
 /**
  * Lands a built changeset as a set (SPEC section 4). Targets that moved are rebased onto and
  * re-gated first; nothing lands unless every repo can. With remotes, each repo gets a pull
@@ -267,6 +272,29 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   await stage(opts, c, refs);
   ledger.append({ ...engine, type: "merge.staged", data: { refs } });
   return { status: "staged", refs };
+}
+
+/**
+ * Points each staged pull request at its repo's target (effect pr_retarget), once the stacked
+ * run's parent landed and the run was restacked onto the target (design 3.3).
+ */
+export async function retargetPullRequests(opts: LandOptions, urls: Record<string, string>) {
+  const { dirOf, scope, target } = context(opts);
+  const prs = opts.prs;
+  if (!prs) throw new Error("no pull request client configured");
+  for (const [r, url] of Object.entries(urls)) {
+    const base = target(r);
+    await effect(
+      scope,
+      { effect: "pr_retarget", key: `pr_retarget:${r}`, target: url, after: base, on: { repo: r } },
+      async () => {
+        // One a stopped restack already retargeted is not patched again.
+        const s = await prs.status({ repoDir: dirOf(r), url });
+        if (s.base !== base) await prs.setBase({ repoDir: dirOf(r), url, base });
+        return { url };
+      },
+    );
+  }
 }
 
 /** `refs/heph/staging/<run>` in every touched repo: what was staged, for audit and recovery. */
@@ -474,7 +502,7 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   if (parent && parent.status !== "finished")
     return { status: "not_ready", reasons: [`waiting for ${parent.runId}`] };
   const c = context(opts);
-  const { base, repos, dirOf, scope } = c;
+  const { base, repos, dirOf, scope, target } = c;
   const staged = lastStaged(opts);
   const order = repos.filter((r) => staged.prs?.[r]);
   if (order.length && !opts.prs) throw new Error("no pull request client configured");
@@ -484,8 +512,10 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   // A stopped merge may have merged some already: those count, and are not merged again.
   const refs: Record<string, string> = {};
   const merged: string[] = [];
+  const baseOf = new Map<string, string | undefined>();
   for (const r of order) {
     const s = await prs.status({ repoDir: dirOf(r), url: staged.prs?.[r] as string });
+    baseOf.set(r, s.base);
     if (s.state === "merged" && s.mergeCommit) {
       refs[r] = s.mergeCommit;
       merged.push(r);
@@ -496,6 +526,15 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   const reasons: string[] = [];
   for (const r of pending) {
     const url = staged.prs?.[r] as string;
+    // A stacked PR still based on its landed parent's branch would merge into that branch, not
+    // the target: it is retargeted by a restack first.
+    const prBase = baseOf.get(r);
+    if (parent && prBase !== target(r)) {
+      reasons.push(
+        `${r}: pull request is based on ${prBase ?? "an unknown branch"}, not ${target(r)}: restack first (${url})`,
+      );
+      continue;
+    }
     const ready = await prs.readiness({ repoDir: dirOf(r), url });
     if (!ready.ready) reasons.push(`${r}: ${ready.reason} (${url})`);
     else if (ready.head !== staged.refs[r]) {
