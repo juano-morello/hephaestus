@@ -384,6 +384,8 @@ Feedback from using heph inside Claude Code: nothing told the agent what a backg
 - The installer does not register the server with hosts yet: `claude mcp add heph -- heph mcp` for Claude Code, a config entry for Codex.
 - The skill and AGENTS.md should get a paragraph preferring the tools when present. The two files must change together (a test keeps them identical).
 - `heph_watch` ignores request cancellation (`extra.signal`); a cancelled call runs out its poll.
+- The daemon client's `/call` fetch has no timeout. For a run owned by another node, `status` and `explain` sync with the peer first. So `heph_watch` can run past host tool timeouts when the owner is unreachable. This is a pre-existing pattern in `daemon.ts` and was not changed here.
+- `heph_watch` and `heph_run`'s progress step retry every daemon error, not only transient ones. An unknown run id or a down daemon takes about 16 s (default `heph_watch`) or about 2 s (`heph_run`) to come back as an error. Retries stop one interval past the poll's wait.
 - Known, pre-existing: a plain `bun run build:heph` binary fails at start, because `version.ts` spawns git without the `HEPH_BUILD` define. The installer's build passes the define, and the MCP smoke test used that build.
 
 ## Environment and OMP

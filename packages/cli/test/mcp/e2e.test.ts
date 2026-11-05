@@ -17,11 +17,11 @@ afterEach(async () => {
 });
 
 async function useDaemon(home: string, workerMs = 0) {
-  const d = await startDaemon(home, workerMs);
-  cleanups.push(() => {
-    d.kill("SIGKILL");
-  });
-  return d;
+  return startDaemon(home, workerMs, (d) =>
+    cleanups.push(() => {
+      d.kill("SIGKILL");
+    }),
+  );
 }
 
 async function mcpClient(home: string, ws: string) {

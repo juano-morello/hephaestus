@@ -1,8 +1,14 @@
 // `heph mcp`: the MCP server over stdio. Stdout is the protocol channel; log only to stderr.
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { daemonAt } from "../daemon.ts";
-import { guardedClient } from "./guard.ts";
+import { type DaemonClient, daemonAt } from "../daemon.ts";
+import { guardedClient, type McpClient } from "./guard.ts";
 import { createMcpServer } from "./server.ts";
+
+/** The only client the server gets: the allowlist guard in front of the daemon socket. */
+export const buildClient = (
+  home: string,
+  connect: (home: string) => Promise<DaemonClient | undefined> = daemonAt,
+): McpClient => guardedClient(() => connect(home));
 
 /** Serves until the host closes stdin. */
 export async function serveStdio(o: {
@@ -10,8 +16,9 @@ export async function serveStdio(o: {
   workspace: () => string | undefined;
 }): Promise<void> {
   const server = createMcpServer({
-    client: guardedClient(() => daemonAt(o.home)),
+    client: buildClient(o.home),
     workspace: o.workspace,
+    cwd: process.cwd(),
   });
   const transport = new StdioServerTransport();
   const closed = new Promise<void>((done) => {

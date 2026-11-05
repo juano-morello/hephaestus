@@ -54,7 +54,8 @@ export async function watchStep(
       ({ events } = await view.explain(id));
       failures = 0;
     } catch (e) {
-      if (++failures > retries) throw e;
+      // Retry a daemon restart, but not past the caller's wait: waitMs 0 with a dead daemon fails fast.
+      if (++failures > retries || now() >= deadline + interval) throw e;
       await sleep(interval);
       continue;
     }

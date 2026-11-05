@@ -121,6 +121,12 @@ export const runText = (r: {
     r.state === "not_runnable"
       ? `run ${r.run_id} was not started: it is ${r.status}`
       : `run ${r.run_id}: ${r.state === "started" ? "started" : "already running"} (${r.status})`;
+  if (r.state === "not_runnable" && (!r.outcome || r.outcome === "running"))
+    return `${[
+      `run ${r.run_id} was not started: it is ${r.status} and has no plan to build`,
+      ...r.lines,
+      `next: check it with heph_status, or plan it with heph_plan_revise`,
+    ].join("\n")}\n`;
   const stopped = r.outcome && r.outcome !== "running";
   return `${[
     head,

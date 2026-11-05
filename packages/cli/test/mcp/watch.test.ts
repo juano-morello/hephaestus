@@ -196,7 +196,7 @@ describe("watchStep", () => {
       "r1",
       script([{ ...ok, fail: boom }, { ...ok, fail: boom }, ok]).view,
       {
-        waitMs: 0,
+        waitMs: 10_000,
         retries: 5,
         ...clock(),
       },
@@ -212,12 +212,29 @@ describe("watchStep", () => {
           { ...ok, fail: last },
         ]).view,
         {
-          waitMs: 0,
+          waitMs: 10_000,
           retries: 2,
           ...clock(),
         },
       ),
     ).rejects.toBe(last);
+  });
+
+  test("retries stop one interval past the deadline, whatever retries allows", async () => {
+    const boom = new Error("daemon down");
+    const fast = script([{ status: "running", events: [A], fail: boom }]);
+    const c = clock();
+    await expect(watchStep("r1", fast.view, { waitMs: 0, retries: 30, ...c })).rejects.toBe(boom);
+    expect(fast.polls()).toBe(2);
+    expect(c.now() - 1_000_000).toBe(2000);
+
+    const slow = script([{ status: "running", events: [A], fail: boom }]);
+    const c2 = clock();
+    await expect(watchStep("r1", slow.view, { waitMs: 20_000, retries: 30, ...c2 })).rejects.toBe(
+      boom,
+    );
+    expect(slow.polls()).toBe(12);
+    expect(c2.now() - 1_000_000).toBe(22_000);
   });
 
   test("onLine receives each line", async () => {

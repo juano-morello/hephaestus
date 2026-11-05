@@ -14,7 +14,12 @@ export const put = (path: string, text: string) => {
   writeFileSync(path, text);
 };
 
-export async function startDaemon(home: string, workerMs: number) {
+/** `register` gets the process before the start wait, so a daemon that never answers is still killed. */
+export async function startDaemon(
+  home: string,
+  workerMs: number,
+  register: (d: ReturnType<typeof Bun.spawn>) => void,
+) {
   const d = Bun.spawn(["bun", MAIN, "daemon"], {
     env: {
       ...process.env,
@@ -25,6 +30,7 @@ export async function startDaemon(home: string, workerMs: number) {
     stdout: "ignore",
     stderr: "pipe",
   });
+  register(d);
   for (let i = 0; i < 100 && !(await daemonAt(home)); i++) await Bun.sleep(100);
   if (!(await daemonAt(home))) throw new Error("the daemon did not start");
   return d;

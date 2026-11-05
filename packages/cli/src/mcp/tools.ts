@@ -1,5 +1,6 @@
 // The tools a chat host sees. One-call tools go through toolResult (daemon call, schema check, text + structured answer); heph_run and heph_watch compose several calls through the same guarded client.
 
+import { resolve } from "node:path";
 import { Brief } from "@hephaestus/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -100,11 +101,14 @@ const MAX_WAIT_S = 25;
 const DEFAULT_WAIT_S = 20;
 /**
  * Daemon errors retried within one step, about 16 s at watchStep's 2 s interval: long enough to
- * ride out a daemon restart, short enough for host timeouts and for a mistyped run id.
+ * ride out a daemon restart, short enough for host timeouts and for a mistyped run id. watchStep
+ * also stops one interval past the step's wait, so heph_run (wait 0) gives up after about 2 s.
  */
 const STEP_RETRIES = 8;
 /** Run statuses `run` would only reject after already answering `started` (runtime.ts build). */
 const NOT_RUNNABLE = new Set(["failed", "finished", "staged", "escalated"]);
+/** Statuses where `run` resumes a build whatever the approval flag says. */
+const RESUMABLE = new Set(["running", "paused", "built"]);
 
 /** status and explain through the guarded client, checked against the CLI's schemas. */
 function daemonView(ctx: McpCtx): WatchView {
@@ -190,10 +194,11 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
             .map((i) => `${i.path.join(".") || "(brief)"}: ${i.message}`)
             .join("\n")}`,
         );
-      const cwd = workspace ?? ctx.workspace();
+      const serverCwd = ctx.cwd ?? process.cwd();
+      const cwd = workspace !== undefined ? resolve(serverCwd, workspace) : ctx.workspace();
       if (!cwd)
         return failure(
-          "no heph workspace directory: the server was not started in one, so pass the workspace argument (the directory that holds .heph/)",
+          `no heph workspace directory: none found from ${serverCwd}, where the server was started, so pass the workspace argument (the directory that holds .heph/)`,
         );
       return toolResult(
         ctx,
@@ -267,7 +272,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     "heph_run",
     {
       description:
-        "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. A staged, finished, failed or escalated run is not started (state not_runnable); do what next says. Follow a started build with heph_watch.",
+        "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. A staged, finished, failed or escalated run, or one with no plan yet, is not started (state not_runnable); do what next says. Follow a started build with heph_watch.",
       inputSchema: { run: z.string().describe("The run id, e.g. r1") },
       outputSchema: RunToolResult.shape,
     },
@@ -313,7 +318,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           structuredContent: withoutUndefined(r),
         };
       };
-      if (NOT_RUNNABLE.has(s.run.status)) {
+      // `run` answers `started` before the build rejects these, so they are refused here.
+      if (NOT_RUNNABLE.has(s.run.status) || !(s.plan_approved || RESUMABLE.has(s.run.status))) {
         // The daemon would answer `started` and only then fail the build: say where it stands.
         try {
           return answer("not_runnable", await step(undefined));

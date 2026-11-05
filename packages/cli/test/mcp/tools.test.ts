@@ -241,6 +241,33 @@ describe("mutating tools", () => {
     await client.close();
   });
 
+  test("heph_new resolves a relative workspace against the server's cwd", async () => {
+    const { client: d, calls } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({
+      client: d,
+      workspace: () => undefined,
+      cwd: "/srv/proj",
+    });
+    await client.callTool({ name: "heph_new", arguments: { brief, workspace: "." } });
+    await client.callTool({ name: "heph_new", arguments: { brief, workspace: "../other" } });
+    expect(calls.map((c) => c.cwd)).toEqual(["/srv/proj", "/srv/other"]);
+    await client.close();
+  });
+
+  test("heph_new's no-workspace error names the directory searched", async () => {
+    const { client: d } = fakeDaemon({ newRun: () => planned });
+    const client = await connectTestClient({
+      client: d,
+      workspace: () => undefined,
+      cwd: "/srv/proj",
+    });
+    const r = await client.callTool({ name: "heph_new", arguments: { brief } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("/srv/proj");
+    expect(textOf(r)).toContain("workspace argument");
+    await client.close();
+  });
+
   test("heph_new workspace argument overrides the server's workspace", async () => {
     const { client: d, calls } = fakeDaemon({ newRun: () => planned });
     const client = await connectTestClient({ client: d, workspace: () => undefined });
@@ -477,6 +504,38 @@ describe("heph_run on a run that cannot run", () => {
       await client.close();
     });
   }
+
+  test("created: no plan yet, run is never called, no approval hint", async () => {
+    const { client: d, calls } = fakeDaemon({
+      status: () => statusOf("created", false),
+      explain: () => ({ run_id: "r1", events: [] }),
+      run: () => ({ run_id: "r1", started: true }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(r.isError).toBeFalsy();
+    expect(calls.map((c) => c.method)).not.toContain("run");
+    expect(r.structuredContent).toMatchObject({ state: "not_runnable", status: "created" });
+    expect(textOf(r)).toContain(
+      "next: check it with heph_status, or plan it with heph_plan_revise",
+    );
+    expect(textOf(r)).not.toMatch(/approve/i);
+    await client.close();
+  });
+
+  for (const status of ["running", "paused", "built"] as const)
+    test(`${status} without an approved plan still resumes through run`, async () => {
+      const { client: d, calls } = fakeDaemon({
+        status: () => statusOf(status, false),
+        explain: () => ({ run_id: "r1", events: [ev("e1", "run.resumed", "resumed")] }),
+        run: () => ({ run_id: "r1", started: true, after: "e1" }),
+      });
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+      const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+      expect(calls.filter((c) => c.method === "run")).toHaveLength(1);
+      expect(r.structuredContent).toMatchObject({ state: "started" });
+      await client.close();
+    });
 
   test("a run that stops right after starting says so", async () => {
     const events = [ev("e1", "run.plan_ready", "plan ready")];

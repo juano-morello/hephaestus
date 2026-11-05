@@ -6,6 +6,7 @@ import {
   guardedClient,
   NoDaemonError,
 } from "../../src/mcp/guard.ts";
+import { buildClient } from "../../src/mcp/serve.ts";
 
 function fake() {
   const calls: { method: string; args: unknown[]; cwd?: string }[] = [];
@@ -65,5 +66,23 @@ describe("mcp guard", () => {
     const mcp = guardedClient(async () => answers.shift());
     await expect(mcp.call("status", [])).rejects.toBeInstanceOf(NoDaemonError);
     expect(await mcp.call("status", [])).toEqual({ ok: "status" });
+  });
+});
+
+describe("serve wiring", () => {
+  test("buildClient guards the socket: a denied method never connects, an allowed one does", async () => {
+    const { calls, client } = fake();
+    const homes: string[] = [];
+    const c = buildClient("/home", async (home) => {
+      homes.push(home);
+      return client;
+    });
+    await expect(c.call("approvePlan" as AllowedMethod, ["r1"], "/ws")).rejects.toThrow(
+      "not allowed over MCP",
+    );
+    expect(homes).toEqual([]);
+    expect(await c.call("status", ["r1"], "/ws")).toEqual({ ok: "status" });
+    expect(homes).toEqual(["/home"]);
+    expect(calls).toEqual([{ method: "status", args: ["r1"], cwd: "/ws" }]);
   });
 });
