@@ -159,12 +159,25 @@ export type OmpWorkerOptions = {
   createSession?: (opts: CreateAgentSessionOptions) => Promise<{ session: OmpSession }>;
 };
 
+/**
+ * Runs `fn` after every earlier call has settled. OMP sessions cannot be created concurrently in
+ * one process ("Agent Main was replaced"); only creation needs this, running sessions overlap.
+ * One chain per process, so several workers share it.
+ */
+let creating: Promise<unknown> = Promise.resolve();
+export function serializeCreation<T>(fn: () => Promise<T>): Promise<T> {
+  const run = creating.then(fn, fn);
+  creating = run.catch(() => undefined);
+  return run;
+}
+
 /** OMP in-process as the single-unit worker (SPEC section 3), sandboxed per attempt. */
 export function createOmpWorker(opts: OmpWorkerOptions): Worker {
-  const create =
+  const make =
     opts.createSession ??
     (async (o: CreateAgentSessionOptions) =>
       (await createAgentSession(o)) as unknown as { session: OmpSession });
+  const create = (o: CreateAgentSessionOptions) => serializeCreation(() => make(o));
   return {
     async spawn(input) {
       const sb = await openSandbox(opts.sandbox(input));

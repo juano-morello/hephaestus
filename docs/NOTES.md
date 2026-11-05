@@ -448,3 +448,12 @@ The loop already fed failed gates back (up to 3 answers), but the planner never 
 4. **`plan-proto --correct`** corrects each invalid first answer once and reports first-try, second-try and overall validity (`correctionStats` in core). **`--seed-faults`** breaks each valid first answer with one known fault and runs only the correction: a mechanism test, reported apart from the model's natural rate.
 5. **Success:** second-try validity on first-try failures >= 60% (report n; first-try validity is ~97%, so few natural failures); seeded faults fixed without introducing other failures; first-try validity unchanged (the first prompt is untouched).
 6. **Cost of the cap:** a run that used to pass on the third try now fails. **Not measured yet:** no live model runs were made for this change, only unit tests with scripted planners.
+
+## Fan-out spike: concurrent OMP sessions (2026-11-05)
+
+Question: can the engine run independent units concurrently with OMP in one process?
+
+- **The live spike could not run in this environment**: calling `createAgentSession` (via `probeModel`) failed with `attempt to write a readonly database` on `~/.omp/agent/agent.db` (sandbox, no OMP write access), so neither the concurrent nor the staggered case was observed. The earlier doctor finding ("Agent Main was replaced" when sessions start concurrently) stands as the only evidence.
+- **Decision (default)**: serialize session creation in `createOmpWorker` with a process-wide promise chain (`serializeCreation`); sessions already created run concurrently. Keep the in-process runner; a subprocess runner (Task 5b) is not in scope for now.
+- **Re-check**: Task 12's live run must confirm two units really run at the same time. If "Agent Main was replaced" still appears after creation is serialized, switch to the subprocess runner and bring Task 5b into scope.
+- Test: `serializeCreation` in `packages/workers/test/omp.test.ts` (overlap never exceeds 1; a failed creation does not block the next).

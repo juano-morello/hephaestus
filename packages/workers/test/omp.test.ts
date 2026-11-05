@@ -9,6 +9,7 @@ import {
   defaultModelPattern,
   exitFrom,
   type OmpSession,
+  serializeCreation,
   sessionOptions,
   thinkingFor,
 } from "../src/omp.ts";
@@ -227,5 +228,27 @@ describe("createOmpWorker", () => {
     expect(state.aborted).toBe(true);
     expect(out.exit).toBe("error");
     expect(state.disposed).toBe(true);
+  });
+});
+
+describe("serializeCreation", () => {
+  test("concurrent creations never overlap, and a failure does not block the next", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const create = async (fail = false) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await Bun.sleep(20);
+      active--;
+      if (fail) throw new Error("boom");
+      return "ok";
+    };
+    const results = await Promise.allSettled([
+      serializeCreation(() => create()),
+      serializeCreation(() => create(true)),
+      serializeCreation(() => create()),
+    ]);
+    expect(maxActive).toBe(1);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
   });
 });
