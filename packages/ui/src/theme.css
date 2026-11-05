@@ -112,6 +112,10 @@ body {
 }
 
 /* Keyboard focus on a graph node shows its dashed ring (the selection ring is solid). */
+g[data-node]:focus-visible {
+  outline: none;
+}
+
 g[data-node]:focus-visible > rect[data-ring="focus"] {
   opacity: 1;
 }

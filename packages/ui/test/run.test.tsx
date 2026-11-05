@@ -292,6 +292,18 @@ describe("Run header and states", () => {
     expect(screen.queryByText(/stale/i)).toBeNull();
   });
 
+  test("usage rows show only the numeric counters, not ids or flags the daemon adds", async () => {
+    const noisy: Dashboard = {
+      ...parallelRun,
+      usage: [{ provider: "a", model: "m", run_id: "R9", eval: false, input: 5, attempts: 2 }],
+    };
+    render(<Run id="r-par" api={fakeApi(noisy)} />);
+    await screen.findByLabelText("Unit graph");
+    const row = screen.getByText(/^a\/m/).textContent ?? "";
+    expect(row).toContain("input 5");
+    expect(row).not.toMatch(/run id|eval/);
+  });
+
   test('a run with no plan shows "no plan yet"', async () => {
     render(<Run id="r-new" api={fakeApi(noPlanRun)} />);
     await screen.findByText(/no plan yet/i);
