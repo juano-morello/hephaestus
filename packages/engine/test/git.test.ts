@@ -137,6 +137,40 @@ describe("git", () => {
     expect(await sh(wt, "rev-parse", "HEAD")).toBe(head);
   });
 
+  test("cherryPickIn_replays_empty_commit", async () => {
+    const { git, repo, wt } = await setup();
+    await sh(repo, "checkout", "-q", "-b", "side");
+    await sh(repo, "commit", "-q", "--allow-empty", "-m", "noop\n\nHeph-Run: r-1");
+    const empty = await sh(repo, "rev-parse", "HEAD");
+    await sh(repo, "checkout", "-q", "main");
+    await commitFile(repo, "m.txt", "m\n", "M");
+    await git.worktreeAddDetached(wt, "main");
+    const r = await git.cherryPickIn(wt, empty);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.sha).not.toBe(empty);
+    expect(await sh(wt, "log", "-1", "--format=%B", r.sha)).toContain("Heph-Run: r-1");
+  });
+
+  test("cherryPickIn_replays_already_applied_change", async () => {
+    const { git, repo, wt } = await setup();
+    await sh(repo, "checkout", "-q", "-b", "side");
+    const c = await commitFile(repo, "n.txt", "n\n", "N\n\nHeph-Run: r-1");
+    await sh(repo, "checkout", "-q", "main");
+    await commitFile(repo, "n.txt", "n\n", "N again");
+    await git.worktreeAddDetached(wt, "main");
+    const r = await git.cherryPickIn(wt, c);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(await sh(wt, "log", "-1", "--format=%B", r.sha)).toContain("Heph-Run: r-1");
+  });
+
+  test("forkPoint_undefined_for_root_commit", async () => {
+    const { git, repo } = await setup();
+    await sh(repo, "checkout", "-q", "--orphan", "orph");
+    await sh(repo, "commit", "-q", "--allow-empty", "-m", "root\n\nHeph-Run: r-9");
+    expect(await git.forkPoint("orph", "r-9")).toBeUndefined();
+  });
+
   test("forkPoint_finds_base_after_rebase", async () => {
     const { git, repo, wt } = await setup();
     expect(await git.forkPoint("main", "r-1")).toBeUndefined();

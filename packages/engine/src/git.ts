@@ -156,7 +156,10 @@ export function createGit(repoDir: string): Git {
       }
     },
     async cherryPickIn(worktree, commit) {
-      const r = await run(["git", ...IDENTITY, "cherry-pick", commit], { cwd: worktree });
+      const r = await run(
+        ["git", ...IDENTITY, "cherry-pick", "--allow-empty", "--keep-redundant-commits", commit],
+        { cwd: worktree },
+      );
       if (r.code === 0)
         return { ok: true, sha: (await git(["rev-parse", "HEAD"], worktree)).trim() };
       const conflicts = lines(await git(["diff", "--name-only", "--diff-filter=U"], worktree));
@@ -184,7 +187,11 @@ export function createGit(repoDir: string): Git {
           branch,
         ]),
       )[0];
-      return oldest ? (await git(["rev-parse", `${oldest}^`])).trim() : undefined;
+      if (!oldest) return undefined;
+      const parent = await run(["git", "rev-parse", "--verify", "--quiet", `${oldest}^`], {
+        cwd: repoDir,
+      });
+      return parent.code === 0 ? parent.stdout.trim() : undefined;
     },
   };
 }
