@@ -540,7 +540,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const out = await schedule({
     plan: opts.plan,
     workspace: opts.workspace,
-    parallel: opts.config.parallel ?? 1,
+    parallel: opts.config.parallel ?? 3,
     accepted,
     scopeOf: (id) => humanInput(ctx, byId.get(id) as Task).scope,
     start,

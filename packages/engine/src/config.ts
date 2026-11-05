@@ -13,7 +13,7 @@ export type EngineConfig = {
   commands: Record<string, ContextPack["project"]["commands"]>;
   /** Per command gate run. Default 10 minutes. */
   gateTimeoutMs?: number;
-  /** Units run at once. 1 runs the plan serially. */
+  /** Units run at once. 1 runs the plan serially; the configured default is 3. */
   parallel: number;
 };
 
