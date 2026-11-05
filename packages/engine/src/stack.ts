@@ -177,12 +177,35 @@ export async function restack(opts: LandOptions): Promise<LandOutcome> {
   }
 }
 
+/**
+ * For a staged stacked run whose direct parent landed: the repos (and their targets) whose
+ * open pull request is still based on something other than the target, i.e. a restack that
+ * never finished. Empty when there is nothing to restack.
+ */
+export async function pendingRetargets(opts: LandOptions): Promise<Record<string, string>> {
+  const parent = ancestorsOf(opts.ledger, opts.runId, opts.stackOn)[0];
+  if (parent?.status !== "finished") return {};
+  if (opts.ledger.run(opts.runId)?.status !== "staged" || !opts.prs) return {};
+  const staged = opts.ledger.read({ run_id: opts.runId, types: ["merge.staged"] }).at(-1)?.event
+    .data as { prs?: Record<string, string> } | undefined;
+  const out: Record<string, string> = {};
+  for (const [r, url] of Object.entries(staged?.prs ?? {})) {
+    const target = opts.targets?.[r] ?? "main";
+    const path = opts.workspace.repos[r];
+    if (!path) continue;
+    const s = await opts.prs.status({ repoDir: resolve(opts.workspaceRoot, path), url });
+    if (s.state === "open" && s.base !== target) out[r] = target;
+  }
+  return out;
+}
+
 export type RestackOutcome = LandOutcome | { status: "skipped"; reason: string };
 
 /**
  * After `parentId` landed: restacks each of its staged children, oldest first. `around` wraps
  * each child's restack (the CLI takes the child's run lock); one that fails before the restack
- * starts skips that child untouched. A child that fails is aborted on its own: never thrown.
+ * starts, or a child no longer staged once inside it, is skipped untouched. A child that fails
+ * is aborted on its own: never thrown.
  */
 export async function restackChildren(o: {
   ledger: Ledger;
@@ -196,7 +219,14 @@ export async function restackChildren(o: {
     if (o.ledger.run(id)?.status !== "staged") continue;
     let started = false;
     try {
-      out[id] = await around(id, async () => {
+      out[id] = await around(id, async (): Promise<RestackOutcome> => {
+        // Looked at again under the lock: it may have changed since the look above.
+        const status = o.ledger.run(id)?.status;
+        if (status !== "staged")
+          return { status: "skipped", reason: `${id} is ${status}, not staged` };
+        const parent = ancestorsOf(o.ledger, id)[0];
+        if (parent?.status !== "finished")
+          return { status: "skipped", reason: `${id}'s parent ${parent?.runId} has not landed` };
         started = true;
         return restack(o.options(id));
       });

@@ -216,7 +216,8 @@ type MergeView = {
     | { status: "not_ready"; reasons: string[] }
     | { status: "open"; open: string[] }
     | { status: "half_landed"; merged?: string[]; reason: string }
-    | { status: "aborted"; reason: string };
+    | { status: "aborted"; reason: string }
+    | { status: "restacked"; onto: Record<string, string> };
   restacked?: Record<string, { status: string; reason?: string }>;
 };
 
@@ -245,6 +246,8 @@ export function mergeText({ run_id, result: r, restacked }: MergeView): string {
       return `${run_id}: HALF LANDED${r.merged?.length ? ` (merged: ${r.merged.join(", ")})` : ""}: ${r.reason}\n`;
     case "aborted":
       return `${run_id}: aborted: ${r.reason}\n`;
+    case "restacked":
+      return `restacked ${run_id} onto ${[...new Set(Object.values(r.onto))].join(", ")}: review it, then run heph approve merge ${run_id} again\n`;
   }
 }
 

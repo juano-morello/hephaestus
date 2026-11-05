@@ -732,11 +732,11 @@ describe("landing a stacked run", () => {
     writeFile: async () => {},
     dispose: async () => {},
   });
-  const stask = (id: string, scope: string[]): Task => ({
+  const stask = (id: string, scope: string[], project = "server"): Task => ({
     id,
     title: id,
     kind: "implement",
-    project: "server",
+    project,
     lane: "contained",
     complexity: "standard",
     complexity_reason: "x",
@@ -768,9 +768,11 @@ describe("landing a stacked run", () => {
     writeScript(root, "scripts/integration.sh", "exit 0\n");
     const server = join(root, "server");
     if (o.remote) {
-      const origin = join(dir(), "server.git");
-      await runOk(["git", "clone", "-q", "--bare", server, origin]);
-      await runOk(["git", "remote", "add", "origin", origin], { cwd: server });
+      for (const r of ["server", "web"]) {
+        const origin = join(dir(), `${r}.git`);
+        await runOk(["git", "clone", "-q", "--bare", join(root, r), origin]);
+        await runOk(["git", "remote", "add", "origin", origin], { cwd: join(root, r) });
+      }
     }
     const ledger = openLedger(join(dir(), "node"), { nodeId: "devserver" });
     const plans = new Map<string, Plan>();
@@ -796,7 +798,11 @@ describe("landing a stacked run", () => {
       plans.set(runId, {
         schema: 1,
         brief_hash: briefHash(brief),
-        tasks: scopes.map((s, i) => stask(`${runId}${i + 1}`, [s])),
+        // "web:w.html" is a unit in web; a bare path one in server.
+        tasks: scopes.map((s, i) => {
+          const [project, file] = s.includes(":") ? s.split(":") : ["server", s];
+          return stask(`${runId}${i + 1}`, [file as string], project);
+        }),
         risks: [],
       });
       const out = await runPlan({ ...opts(runId), ...(stackOn ? { stackOn } : {}) });
@@ -835,20 +841,21 @@ describe("landing a stacked run", () => {
         .read({ run_id: runId, types: ["gate.result"] })
         .map((e) => e.event.data as { gate: string; verdict: string });
     /** GitHub's merge button: a merge commit of the PR head into origin's main. */
-    fake.hooks.onMerge = async (_url, head) => {
+    fake.hooks.onMerge = async (url, head) => {
       if (!o.remote) return undefined;
-      await runOk(["git", "fetch", "-q", "origin", "main"], { cwd: server });
+      const repoDir = join(root, url.split("/").at(-3) as string);
+      await runOk(["git", "fetch", "-q", "origin", "main"], { cwd: repoDir });
       const tree = (
-        await runOk(["git", "merge-tree", "--write-tree", "origin/main", head], { cwd: server })
+        await runOk(["git", "merge-tree", "--write-tree", "origin/main", head], { cwd: repoDir })
       )
         .trim()
         .split("\n")[0] as string;
       const sha = (
         await runOk(["git", "commit-tree", tree, "-p", "origin/main", "-p", head, "-m", "Merge"], {
-          cwd: server,
+          cwd: repoDir,
         })
       ).trim();
-      await runOk(["git", "push", "-q", "origin", `${sha}:refs/heads/main`], { cwd: server });
+      await runOk(["git", "push", "-q", "origin", `${sha}:refs/heads/main`], { cwd: repoDir });
       return sha;
     };
     return { root, server, ledger, opts, build, git, fake, upstream, finished, commits, regates };
@@ -1217,13 +1224,88 @@ describe("landing a stacked run", () => {
       });
     }
 
+    test("a chain A<-B<-C: A landing restacks B only; C stays staged on B's branch", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      await f.build("C", ["c.sh"], "B");
+      const c = await landChangeset(f.opts("C"));
+      expect(c.status).toBe("staged");
+      const urlC = c.prs?.server as string;
+      expect(f.fake.bases.get(urlC)).toBe("heph/B");
+      const cPushed = await f.git.remoteRef("origin", "heph/C");
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+
+      const out = await restackChildren({ ledger: f.ledger, parentId: "A", options: f.optionsFor });
+      expect(Object.keys(out)).toEqual(["B"]);
+      expect(out.B?.status).toBe("staged");
+      expect(f.ledger.run("C")?.status).toBe("staged");
+      expect(f.fake.bases.get(urlC)).toBe("heph/B");
+      expect(await f.git.remoteRef("origin", "heph/C")).toBe(cPushed);
+      expect(f.fake.calls.filter((x) => x.startsWith("setBase"))).toEqual([
+        `setBase ${f.urls.B} main`,
+      ]);
+      // C still waits for B.
+      expect(await mergeChangeset(f.opts("C"))).toEqual({
+        status: "not_ready",
+        reasons: ["waiting for B"],
+      });
+      f.ledger.close();
+    });
+
+    test("a child that is not staged is skipped without error, also when it changed under the lock", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      await f.build("C", ["c.sh"], "A");
+      expect(f.ledger.run("C")?.status).toBe("built");
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      // B is paused by someone else between the unlocked look and taking its lock.
+      const around = async <T>(id: string, fn: () => Promise<T>) => {
+        f.ledger.append({
+          run_id: id,
+          changeset_id: id,
+          config_hash: "x",
+          actor: "engine",
+          type: "run.paused",
+          data: { reason: "user" },
+        });
+        return fn();
+      };
+      const out = await restackChildren({
+        ledger: f.ledger,
+        parentId: "A",
+        options: f.optionsFor,
+        around,
+      });
+      expect(out).toEqual({ B: { status: "skipped", reason: "B is paused, not staged" } });
+      expect(f.ledger.run("C")?.status).toBe("built");
+      for (const id of ["B", "C"])
+        expect(f.ledger.read({ run_id: id, types: ["merge.aborted"] })).toHaveLength(0);
+      expect(f.fake.calls.some((x) => x.startsWith("setBase"))).toBe(false);
+      f.ledger.close();
+    });
+
+    test("a stacked run in a repo its parent never touched merges with no restack", async () => {
+      const f = await fixture({ remote: true });
+      await f.build("A", ["a.sh"]);
+      await f.build("B", ["web:w.html"], "A");
+      expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+      const b = await landChangeset(f.opts("B"));
+      const url = b.prs?.web as string;
+      expect(f.fake.bases.get(url)).toBe("main");
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      expect(await mergeChangeset(f.opts("B"))).toEqual({ status: "merged" });
+      expect(f.fake.calls.some((x) => x.startsWith("setBase"))).toBe(false);
+      expect(f.ledger.run("B")?.status).toBe("finished");
+      f.ledger.close();
+    });
+
     test("a child whose PR is still based on the landed parent's branch is not merged", async () => {
       const f = await stagedStack({ B: "b.sh" });
       expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
       const before = f.ledger.read().length;
       expect(await mergeChangeset(f.opts("B"))).toEqual({
         status: "not_ready",
-        reasons: [`server: pull request is based on heph/A, not main: restack first (${f.urls.B})`],
+        reasons: [
+          `server: pull request is based on heph/A, not main; heph approve merge B restacks it onto main first (${f.urls.B})`,
+        ],
       });
       expect(f.ledger.read().length).toBe(before);
       expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);

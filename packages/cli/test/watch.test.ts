@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { mergeText } from "../src/main.ts";
 import { describe as explainLine } from "../src/runtime.ts";
 import { isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
 
@@ -76,6 +77,31 @@ describe("heph watch", () => {
     expect(explainLine({ type: "unit.stalled", data })).toBe(
       "stalled: impl failed the same way on a1 and a2",
     );
+  });
+
+  test("a retarget names its branch whole; other effects cut their sha", () => {
+    const url = "https://github.com/acme/calc/pull/2";
+    expect(
+      explainLine({
+        type: "effect.intended",
+        data: { effect: "pr_retarget", key: "pr_retarget:calc", target: url, after: "release/1.x" },
+      }),
+    ).toBe(`pr retarget: ${url} to release/1.x`);
+    expect(
+      explainLine({
+        type: "effect.intended",
+        data: { effect: "push", key: "push:calc", target: "heph/B", after: "a".repeat(40) },
+      }),
+    ).toBe("push: heph/B to aaaaaaa");
+  });
+
+  test("a restacked merge result says what to do next", () => {
+    expect(
+      mergeText({
+        run_id: "B",
+        result: { status: "restacked", onto: { calc: "main", web: "main" } },
+      }),
+    ).toBe("restacked B onto main: review it, then run heph approve merge B again\n");
   });
 
   test("prints new milestones and ends when staged", async () => {

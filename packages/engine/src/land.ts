@@ -527,11 +527,11 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   for (const r of pending) {
     const url = staged.prs?.[r] as string;
     // A stacked PR still based on its landed parent's branch would merge into that branch, not
-    // the target: it is retargeted by a restack first.
+    // the target: it is retargeted by a restack first (heph approve merge does that).
     const prBase = baseOf.get(r);
     if (parent && prBase !== target(r)) {
       reasons.push(
-        `${r}: pull request is based on ${prBase ?? "an unknown branch"}, not ${target(r)}: restack first (${url})`,
+        `${r}: pull request is based on ${prBase ?? "an unknown branch"}, not ${target(r)}; heph approve merge ${opts.runId} restacks it onto ${target(r)} first (${url})`,
       );
       continue;
     }

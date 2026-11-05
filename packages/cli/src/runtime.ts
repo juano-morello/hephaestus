@@ -28,10 +28,12 @@ import {
   mergeChangeset,
   normalizePath,
   type PullRequests,
+  pendingRetargets,
   projectFiles,
   type RunPlanOptions,
   recordEscalation,
   recordPlan,
+  restack,
   restackChildren,
   STACKABLE,
   unresolvedStack,
@@ -726,6 +728,19 @@ export function openRuntime(opts: {
         data: { kind: "approve", target: "merge" },
       });
       return locked(runId, async () => {
+        // A stacked run whose parent landed but whose restack never finished (the process
+        // stopped): restacked now, not merged. Its code moved, so merging is a fresh approval.
+        const onto = await pendingRetargets(landOptions(runId));
+        if (Object.keys(onto).length) {
+          const out = await restack(landOptions(runId));
+          return {
+            run_id: runId,
+            result:
+              out.status === "staged"
+                ? { status: "restacked" as const, onto, ...(out.prs ? { prs: out.prs } : {}) }
+                : { status: "aborted" as const, reason: out.reason ?? "restack failed" },
+          };
+        }
         const result = await mergeChangeset(landOptions(runId));
         return {
           run_id: runId,
@@ -785,7 +800,8 @@ export function describe(e: { type: string; data: unknown; attempt?: number | un
     case "human.input":
       return `${d.kind}${d.target ? ` ${d.target}` : ""}${d.text ? `: ${d.text}` : ""}${d.budget_tokens ? ` (${d.budget_tokens} tokens)` : ""}${Array.isArray(d.scope) ? `: may also change ${d.scope.join(", ")}` : ""}`;
     case "effect.intended":
-      return `${String(d.effect).replaceAll("_", " ")}: ${d.target}${d.after ? ` to ${String(d.after).slice(0, 7)}` : ""}`;
+      // A retarget's `after` is a branch, shown whole; elsewhere it is a sha.
+      return `${String(d.effect).replaceAll("_", " ")}: ${d.target}${d.after ? ` to ${d.effect === "pr_retarget" ? d.after : String(d.after).slice(0, 7)}` : ""}`;
     case "effect.done":
       return `${String(d.effect).replaceAll("_", " ")} ${d.state}${d.sha ? ` (${String(d.sha).slice(0, 7)})` : ""}${d.url ? ` ${d.url}` : ""}`;
     case "run.handed_off":
