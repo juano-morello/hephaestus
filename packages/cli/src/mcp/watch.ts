@@ -1,7 +1,6 @@
 // A cursor-based long-poll of a run's milestones, for the MCP heph_watch tool. Same polling as
 // `watchRun` (src/watch.ts) and the same classification (classifyRun), but stateless: the caller
 // carries the cursor.
-
 import {
   classifyRun,
   heartbeatLine,
@@ -34,13 +33,24 @@ export async function watchStep(
     intervalMs?: number;
     retries?: number;
     heartbeatMs?: number;
-    sleep?: (ms: number) => Promise<void>;
+    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     now?: () => number;
     onLine?: (line: string) => void;
+    /** The host cancelled the request: stop at the next wait with an AbortError. */
+    signal?: AbortSignal;
   },
 ): Promise<WatchStepResult> {
   const now = o.now ?? Date.now;
-  const sleep = o.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const signal = o.signal;
+  const sleep = o.sleep ?? abortableSleep;
+  const stopIfAborted = () => {
+    if (signal?.aborted) throw abortError(signal);
+  };
+  const pause = async (ms: number) => {
+    stopIfAborted();
+    await sleep(ms, signal);
+    stopIfAborted();
+  };
   const interval = o.intervalMs ?? 2000;
   const beat = o.heartbeatMs ?? 0;
   const retries = o.retries ?? 30;
@@ -53,6 +63,7 @@ export async function watchStep(
   };
   let failures = 0;
   for (;;) {
+    stopIfAborted();
     let s: Awaited<ReturnType<WatchView["status"]>>;
     let events: Awaited<ReturnType<WatchView["explain"]>>["events"];
     try {
@@ -63,7 +74,7 @@ export async function watchStep(
       // Retry a daemon restart, but not past the caller's wait: waitMs 0 with a dead daemon fails
       // fast. An answer the daemon gave (an unknown run) fails at once.
       if (!isTransient(e) || ++failures > retries || now() >= deadline + interval) throw e;
-      await sleep(interval);
+      await pause(interval);
       continue;
     }
     const milestones = events.filter(isMilestone);
@@ -97,6 +108,25 @@ export async function watchStep(
       if (status === "running" && now() - start >= beat) say(heartbeatLine(id, events, now()));
       return done();
     }
-    await sleep(Math.min(interval, Math.max(0, deadline - now())));
+    await pause(Math.min(interval, Math.max(0, deadline - now())));
   }
+}
+
+const abortError = (signal: AbortSignal) =>
+  signal.reason instanceof Error && signal.reason.name === "AbortError"
+    ? signal.reason
+    : new DOMException("the watch was cancelled", "AbortError");
+
+/** A sleep that an abort ends at once, clearing its timer. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((done) => {
+    if (signal?.aborted) return done();
+    const wake = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", wake);
+      done();
+    };
+    const timer = setTimeout(wake, ms);
+    signal?.addEventListener("abort", wake, { once: true });
+  });
 }

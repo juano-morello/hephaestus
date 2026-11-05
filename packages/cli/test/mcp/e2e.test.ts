@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { daemonAt } from "../../src/daemon.ts";
 import { BRIEF, heph, MAIN, setup, startDaemon } from "./daemon-fixture.ts";
 
 type Result = {
@@ -87,6 +88,14 @@ describe("heph mcp end to end", () => {
     const before = await call("heph_status", { run: id });
     expect((sc(before).run as { status: string }).status).toBe("planned");
     expect(sc(before).plan_approved).toBe(false);
+    // The status stays planned even if `run` were called (the build refuses before writing an
+    // event), so ask the daemon itself, past the MCP guard, whether a build job was registered:
+    // with none, follow answers done with no result and no error.
+    const daemon = await daemonAt(home);
+    const job = (await daemon?.call("follow", [id])) as Record<string, unknown>;
+    expect(job).toMatchObject({ done: true, status: "planned" });
+    expect(job).not.toHaveProperty("error");
+    expect(job).not.toHaveProperty("result");
 
     // 4. The user approves, through the CLI.
     expect((await heph(ws, home, ["approve", "plan", id])).ok).toBe(true);

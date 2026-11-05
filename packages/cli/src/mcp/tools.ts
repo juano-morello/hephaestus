@@ -78,10 +78,10 @@ const RunToolResult = z
     state: z.enum(["awaiting_plan_approval", "started", "already_running", "not_runnable"]),
     status: z.string(),
     lines: z.array(z.string()),
-    cursor: z.string().optional(),
+    cursor: z.string().min(1).optional(),
     outcome: z.enum(OUTCOMES).optional(),
-    waiting_for: z.string().optional(),
-    blocked: z.string().optional(),
+    waiting_for: z.string().min(1).optional(),
+    blocked: z.string().min(1).optional(),
   })
   .strict();
 const WatchToolResult = z
@@ -89,10 +89,10 @@ const WatchToolResult = z
     run_id: z.string(),
     status: z.string(),
     lines: z.array(z.string()),
-    cursor: z.string().optional(),
+    cursor: z.string().min(1).optional(),
     outcome: z.enum(OUTCOMES),
-    waiting_for: z.string().optional(),
-    blocked: z.string().optional(),
+    waiting_for: z.string().min(1).optional(),
+    blocked: z.string().min(1).optional(),
   })
   .strict();
 /** What the daemon's `run` answers: a build job started on it, or one already going. */
@@ -101,7 +101,7 @@ const RunStarted = z
     run_id: z.string(),
     started: z.boolean(),
     running: z.boolean().optional(),
-    after: z.string().optional(),
+    after: z.string().min(1).optional(),
   })
   .strict();
 
@@ -117,8 +117,11 @@ const DEFAULT_WAIT_S = 20;
 const STEP_RETRIES = 8;
 /** Run statuses `run` would only reject after already answering `started` (runtime.ts build). */
 const NOT_RUNNABLE = new Set(["failed", "finished", "staged", "escalated"]);
-/** Statuses where `run` resumes a build whatever the approval flag says. */
-const RESUMABLE = new Set(["running", "paused", "built"]);
+/**
+ * Statuses whose unapproved plan waits for the user. `run` on a paused or built run would answer
+ * `started` before the build refuses the unapproved plan, so heph_run does not call it.
+ */
+const AWAITS_APPROVAL = new Set(["planned", "paused", "built"]);
 
 /** status and explain through the guarded client, checked against the CLI's schemas. */
 function daemonView(ctx: McpCtx): WatchView {
@@ -142,7 +145,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     {
       description:
         "Show a heph run's plan: its tasks, build order and risks, and whether the user has approved it.",
-      inputSchema: { run: z.string().describe("The run id, e.g. r1") },
+      inputSchema: { run: z.string().min(1).describe("The run id, e.g. r1") },
     },
     ({ run }) =>
       toolResult(ctx, { method: "planShow", args: [run], command: "plan show" }, planShowText),
@@ -154,11 +157,15 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       description:
         "List heph runs, or show one run: its units, attempts, model usage and pull requests.",
       inputSchema: {
-        run: z.string().optional().describe("A run id; omit to list every run"),
+        run: z.string().min(1).optional().describe("A run id; omit to list every run"),
       },
     },
     ({ run }) =>
-      toolResult(ctx, { method: "status", args: run ? [run] : [], command: "status" }, statusText),
+      toolResult(
+        ctx,
+        { method: "status", args: run === undefined ? [] : [run], command: "status" },
+        statusText,
+      ),
   );
 
   server.registerTool(
@@ -166,14 +173,14 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     {
       description: "What happened in a heph run, one line per event; optionally for one unit.",
       inputSchema: {
-        run: z.string().describe("The run id, e.g. r1"),
-        unit: z.string().optional().describe("Limit the events to this unit id"),
+        run: z.string().min(1).describe("The run id, e.g. r1"),
+        unit: z.string().min(1).optional().describe("Limit the events to this unit id"),
       },
     },
     ({ run, unit }) =>
       toolResult(
         ctx,
-        { method: "explain", args: unit ? [run, unit] : [run], command: "explain" },
+        { method: "explain", args: unit === undefined ? [run] : [run, unit], command: "explain" },
         explainText,
       ),
   );
@@ -187,11 +194,12 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         brief: z.unknown().describe(BRIEF_DESCRIPTION),
         workspace: z
           .string()
+          .min(1)
           .optional()
           .describe(
             "Directory of the heph workspace; needed when the server was not started in one",
           ),
-        on: z.string().optional().describe('Node to run on; "local" keeps the run here'),
+        on: z.string().min(1).optional().describe('Node to run on; "local" keeps the run here'),
       },
     },
     async ({ brief, workspace, on }) => {
@@ -212,7 +220,12 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         );
       return toolResult(
         ctx,
-        { method: "newRun", args: [parsed.data, on ? { on } : {}], command: "new", cwd },
+        {
+          method: "newRun",
+          args: [parsed.data, on === undefined ? {} : { on }],
+          command: "new",
+          cwd,
+        },
         planResultText,
       );
     },
@@ -224,8 +237,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       description:
         "Plan a run again with the user's feedback. The revised plan needs the user's approval again.",
       inputSchema: {
-        run: z.string().describe("The run id, e.g. r1"),
-        instructions: z.string().describe("What to change about the plan"),
+        run: z.string().min(1).describe("The run id, e.g. r1"),
+        instructions: z.string().min(1).describe("What to change about the plan"),
       },
     },
     ({ run, instructions }) =>
@@ -242,11 +255,11 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       description:
         "Guide a unit that escalated; scope lets it change more files. The user then runs the run again.",
       inputSchema: {
-        run: z.string().describe("The run id, e.g. r1"),
-        unit: z.string().describe("The unit id"),
-        text: z.string().describe("The guidance"),
+        run: z.string().min(1).describe("The run id, e.g. r1"),
+        unit: z.string().min(1).describe("The unit id"),
+        text: z.string().min(1).describe("The guidance"),
         scope: z
-          .array(z.string())
+          .array(z.string().min(1))
           .optional()
           .describe("Extra project-relative paths it may change"),
         budget: z.number().int().positive().optional().describe("Token budget for the unit"),
@@ -273,7 +286,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     "heph_cancel",
     {
       description: "Stop a heph run for good. It cannot be resumed.",
-      inputSchema: { run: z.string().describe("The run id, e.g. r1") },
+      inputSchema: { run: z.string().min(1).describe("The run id, e.g. r1") },
     },
     ({ run }) => toolResult(ctx, { method: "cancel", args: [run], command: "cancel" }, cancelText),
   );
@@ -283,10 +296,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     {
       description:
         "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. A staged, finished, failed or escalated run, or one with no plan yet, is not started (state not_runnable); do what next says. Follow a started build with heph_watch.",
-      inputSchema: { run: z.string().describe("The run id, e.g. r1") },
+      inputSchema: { run: z.string().min(1).describe("The run id, e.g. r1") },
       outputSchema: RunToolResult.shape,
     },
-    async ({ run }) => {
+    async ({ run }, extra) => {
       const view = daemonView(ctx);
       let s: Awaited<ReturnType<WatchView["status"]>>;
       try {
@@ -294,7 +307,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       } catch (e) {
         return failure(errorText(e));
       }
-      if (s.run.status === "planned" && !s.plan_approved) {
+      if (AWAITS_APPROVAL.has(s.run.status) && !s.plan_approved) {
         const r = {
           run_id: run,
           state: "awaiting_plan_approval" as const,
@@ -310,6 +323,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           retries: STEP_RETRIES,
           sleep: ctx.sleep,
           now: ctx.now,
+          signal: extra.signal,
         });
       const answer = (
         state: "started" | "already_running" | "not_runnable",
@@ -330,8 +344,9 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           structuredContent: withoutUndefined(r),
         };
       };
-      // `run` answers `started` before the build rejects these, so they are refused here.
-      if (NOT_RUNNABLE.has(s.run.status) || !(s.plan_approved || RESUMABLE.has(s.run.status))) {
+      // `run` answers `started` before the build rejects these, so they are refused here. Only a
+      // running run resumes through `run` whatever its approval flag says.
+      if (NOT_RUNNABLE.has(s.run.status) || !(s.plan_approved || s.run.status === "running")) {
         // The daemon would answer `started` and only then fail the build: say where it stands.
         try {
           return answer("not_runnable", await step(undefined));
@@ -364,9 +379,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     {
       description: `Wait up to wait_s seconds (default ${DEFAULT_WAIT_S}, at most ${MAX_WAIT_S}) for a run's next milestones and say what it needs. Pass the returned cursor as since on the next call; omit since the first time to catch up. When no cursor is returned, call again with since omitted, but not in a tight loop. Outcomes: running (call again); awaiting_plan_approval; waiting_for_you (paused for the user, e.g. a stalled unit); planner_escalated; waiting_for_parent (a stacked run staged behind a parent that has not merged; waiting_for names it); blocked_by_parent (a stacked run whose parent failed or was cancelled; it needs a rebuild); staged; finished; failed. Stop watching when the outcome is not running and do what next says; approvals are always the user's.`,
       inputSchema: {
-        run: z.string().describe("The run id, e.g. r1"),
+        run: z.string().min(1).describe("The run id, e.g. r1"),
         since: z
           .string()
+          .min(1)
           .optional()
           .describe("The cursor from the previous heph_watch or heph_run; omit to catch up"),
         wait_s: z
@@ -388,6 +404,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           retries: STEP_RETRIES,
           sleep: ctx.sleep,
           now: ctx.now,
+          // A cancelled request stops polling; the SDK drops whatever the tool returns then.
+          signal: extra.signal,
           ...(token === undefined
             ? {}
             : {

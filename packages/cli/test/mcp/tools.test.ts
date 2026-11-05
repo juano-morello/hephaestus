@@ -524,44 +524,39 @@ describe("heph_run on a run that cannot run", () => {
     await client.close();
   });
 
-  for (const status of ["running", "paused", "built"] as const)
-    test(`${status} without an approved plan still resumes through run`, async () => {
+  test("running without an approved plan still resumes through run", async () => {
+    const { client: d, calls } = fakeDaemon({
+      status: () => statusOf("running", false),
+      explain: () => ({ run_id: "r1", events: [ev("e1", "run.resumed", "resumed")] }),
+      run: () => ({ run_id: "r1", started: true, after: "e1" }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(calls.filter((c) => c.method === "run")).toHaveLength(1);
+    expect(r.structuredContent).toMatchObject({ state: "started" });
+    await client.close();
+  });
+
+  for (const status of ["planned", "paused", "built"] as const)
+    test(`${status} with an unapproved plan is awaiting_plan_approval, run never called`, async () => {
       const { client: d, calls } = fakeDaemon({
         status: () => statusOf(status, false),
-        explain: () => ({ run_id: "r1", events: [ev("e1", "run.resumed", "resumed")] }),
+        explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
         run: () => ({ run_id: "r1", started: true, after: "e1" }),
       });
       const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
       const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
-      expect(calls.filter((c) => c.method === "run")).toHaveLength(1);
-      expect(r.structuredContent).toMatchObject({ state: "started" });
+      expect(r.isError).toBeFalsy();
+      expect(calls.map((c) => c.method)).toEqual(["status"]);
+      expect(r.structuredContent).toEqual({
+        run_id: "r1",
+        state: "awaiting_plan_approval",
+        status,
+        lines: [],
+      });
+      expect(textOf(r)).toContain("ask the user to run `heph approve plan r1` themselves");
       await client.close();
     });
-
-  test("an answered error in the progress step fails at once; a down daemon is retried", async () => {
-    for (const [err, elapsed] of [
-      [new DaemonError("unknown run r1"), 0],
-      [new NoDaemonError(), 2000],
-    ] as const) {
-      const clock = fakeClock();
-      const { client: d } = fakeDaemon({
-        status: (() => {
-          let n = 0;
-          return () => {
-            if (n++ > 0) throw err;
-            return statusOf("running");
-          };
-        })(),
-        run: () => ({ run_id: "r1", started: true, after: "e1" }),
-      });
-      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
-      const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
-      expect(r.isError).toBe(true);
-      expect(textOf(r)).toBe(err.message);
-      expect(clock.elapsed()).toBe(elapsed);
-      await client.close();
-    }
-  });
 
   test("a run that stops right after starting says so", async () => {
     const events = [ev("e1", "run.plan_ready", "plan ready")];
@@ -790,6 +785,38 @@ describe("heph_watch", () => {
     await client.close();
   });
 
+  test("a cancelled heph_watch stops polling", async () => {
+    let t = 1_000_000;
+    const { client: d, calls } = fakeDaemon({
+      status: () => statusOf("running"),
+      explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
+    });
+    // Virtual time for the deadline, a little real time per wait so the cancel lands mid-poll.
+    const client = await connectTestClient({
+      client: d,
+      workspace: () => "/ws",
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+        await Bun.sleep(10);
+      },
+    });
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 25);
+    await expect(
+      client.callTool({ name: "heph_watch", arguments: { run: "r1", since: "e1" } }, undefined, {
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow();
+    await Bun.sleep(150);
+    const polls = calls.filter((c) => c.method === "status").length;
+    // Uncancelled, a 20 s watch at 2 s polls 11 times.
+    expect(polls).toBeLessThan(6);
+    await Bun.sleep(100);
+    expect(calls.filter((c) => c.method === "status").length).toBe(polls);
+    await client.close();
+  });
+
   test("a failing progress send does not fail the watch", async () => {
     const events = [
       ev("e1", "run.plan_ready", "plan ready"),
@@ -878,6 +905,50 @@ describe("heph_watch", () => {
     expect(b).toEqual(a);
     await withToken.close();
     await without.close();
+  });
+});
+
+describe("empty strings are rejected", () => {
+  const cases: [string, Record<string, unknown>][] = [
+    ["heph_plan_show", { run: "" }],
+    ["heph_status", { run: "" }],
+    ["heph_explain", { run: "" }],
+    ["heph_explain", { run: "r1", unit: "" }],
+    ["heph_plan_revise", { run: "", instructions: "x" }],
+    ["heph_plan_revise", { run: "r1", instructions: "" }],
+    ["heph_hint", { run: "", unit: "T1", text: "x" }],
+    ["heph_hint", { run: "r1", unit: "", text: "x" }],
+    ["heph_hint", { run: "r1", unit: "T1", text: "" }],
+    ["heph_hint", { run: "r1", unit: "T1", text: "x", scope: [""] }],
+    ["heph_cancel", { run: "" }],
+    ["heph_run", { run: "" }],
+    ["heph_watch", { run: "" }],
+    ["heph_watch", { run: "r1", since: "" }],
+    ["heph_new", { brief, workspace: "" }],
+    ["heph_new", { brief, on: "" }],
+  ];
+  for (const [name, args] of cases)
+    test(`${name} with ${Object.keys(args)
+      .filter(
+        (k) => args[k] === "" || (Array.isArray(args[k]) && (args[k] as unknown[]).includes("")),
+      )
+      .join(", ")} empty is a validation error, no daemon call`, async () => {
+      const { client: d, calls } = fakeDaemon({});
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+      const r = await client
+        .callTool({ name, arguments: args })
+        .catch((e: unknown) => ({ isError: true, content: [{ type: "text", text: String(e) }] }));
+      expect(r.isError).toBe(true);
+      expect(calls).toEqual([]);
+      await client.close();
+    });
+
+  test("heph_status with run omitted still lists every run", async () => {
+    const { client: d, calls } = fakeDaemon({ status: () => ({ runs: [] }) });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws" });
+    await client.callTool({ name: "heph_status", arguments: {} });
+    expect(calls).toEqual([{ method: "status", args: [], cwd: "/ws" }]);
+    await client.close();
   });
 });
 

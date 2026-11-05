@@ -382,14 +382,11 @@ Feedback from using heph inside Claude Code: nothing told the agent what a backg
 
 ### MCP server: follow-ups and known issues (2026-11-05)
 
-- `heph watch` and `heph_watch` share one classification step, `classifyRun` in `watch.ts` (plus `heartbeatLine`), so stalled pauses and stacked runs come out the same on both. `heph_watch` reports a stacked child as `waiting_for_parent` or `blocked_by_parent`; it used to say `staged`.
-- The installer does not register the server with hosts yet: `claude mcp add heph -- heph mcp` for Claude Code, a config entry for Codex.
-- The skill and AGENTS.md should get a paragraph preferring the tools when present. The two files must change together (a test keeps them identical).
-- Daemon calls from the MCP server are bounded (20 s for every method but `newRun` and `revise`, which plan for minutes), and `heph_watch` and `heph_run`'s progress step retry only transient errors (`isTransient` in `mcp/guard.ts`: no daemon, a timeout, a socket failure). An unknown run id comes back at once. The CLI (`heph watch`, `watchRun`) still retries every error and its calls have no timeout; left as it was.
-- `heph_watch` ignores request cancellation (`extra.signal`); a cancelled call runs out its poll.
-- No test pins that `serveStdio` builds its client with `buildClient` (the guarded one): the guard test calls `buildClient` directly. Swapping in the raw daemon client would still pass the tests, so the "never approves" guarantee there rests on a code read. A test that starts `serveStdio` against a fake daemon socket would close it.
-- `heph_run` on a `paused` or `built` run whose latest plan is unapproved still reports `started`: the daemon answers before `build` refuses. Rare (`revise` needs a `planned` run) and the same as before the MCP work.
-- Left minor: `heph_status` and `heph_explain` with an empty `run` string treat it as omitted; the unapproved-run e2e check cannot detect a regression (status stays `planned` even if `run` were called), so the unit test is what guards it; `heph mcp --json` prints one JSON line on stdout after the session closes.
+Fixed since the first cut and no longer listed: shared watch classification, installer registration, the skill paragraph, bounded MCP daemon calls with transient-only retries, `heph_watch` cancellation, empty-string inputs, `heph_run` on unapproved paused/built runs, the `serveStdio` wiring test, and the e2e "starts nothing" check. What remains:
+
+- The CLI's `heph watch` (`watchRun`) still retries every daemon error, and the CLI's daemon calls have no timeout. Left as it was on purpose: a person at a terminal sees the retries and can press Ctrl-C, and `heph run`/`heph new` must wait out the planner. Only the MCP path, where a host times the tool out, needed bounds.
+- A cancelled `heph_watch` stops at its next wait, but a daemon call already in flight is not aborted: `McpClient.call` takes no signal, so it finishes first (bounded by its 20 s timeout). Passing a signal through the guard and the daemon client would close it; not worth the API change while the bound holds.
+- `heph mcp --json` prints one JSON line on stdout after the session closes. The host has hung up by then, so nothing reads it, and the stdout test sees only the JSON-RPC answers; it is the CLI's usual `--json` envelope, not worth a special case.
 - Known, pre-existing: a plain `bun run build:heph` binary fails at start, because `version.ts` spawns git without the `HEPH_BUILD` define. The installer's build passes the define, and the MCP smoke test used that build.
 
 ## Environment and OMP

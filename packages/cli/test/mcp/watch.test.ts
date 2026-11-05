@@ -290,6 +290,75 @@ describe("watchStep", () => {
     expect(s.polls()).toBe(3);
   });
 
+  test("an aborted signal stops the poll at the next sleep, with an AbortError", async () => {
+    const ac = new AbortController();
+    const s = script([{ status: "running", events: [A] }]);
+    let t = 1_000_000;
+    let sleeps = 0;
+    const p = watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 20_000,
+      signal: ac.signal,
+      now: () => t,
+      sleep: async (ms) => {
+        // The host cancels during the second wait.
+        if (++sleeps === 2) ac.abort();
+        t += ms;
+      },
+    });
+    const e = await p.catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(s.polls()).toBe(2);
+    expect(t - 1_000_000).toBeLessThan(20_000);
+  });
+
+  test("an already aborted signal polls nothing", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const s = script([{ status: "running", events: [A] }]);
+    const e = await watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 20_000,
+      signal: ac.signal,
+      ...clock(),
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(s.polls()).toBe(0);
+  });
+
+  test("an abort also stops the retry wait of a transient error", async () => {
+    const ac = new AbortController();
+    const s = script([{ status: "running", events: [A], fail: new NoDaemonError() }]);
+    const c = clock();
+    const e = await watchStep("r1", s.view, {
+      waitMs: 20_000,
+      signal: ac.signal,
+      now: c.now,
+      sleep: async (ms) => {
+        ac.abort();
+        await c.sleep(ms);
+      },
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(s.polls()).toBe(1);
+  });
+
+  test("the default sleep wakes on abort and leaves no timer behind", async () => {
+    const ac = new AbortController();
+    const s = script([{ status: "running", events: [A] }]);
+    const t0 = Date.now();
+    setTimeout(() => ac.abort(), 30);
+    const e = await watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 20_000,
+      intervalMs: 10_000,
+      signal: ac.signal,
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(s.polls()).toBe(1);
+  });
+
   test("onLine receives each line", async () => {
     const got: string[] = [];
     const s = script([{ status: "running", events: [A, B] }]);
