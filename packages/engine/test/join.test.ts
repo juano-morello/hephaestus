@@ -545,6 +545,57 @@ describe("the joined commit is pinned", () => {
   });
 });
 
+describe("join pins and kills", () => {
+  test("a unit whose rejoin ends after a simulated kill writes no join pin", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    let killed = false;
+    let inRejoin = false;
+    let rejoinDone = false;
+    const spawned: string[] = [];
+    const worker: Worker = {
+      async spawn(input: SpawnInput) {
+        const id = input.brief.task.id;
+        spawned.push(id);
+        if (id === "T2") await until(() => accepted(ledger, "T1"));
+        if (id === "T3") {
+          await until(() => inRejoin);
+          killed = true;
+          throw new Stopped("killed in T3");
+        }
+        const file = `${id.toLowerCase()}.txt`;
+        writeFiles(input.workdir, { [file]: `${id}\n` });
+        return {
+          output: { schema: 1, summary: id, claims: [], touched: [file] },
+          transcript: id,
+          usage,
+          exit: "ok",
+        };
+      },
+    };
+    const local = localRunner({ worker, gates: [], worktreesDir, tools: [] });
+    const runner: Runner = {
+      runAttempt: (req, hooks) => local.runAttempt(req, hooks),
+      async rejoin(req) {
+        inRejoin = true;
+        const r = await local.rejoin(req);
+        await until(() => killed);
+        await new Promise((res) => setTimeout(res, 20));
+        rejoinDone = true;
+        return r;
+      },
+    };
+    const p = plan([task("T1", ["t1.txt"]), task("T2", ["t2.txt"]), task("T3", ["t3.txt"])]);
+    await expect(go(p, { worker, runner, config: config(3), gates: [] })).rejects.toBeInstanceOf(
+      Stopped,
+    );
+    await until(() => rejoinDone);
+    await new Promise((res) => setTimeout(res, 100));
+    expect(await log(repoDir, ["for-each-ref", "refs/heph/join/"])).toEqual([]);
+    expect(accepted(ledger, "T2")).toBe(false);
+    ledger.close();
+  });
+});
+
 describe("rate-limit throttle", () => {
   test("a build resuming from a rate limit starts at half its parallelism and ramps up", async () => {
     const { go, ledger, repoDir, worktreesDir } = await setup();

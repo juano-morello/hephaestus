@@ -881,6 +881,8 @@ async function runUnit(
           });
           if (r.kind !== "joined") return r;
           after = r.sha;
+          // Killed meanwhile: a resumed build may already have cleared the pins; write none.
+          if (ctx.killed()) throw new Stopped(`killed before pinning ${t.id} a${n}`);
           await git.setRef(joinRef(ctx.runId, t.id, n), after);
           verdict = verdictOf([...result.gates, ...r.gates], outcome);
         }
