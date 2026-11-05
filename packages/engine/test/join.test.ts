@@ -55,7 +55,10 @@ const plan = (tasks: Task[]): Plan => ({
 });
 
 const config = (parallel: number, test = "true"): EngineConfig => ({
-  routing: { implementer: { default: { model: "claude/sonnet" } } },
+  routing: {
+    implementer: { default: { model: "claude/sonnet" } },
+    test_author: { default: { model: "claude/sonnet" } },
+  },
   maxAttempts: 3,
   parallel,
   budgetTokens: 20_000,
@@ -312,6 +315,33 @@ describe("join", () => {
     const reasons = (first?.data as { reasons: { gate: string }[] } | undefined)?.reasons ?? [];
     expect(reasons.map((r) => r.gate)).toEqual(["tests"]);
     expect(result.status).toBe("paused");
+    ledger.close();
+  });
+
+  // Found live: at parallel 2 both chains' test units ran together, leaving two red tests that
+  // each blocked the other chain's implement unit ("no unit can start: T2, T4").
+  test("two_test_chains_in_one_project_build_at_parallel_2", async () => {
+    const { go, ledger } = await setup();
+    const { gateSandbox } = sandboxes();
+    // The whole suite: every red test needs its green implementation.
+    const test =
+      'for f in $(find . -name "*.red"); do [ -f "$(dirname $f)/$(basename $f .red).green" ] || exit 1; done';
+    const { worker, spawned } = scripted({
+      T1: [{ files: { "ac1.red": "x\n" } }],
+      T2: [{ files: { "ac1.green": "x\n" } }],
+      T3: [{ files: { "ac2.red": "x\n" } }],
+      T4: [{ files: { "ac2.green": "x\n" } }],
+    });
+    const chain = (t: string, i: string, ac: string): Task[] => [
+      { ...task(t, [`${ac.toLowerCase()}.red`]), kind: "test", covers: [ac], produces: [t] },
+      { ...task(i, [`${ac.toLowerCase()}.green`]), covers: [ac], consumes: [t] },
+    ];
+    const p = plan([...chain("T1", "T2", "AC1"), ...chain("T3", "T4", "AC2")]);
+    const result = await go(p, { worker, config: config(2, test), gateSandbox });
+
+    expect(result.status).toBe("built");
+    expect(["T1", "T2", "T3", "T4"].every((id) => accepted(ledger, id))).toBe(true);
+    expect(spawned).toEqual(["T1", "T2", "T3", "T4"]);
     ledger.close();
   });
 
