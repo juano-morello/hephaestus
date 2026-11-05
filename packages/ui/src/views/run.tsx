@@ -60,7 +60,7 @@ function Header({ d }: { d: Dashboard }) {
             <li key={`${u.provider}/${u.model}`}>
               {u.provider}/{u.model}
               {Object.entries(u)
-                .filter(([k, v]) => k !== "attempts" && typeof v === "number")
+                .filter(([k, v]) => typeof v === "number")
                 .map(([k, v]) => ` · ${k.replaceAll("_", " ")} ${String(v)}`)
                 .join("")}
             </li>
