@@ -82,6 +82,26 @@ export async function baseRef(o: {
   return (await ancestorBranch(o.git, chain)) ?? targetBase(o.git, o.target);
 }
 
+/**
+ * Where a stacked run lands in a repo (design 3.2), by the same choice as baseRef: the nearest
+ * qualifying ancestor's branch while one is unmerged (rebase onto its tip, open the PR against
+ * it), else the target (onto `targetTip`, the PR against `target`).
+ */
+export async function ontoFor(o: {
+  git: Git;
+  stackOn?: string | undefined;
+  parentStatus?: string | undefined;
+  ancestors?: readonly Ancestor[] | undefined;
+  target: string;
+  targetTip: string;
+}): Promise<{ onto: string; base: string }> {
+  const chain = o.ancestors ?? (o.stackOn ? [{ runId: o.stackOn, status: o.parentStatus }] : []);
+  const branch = await ancestorBranch(o.git, chain);
+  return branch
+    ? { onto: await o.git.revParse(branch), base: branch }
+    : { onto: o.targetTip, base: o.target };
+}
+
 type StackInput = {
   workspace: Workspace;
   workspaceRoot: string;

@@ -14,7 +14,7 @@ import {
 } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import type { PullRequests } from "./prs.ts";
-import { ancestorsOf, unresolvedStack } from "./stack.ts";
+import { ancestorsOf, ontoFor, unresolvedStack } from "./stack.ts";
 
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
 
@@ -95,12 +95,19 @@ function abort(
  * Lands a built changeset as a set (SPEC section 4). Targets that moved are rebased onto and
  * re-gated first; nothing lands unless every repo can. With remotes, each repo gets a pull
  * request (you merge them); without, every target is fast-forwarded in depends_on order.
+ * A stacked run is rebased `--onto` its nearest unmerged ancestor's branch, and its PR opened
+ * against it, until that ancestor lands (design 3.2).
  */
 export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   const { ledger } = opts;
   const c = context(opts);
   const { base, repos, gits, dirOf, remote, target, scope } = c;
   const branch = runBranch(opts.runId);
+  // A stacked run lands on top of its ancestors (design 3.2); one whose ancestor was revised,
+  // paused or cancelled since has no known base, so nothing is touched.
+  const ancestors = ancestorsOf(ledger, opts.runId, opts.stackOn);
+  const unresolved = unresolvedStack(ancestors);
+  if (unresolved) return abort(ledger, base, unresolved, {});
   await clearWorktrees(
     opts.worktreesDir,
     opts.runId,
@@ -116,21 +123,38 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
   const viaPrs = withRemote.length > 0;
   if (viaPrs && !opts.prs) return abort(ledger, base, "no pull request client configured", {});
 
-  // 1. Rebase any run branch whose target moved since the run started.
-  const tips = new Map<string, string>();
+  // 1. Rebase any run branch whose base moved since the run started: its target, or for a
+  // stacked run the nearest unmerged ancestor's branch (the target once that landed).
+  const bases = new Map<string, string>();
   const rebased: string[] = [];
   for (const r of repos) {
     const git = gits.get(r) as Git;
     const hasRemote = remotes.get(r) === true;
     if (hasRemote) await git.fetch(remote, target(r));
     const tip = await git.revParse(hasRemote ? `${remote}/${target(r)}` : target(r));
-    tips.set(r, tip);
-    if ((await git.mergeBase(branch, tip)) === tip) continue;
+    const { onto, base: prBase } = await ontoFor({
+      git,
+      ancestors,
+      target: target(r),
+      targetTip: tip,
+    });
+    bases.set(r, prBase);
+    let upstream: string | undefined;
+    let key = `rebase:${r}`;
+    if (ancestors.length) {
+      // Never merge-base: a squash or rebase merge of a parent rewrites its commits, so only
+      // this run's own commits (those past its fork point) are replayed. With none of its own
+      // here, the branch is just moved onto the new base.
+      upstream = (await git.forkPoint(branch, opts.runId)) ?? (await git.revParse(branch));
+      if (upstream === onto) continue;
+      // A repo may rebase twice: onto the parent's branch, then onto the target.
+      key = `rebase:${r}:${onto.slice(0, 7)}`;
+    } else if ((await git.mergeBase(branch, tip)) === tip) continue;
     const res = await effect(
       scope,
       {
         effect: "rebase",
-        key: `rebase:${r}`,
+        key,
         target: branch,
         before: await git.revParse(branch),
         on: { repo: r },
@@ -139,7 +163,8 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
         const out = await git.rebase(
           join(opts.worktreesDir, opts.runId, `_rebase-${r}`),
           branch,
-          tip,
+          onto,
+          upstream,
         );
         return out.ok ? { sha: out.sha } : { conflicts: out.conflicts };
       },
@@ -155,8 +180,6 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
 
   // 2. Re-gate the rebased changeset: configured project commands, then the integration gate.
   if (rebased.length || rebasedBefore) {
-    const unresolved = unresolvedStack(ancestorsOf(ledger, opts.runId, opts.stackOn));
-    if (unresolved) return abort(ledger, base, unresolved, {});
     const failed = await regate(opts, repos, gits, base);
     if (failed) return abort(ledger, base, `re-gate after rebase failed: ${failed}`, {});
   }
@@ -202,7 +225,8 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
           return prs.open({
             repoDir: dirOf(r),
             head: branch,
-            base: target(r),
+            // A stacked run's PR is against its unmerged parent's branch (design 3.2).
+            base: bases.get(r) ?? target(r),
             title: prTitle(opts),
             body: prBody(opts, r, withRemote, {}),
           });
@@ -431,6 +455,10 @@ export type MergeOutcome =
  * A merged PR can't be undone, so a failure after the first merge is recorded as half-landed.
  */
 export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
+  // A stacked run merges after its parent (design 3.3), which in turn waits for its own.
+  const parent = ancestorsOf(opts.ledger, opts.runId, opts.stackOn)[0];
+  if (parent && parent.status !== "finished")
+    return { status: "not_ready", reasons: [`waiting for ${parent.runId}`] };
   const c = context(opts);
   const { base, repos, dirOf, scope } = c;
   const staged = lastStaged(opts);

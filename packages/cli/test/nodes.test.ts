@@ -41,6 +41,7 @@ const prs: PullRequests = {
     return undefined;
   },
   async edit() {},
+  async setBase() {},
   async status() {
     return { state: "open" };
   },

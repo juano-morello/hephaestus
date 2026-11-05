@@ -5,7 +5,7 @@ import { type Ledger, openLedger } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { integrationGate, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
-import { baseRef, UnresolvedStack } from "../src/stack.ts";
+import { baseRef, ontoFor, UnresolvedStack } from "../src/stack.ts";
 import type { Worker } from "../src/worker.ts";
 import { initRepo, tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, threeRepos, writeScript } from "./workspace.ts";
@@ -54,6 +54,72 @@ describe("baseRef", () => {
     await expect(
       baseRef({ git, stackOn: "A", parentStatus: "planned", target: "main" }),
     ).rejects.toBeInstanceOf(UnresolvedStack);
+  });
+});
+
+describe("ontoFor", () => {
+  async function repo() {
+    const d = await initRepo(dir(), { "a.txt": "a\n" });
+    const git = createGit(d);
+    const main = await git.revParse("main");
+    await git.branchForce("heph/A", main);
+    return { git, main };
+  }
+
+  test("an unmerged parent with a branch here: onto its tip, PR base its branch", async () => {
+    const { git } = await repo();
+    const tip = await git.revParse("heph/A");
+    for (const status of ["built", "staged"])
+      expect(
+        await ontoFor({
+          git,
+          ancestors: [{ runId: "A", status }],
+          target: "main",
+          targetTip: "f".repeat(40),
+        }),
+      ).toEqual({ onto: tip, base: "heph/A" });
+  });
+
+  test("a landed parent, or none with a branch here: onto the target tip, PR base the target", async () => {
+    const { git } = await repo();
+    const targetTip = "f".repeat(40);
+    expect(
+      await ontoFor({
+        git,
+        ancestors: [{ runId: "A", status: "finished" }],
+        target: "main",
+        targetTip,
+      }),
+    ).toEqual({ onto: targetTip, base: "main" });
+    expect(
+      await ontoFor({
+        git,
+        ancestors: [{ runId: "Z", status: "built" }],
+        target: "main",
+        targetTip,
+      }),
+    ).toEqual({ onto: targetTip, base: "main" });
+    expect(await ontoFor({ git, ancestors: [], target: "main", targetTip })).toEqual({
+      onto: targetTip,
+      base: "main",
+    });
+  });
+
+  test("the nearest unmerged ancestor with a branch here wins, past landed ones", async () => {
+    const { git } = await repo();
+    const tip = await git.revParse("heph/A");
+    expect(
+      await ontoFor({
+        git,
+        ancestors: [
+          { runId: "B", status: "finished" },
+          { runId: "Z", status: "staged" },
+          { runId: "A", status: "built" },
+        ],
+        target: "main",
+        targetTip: "f".repeat(40),
+      }),
+    ).toEqual({ onto: tip, base: "heph/A" });
   });
 });
 

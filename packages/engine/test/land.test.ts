@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Workspace } from "@hephaestus/core";
+import { briefHash, type Plan, type Task, type Workspace } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
-import { openSandbox, runOk } from "@hephaestus/sandbox";
+import { openSandbox, runOk, type Sandbox } from "@hephaestus/sandbox";
 import { type RunPlanOptions, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
 import { checkChangeset, landChangeset, mergeChangeset } from "../src/land.ts";
 import { ghPullRequests, type PrState, type PullRequests } from "../src/prs.ts";
+import type { Worker } from "../src/worker.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, crossRepoPlan, threeRepos, writer, writeScript } from "./workspace.ts";
 
@@ -39,6 +40,9 @@ function fakePrs() {
     async edit({ url, body }) {
       calls.push(`edit ${url}`);
       bodies.set(url, body);
+    },
+    async setBase({ url, base }) {
+      calls.push(`setBase ${url} ${base}`);
     },
     async status({ url }) {
       return states.get(url) ?? { state: "open" };
@@ -428,6 +432,38 @@ describe("mergeChangeset", () => {
   });
 });
 
+describe("ghPullRequests setBase", () => {
+  test("retargets the pull request base through the REST API", async () => {
+    const seen: { cmd: string[]; cwd?: string }[] = [];
+    const prs = ghPullRequests(async (cmd, opts) => {
+      seen.push({ cmd, ...(opts?.cwd ? { cwd: opts.cwd } : {}) });
+      return "";
+    });
+    await prs.setBase({
+      repoDir: "/r",
+      url: "https://github.com/acme/server/pull/9",
+      base: "main",
+    });
+    expect(seen).toEqual([
+      {
+        cmd: [
+          "gh",
+          "api",
+          "--hostname",
+          "github.com",
+          "-X",
+          "PATCH",
+          "repos/acme/server/pulls/9",
+          "-f",
+          "base=main",
+          "--silent",
+        ],
+        cwd: "/r",
+      },
+    ]);
+  });
+});
+
 describe("ghPullRequests readiness and merge", () => {
   test("reads readiness from gh and merges at the expected head", async () => {
     const seen: string[][] = [];
@@ -659,5 +695,318 @@ describe("ghPullRequests preflight", () => {
     expect(await prs.preflight?.({ repoDir: "/x" })).toBe(
       "gh can't reach the repo: gh repo view exited 4: To get started with GitHub CLI, please run: gh auth login",
     );
+  });
+});
+
+describe("landing a stacked run", () => {
+  const sh = (cmd: string[], cwd: string) => {
+    const r = Bun.spawnSync(cmd, { cwd });
+    return { code: r.exitCode ?? 1, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
+  };
+  /** Runs commands unconfined: what matters here is what the gates are given, not the sandbox. */
+  const unconfined = async (d: string): Promise<Sandbox> => ({
+    kind: "native",
+    root: d,
+    exec: async (command) => ({ ...sh(["sh", "-c", command], d), timedOut: false }),
+    readFile: async () => "",
+    writeFile: async () => {},
+    dispose: async () => {},
+  });
+  const stask = (id: string, scope: string[]): Task => ({
+    id,
+    title: id,
+    kind: "implement",
+    project: "server",
+    lane: "contained",
+    complexity: "standard",
+    complexity_reason: "x",
+    scope,
+    covers: ["AC1"],
+    spec: id,
+  });
+  /** Writes each unit's own file (its scope), with the unit id as content. */
+  const scopeWriter: Worker = {
+    async spawn(input) {
+      const files = Object.fromEntries(
+        input.brief.task.scope.map((p) => [p, `${input.brief.task.id}\n`]),
+      );
+      writeFiles(input.workdir, files);
+      return {
+        output: { schema: 1, summary: "", claims: [], touched: Object.keys(files) },
+        transcript: "",
+        usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        exit: "ok",
+      };
+    },
+  };
+
+  /** A and B touch server only; server has an origin when `remote`. */
+  async function fixture(o: { remote?: boolean } = {}) {
+    const { root, workspace } = await threeRepos(dir(), {
+      integration: { gate: "./scripts/integration.sh" },
+    });
+    writeScript(root, "scripts/integration.sh", "exit 0\n");
+    const server = join(root, "server");
+    if (o.remote) {
+      const origin = join(dir(), "server.git");
+      await runOk(["git", "clone", "-q", "--bare", server, origin]);
+      await runOk(["git", "remote", "add", "origin", origin], { cwd: server });
+    }
+    const ledger = openLedger(join(dir(), "node"), { nodeId: "devserver" });
+    const plans = new Map<string, Plan>();
+    const fake = fakePrs();
+    const opts = (runId: string, extra: Partial<RunPlanOptions> = {}): RunPlanOptions => ({
+      ledger,
+      workspace,
+      workspaceRoot: root,
+      brief,
+      plan: plans.get(runId) as Plan,
+      runId,
+      changesetId: runId,
+      worker: scopeWriter,
+      gates: [],
+      config: { ...config, commands: { server: { test: "true" } } },
+      worktreesDir: join(dir(), "worktrees"),
+      gateSandbox: (w) => unconfined(w),
+      integrationSandbox: unconfined,
+      prs: fake.prs,
+      ...extra,
+    });
+    const build = async (runId: string, scopes: string[], stackOn?: string) => {
+      plans.set(runId, {
+        schema: 1,
+        brief_hash: briefHash(brief),
+        tasks: scopes.map((s, i) => stask(`${runId}${i + 1}`, [s])),
+        risks: [],
+      });
+      const out = await runPlan({ ...opts(runId), ...(stackOn ? { stackOn } : {}) });
+      expect(out.status).toBe("built");
+      return out;
+    };
+    const git = createGit(server);
+    /** Commits onto server's main, and pushes it to origin when there is one. */
+    const upstream = async (files: Record<string, string>, msg = "upstream change") => {
+      writeFiles(server, files);
+      await runOk(["git", "add", "-A"], { cwd: server });
+      await runOk(["git", "commit", "-qm", msg], { cwd: server });
+      if (o.remote) await runOk(["git", "push", "-q", "origin", "main"], { cwd: server });
+      return git.revParse("main");
+    };
+    const finished = (runId: string) =>
+      ledger.append({
+        run_id: runId,
+        changeset_id: runId,
+        config_hash: "x",
+        actor: "engine",
+        type: "run.finished",
+        data: {},
+      });
+    /** Commits on `branch` not on `from`, oldest first, as their subjects. */
+    const commits = async (from: string, branch: string) =>
+      (
+        await runOk(["git", "log", "--reverse", "--format=%s", `${from}..${branch}`], {
+          cwd: server,
+        })
+      )
+        .split("\n")
+        .filter(Boolean);
+    const regates = (runId: string) =>
+      ledger
+        .read({ run_id: runId, types: ["gate.result"] })
+        .map((e) => e.event.data as { gate: string; verdict: string });
+    return { root, server, ledger, opts, build, git, fake, upstream, finished, commits, regates };
+  }
+
+  test("stacked_pr_opens_with_parent_branch_as_base", async () => {
+    const f = await fixture({ remote: true });
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    const out = await landChangeset(f.opts("B"));
+    expect(out.status).toBe("staged");
+    expect(f.fake.calls.filter((c) => c.startsWith("open"))).toEqual([
+      "open https://github.com/acme/server/pull/1 heph/A->main heph A: loot drops reach the server",
+      "open https://github.com/acme/server/pull/2 heph/B->heph/A heph B: loot drops reach the server",
+    ]);
+    // Nothing moved under B: no rebase, its branch pushed as built.
+    expect(effects(f.ledger).some((e) => e.startsWith("rebase"))).toBe(false);
+    expect(await f.git.remoteRef("origin", "heph/B")).toBe(await f.git.revParse("heph/B"));
+    f.ledger.close();
+  });
+
+  test("parent_moved_rebases_child_onto_new_parent_tip_and_regates", async () => {
+    const f = await fixture({ remote: true });
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    const aBuilt = await f.git.revParse("heph/A");
+    await f.upstream({ "NEWS.md": "upstream\n" });
+    // A's own landing rebases A onto the moved target: A's tip moves under B.
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    const aTip = await f.git.revParse("heph/A");
+    expect(aTip).not.toBe(aBuilt);
+
+    const out = await landChangeset(f.opts("B"));
+    expect(out.status).toBe("staged");
+    expect(await f.git.forkPoint("heph/B", "B")).toBe(aTip);
+    expect(await f.commits("heph/A", "heph/B")).toEqual(["B1"]);
+    expect(effects(f.ledger)).toContain(`rebase:server:${aTip.slice(0, 7)} applied`);
+    expect(f.regates("B").slice(-2)).toMatchObject([
+      { gate: "tests", verdict: "pass" },
+      { gate: "integration", verdict: "pass" },
+    ]);
+    expect(f.fake.calls.at(-2)).toBe(
+      "open https://github.com/acme/server/pull/2 heph/B->heph/A heph B: loot drops reach the server",
+    );
+    f.ledger.close();
+  });
+
+  test("a child that conflicts with its moved parent aborts with the files; nothing pushed", async () => {
+    const f = await fixture({ remote: true });
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    await f.upstream({ "b.sh": "upstream\n" });
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    const bBuilt = await f.git.revParse("heph/B");
+
+    const out = await landChangeset(f.opts("B"));
+    expect(out).toMatchObject({ status: "aborted", reason: "rebase conflict in server: b.sh" });
+    expect(types(f.ledger).slice(-2)).toEqual(["merge.aborted", "run.paused"]);
+    expect(f.ledger.run("B")?.status).toBe("paused");
+    expect(await f.git.revParse("heph/B")).toBe(bBuilt);
+    expect(await f.git.remoteRef("origin", "heph/B")).toBeUndefined();
+    expect(f.fake.calls.some((c) => c.includes("heph/B->"))).toBe(false);
+    f.ledger.close();
+  });
+
+  test("parent_squash_merged_restacks_without_conflict", async () => {
+    const f = await fixture({ remote: true });
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    const fork = await f.git.revParse("heph/A");
+    const staged = await landChangeset(f.opts("A"));
+    // GitHub squash-merges A with a review fix: A's commits are rewritten into one new commit,
+    // so replaying A's own commit onto it would conflict.
+    const squash = await f.upstream({ "a.sh": "A1 reviewed\n" }, "A squashed");
+    f.fake.states.set(staged.prs?.server as string, { state: "merged", mergeCommit: squash });
+    expect(await checkChangeset(f.opts("A"))).toEqual({ status: "merged" });
+    expect(f.ledger.run("A")?.status).toBe("finished");
+
+    expect(await f.git.forkPoint("heph/B", "B")).toBe(fork);
+    const out = await landChangeset(f.opts("B"));
+    expect(out.status).toBe("staged");
+    expect(await f.commits("origin/main", "heph/B")).toEqual(["B1"]);
+    expect(await f.git.forkPoint("heph/B", "B")).toBe(squash);
+    expect(effects(f.ledger)).toContain(`rebase:server:${squash.slice(0, 7)} applied`);
+    expect(f.fake.calls.at(-2)).toBe(
+      "open https://github.com/acme/server/pull/2 heph/B->main heph B: loot drops reach the server",
+    );
+    f.ledger.close();
+  });
+
+  test("merge_before_parent_is_not_ready", async () => {
+    const f = await fixture();
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    expect((await landChangeset(f.opts("B"))).status).toBe("staged");
+    const main = await f.git.revParse("main");
+    const before = f.ledger.read().length;
+    expect(await mergeChangeset(f.opts("B"))).toEqual({
+      status: "not_ready",
+      reasons: ["waiting for A"],
+    });
+    expect(f.ledger.read()).toHaveLength(before);
+    expect(await f.git.revParse("main")).toBe(main);
+    f.ledger.close();
+  });
+
+  test("local_only_stack", async () => {
+    const f = await fixture();
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    await f.upstream({ "NEWS.md": "upstream\n" });
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+    const aLanded = await f.git.revParse("main");
+    expect(aLanded).toBe(await f.git.revParse("heph/A"));
+
+    const out = await landChangeset(f.opts("B"));
+    expect(out.status).toBe("staged");
+    expect(effects(f.ledger)).toContain(`rebase:server:${aLanded.slice(0, 7)} applied`);
+    expect(await f.git.revParse("refs/heph/staging/B")).toBe(await f.git.revParse("heph/B"));
+    expect(await mergeChangeset(f.opts("B"))).toEqual({ status: "merged" });
+    expect(await f.git.revParse("main")).toBe(await f.git.revParse("heph/B"));
+    expect(await f.commits(aLanded, "main")).toEqual(["B1"]);
+    expect(f.ledger.run("B")?.status).toBe("finished");
+    f.ledger.close();
+  });
+
+  test("rebase_effect_key_includes_onto", async () => {
+    const stopAt = (point: string) => (p: string) => {
+      if (p === point) throw new Error(`stopped at ${p}`);
+    };
+    const f = await fixture();
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    await f.upstream({ "NEWS.md": "upstream\n" });
+    expect((await landChangeset(f.opts("A"))).status).toBe("staged");
+    const aTip = await f.git.revParse("heph/A");
+    const first = `rebase:server:${aTip.slice(0, 7)}`;
+
+    // Against A's moved branch, stopped after the rebase: the next landing confirms it and re-gates.
+    await expect(landChangeset(f.opts("B", { chaos: stopAt(`after:${first}`) }))).rejects.toThrow(
+      "stopped",
+    );
+    const gated = f.regates("B").length;
+    expect((await landChangeset(f.opts("B"))).status).toBe("staged");
+    expect(effects(f.ledger)).toContain(`${first} confirmed`);
+    expect(
+      f
+        .regates("B")
+        .slice(gated)
+        .map((g) => g.gate),
+    ).toEqual(["tests", "integration"]);
+    expect(await f.commits("heph/A", "heph/B")).toEqual(["B1"]);
+
+    // A lands and the target moves on: against the target now, stopped before the rebase.
+    f.finished("A");
+    const main = await f.upstream({ "LATER.md": "later\n" });
+    const second = `rebase:server:${main.slice(0, 7)}`;
+    expect(second).not.toBe(first);
+    await expect(landChangeset(f.opts("B", { chaos: stopAt(`before:${second}`) }))).rejects.toThrow(
+      "stopped",
+    );
+    expect((await landChangeset(f.opts("B"))).status).toBe("staged");
+    expect(effects(f.ledger).filter((e) => e.startsWith(second))).toEqual([
+      `${second} abandoned`,
+      `${second} applied`,
+    ]);
+    expect(await f.commits("main", "heph/B")).toEqual(["B1"]);
+    f.ledger.close();
+  });
+
+  test("a stack whose parent was revised back to planned refuses to land", async () => {
+    const f = await fixture();
+    await f.build("A", ["a.sh"]);
+    await f.build("B", ["b.sh"], "A");
+    f.ledger.append({
+      run_id: "A",
+      changeset_id: "A",
+      config_hash: "x",
+      actor: "engine",
+      type: "run.plan_ready",
+      data: { plan: f.opts("A").plan },
+    });
+    const bBuilt = await f.git.revParse("heph/B");
+    const out = await landChangeset(f.opts("B"));
+    expect(out).toMatchObject({
+      status: "aborted",
+      reason: "stacked on A, which is planned: wait for it to be built again, or rebuild this run",
+    });
+    expect(types(f.ledger).slice(-2)).toEqual(["merge.aborted", "run.paused"]);
+    expect(f.ledger.read({ run_id: "B", types: ["run.paused"] })).toHaveLength(1);
+    expect(await f.git.revParse("heph/B")).toBe(bBuilt);
+    expect(effects(f.ledger).some((e) => e.startsWith("rebase"))).toBe(false);
+    f.ledger.close();
   });
 });

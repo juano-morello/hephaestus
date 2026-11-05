@@ -18,6 +18,8 @@ export interface PullRequests {
     head: string;
   }): Promise<{ url: string; state: PrState["state"] } | undefined>;
   edit(p: { repoDir: string; url: string; body: string }): Promise<void>;
+  /** Points the pull request at another base branch (a stacked run's parent landed). */
+  setBase(p: { repoDir: string; url: string; base: string }): Promise<void>;
   status(p: { repoDir: string; url: string }): Promise<PrState>;
   /** Open, not a draft, mergeable and with every check green. */
   readiness(p: { repoDir: string; url: string }): Promise<PrReadiness>;
@@ -48,6 +50,29 @@ const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 type Runner = (cmd: string[], opts?: { cwd?: string }) => Promise<string>;
 
+/** `PATCH repos/<owner>/<repo>/pulls/<n>` with one field, through `gh api`. */
+async function patchPull(run: Runner, repoDir: string, url: string, field: string) {
+  const u = new URL(url);
+  const [owner, repo, kind, number] = u.pathname.split("/").filter(Boolean);
+  if (kind !== "pull" || !owner || !repo || !number)
+    throw new Error(`not a pull request url: ${url}`);
+  await run(
+    [
+      "gh",
+      "api",
+      "--hostname",
+      u.hostname,
+      "-X",
+      "PATCH",
+      `repos/${owner}/${repo}/pulls/${number}`,
+      "-f",
+      field,
+      "--silent",
+    ],
+    { cwd: repoDir },
+  );
+}
+
 /** Pull requests through the GitHub CLI, run in each repo's directory with your gh login. */
 export function ghPullRequests(run: Runner = runOk): PullRequests {
   return {
@@ -73,29 +98,10 @@ export function ghPullRequests(run: Runner = runOk): PullRequests {
       const state = pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open";
       return { url: pr.url, state };
     },
-    async edit({ repoDir, url, body }) {
-      // REST, not gh pr edit: older gh (2.46, Ubuntu's) asks GraphQL for Projects (classic)
-      // cards there, which GitHub has removed, and the edit fails.
-      const u = new URL(url);
-      const [owner, repo, kind, number] = u.pathname.split("/").filter(Boolean);
-      if (kind !== "pull" || !owner || !repo || !number)
-        throw new Error(`not a pull request url: ${url}`);
-      await run(
-        [
-          "gh",
-          "api",
-          "--hostname",
-          u.hostname,
-          "-X",
-          "PATCH",
-          `repos/${owner}/${repo}/pulls/${number}`,
-          "-f",
-          `body=${body}`,
-          "--silent",
-        ],
-        { cwd: repoDir },
-      );
-    },
+    // REST, not gh pr edit: older gh (2.46, Ubuntu's) asks GraphQL for Projects (classic)
+    // cards there, which GitHub has removed, and the edit fails.
+    edit: ({ repoDir, url, body }) => patchPull(run, repoDir, url, `body=${body}`),
+    setBase: ({ repoDir, url, base }) => patchPull(run, repoDir, url, `base=${base}`),
     async status({ repoDir, url }) {
       const raw = JSON.parse(
         await run(["gh", "pr", "view", url, "--json", "state,mergeCommit"], { cwd: repoDir }),
