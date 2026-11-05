@@ -1,7 +1,9 @@
 /*
  * Follows the animate-ui row-highlight pattern (https://animate-ui.com, motion + Radix style).
- * Authored locally: the upstream source could not be fetched when this was written, so this is
- * not a copy of upstream code and carries no upstream license text.
+ * Authored locally, not copied: the upstream registry item (primitives-effects-highlight) was
+ * fetched on 2026-11-05 but is a sliding-highlight primitive built on a div container and
+ * layoutId items, which does not fit a table row, and it ships under MIT + Commons Clause. So no
+ * upstream source or license text is carried here.
  */
 import { MotionConfig, motion } from "motion/react";
 import { type ReactNode, useState } from "react";

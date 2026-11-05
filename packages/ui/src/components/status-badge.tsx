@@ -2,7 +2,9 @@ import type { ReactNode } from "react";
 
 /*
  * The running pulse is a small CSS animation (.heph-pulse in theme.css) authored locally. No
- * uiverse.io snippet was ported, so there is no third-party license to carry here.
+ * uiverse.io snippet was ported (uiverse.io answered 403 to a scripted fetch on 2026-11-05, so
+ * neither a snippet nor its license text could be obtained), so there is no third-party license
+ * to carry here.
  */
 
 type Tone = { cls: string; icon: ReactNode };
