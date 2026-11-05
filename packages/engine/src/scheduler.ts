@@ -1,4 +1,5 @@
 import { type Plan, readyUnits, type Workspace } from "@hephaestus/core";
+import { Stopped } from "./effects.ts";
 
 export type PauseReason = "rate_limit" | "handoff" | "user";
 
@@ -56,7 +57,9 @@ export function rateLimitRamp(
  * unit that doesn't end accepted, or `stopped()`, starts the drain: nothing new starts, units in
  * flight finish and are kept if accepted. Returns one outcome for the whole build: cancelled wins,
  * then a pause by precedence handoff, user, rate_limit (with the latest retry-after). `done` with
- * units left over means `stopped()` drained it; the caller reports that stop itself.
+ * units left over means `stopped()` drained it; the caller reports that stop itself. A unit that
+ * throws drains too and the first error is rethrown, except a Stopped (a simulated kill), which
+ * is rethrown at once.
  */
 export async function schedule(o: {
   plan: Plan;
@@ -108,6 +111,9 @@ export async function schedule(o: {
     const { id, result, error } = await Promise.race(inFlight.values());
     inFlight.delete(id);
     if (!result) {
+      // A simulated kill (chaos): the process is gone, so nothing waits for the units still in
+      // flight and their results are never recorded. A real error drains like a pause.
+      if (error instanceof Stopped) throw error;
       failure ??= { error };
       draining = true;
     } else if (result.status === "accepted") {

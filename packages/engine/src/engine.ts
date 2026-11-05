@@ -17,7 +17,7 @@ import {
 import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
-import { type Chaos, clearWorktrees, effect, type Reality, reconcile } from "./effects.ts";
+import { type Chaos, clearWorktrees, effect, type Reality, reconcile, Stopped } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
@@ -114,6 +114,8 @@ type Ctx = RunPlanOptions & {
   dirOf: (repo: string) => string;
   /** One per build(): serializes joins onto each repo's run branch. */
   join: JoinLock;
+  /** A unit of this build was killed (Stopped): nothing more may be written or applied. */
+  killed: () => boolean;
 };
 
 /** The repos the plan touches, in first-use order. Unknown projects or repos are errors. */
@@ -398,7 +400,25 @@ function lostPause(
   return lost;
 }
 
-async function build(opts: RunPlanOptions): Promise<RunOutcome> {
+/**
+ * The build's ledger, refusing every write once a unit was killed (a Stopped, which only chaos
+ * throws): a killed process writes nothing more, so units still in flight must not either.
+ */
+function untilKilled(ledger: Ledger, killed: () => boolean): Ledger {
+  const appendMany = (drafts: EventDraft[]): LedgerEvent[] => {
+    if (killed()) throw new Stopped("the build was killed");
+    return ledger.appendMany(drafts);
+  };
+  return {
+    ...ledger,
+    appendMany,
+    append: ((d: EventDraft) => appendMany([d])[0]) as Ledger["append"],
+  };
+}
+
+async function build(input: RunPlanOptions): Promise<RunOutcome> {
+  let killed = false;
+  const opts = { ...input, ledger: untilKilled(input.ledger, () => killed) };
   const repos = touchedRepos(opts.workspace, opts.plan);
   const ids = opts.plan.tasks.map((t) => t.id);
   const { edges } = deriveEdges(opts.plan.tasks);
@@ -429,6 +449,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     repoOf: (t) => opts.workspace.projects[t.project]?.repo as string,
     hash,
     join: joinLocks(),
+    killed: () => killed,
   };
   const { ledger, runId } = opts;
   const gits = new Map(repos.map((r) => [r, createGit(dirOf(r))]));
@@ -539,7 +560,13 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
       return { status: "paused", reason, detail: reason };
     }
     const h = history.get(id) ?? { next: 1, used: 0 };
-    return runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
+    try {
+      return await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
+    } catch (e) {
+      // Set before the scheduler sees it: from here on, units still in flight write nothing.
+      if (e instanceof Stopped) killed = true;
+      throw e;
+    }
   };
 
   // Units in flight together join the run branch under ctx.join (see runUnit). Resumed from a
@@ -835,7 +862,7 @@ async function runUnit(
           verdict = verdictOf([...result.gates, ...r.gates], outcome);
         }
         await effect(
-          { ledger, base: ctx.base, chaos: ctx.chaos },
+          { ledger, base: ctx.base, chaos: ctx.chaos, killed: ctx.killed },
           {
             effect: "run_branch_advance",
             key: `run_branch_advance:${repo}:${t.id}:a${n}`,

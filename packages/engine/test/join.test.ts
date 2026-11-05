@@ -7,7 +7,7 @@ import { type Ledger, openLedger } from "@hephaestus/ledger";
 import { run, runOk, type Sandbox } from "@hephaestus/sandbox";
 import { builtinGates, lintGate, testsGate, typecheckGate } from "../src/builtin-gates.ts";
 import type { EngineConfig } from "../src/config.ts";
-import { pendingEffects, reconcile } from "../src/effects.ts";
+import { pendingEffects, reconcile, Stopped } from "../src/effects.ts";
 import { buildRun, type RunPlanOptions, realityOf, runPlan } from "../src/engine.ts";
 import type { UnitGate } from "../src/gates.ts";
 import { joinLocks } from "../src/join.ts";
@@ -507,6 +507,54 @@ describe("rate-limit throttle", () => {
     expect(overlap.get("T2")).toBe(2);
     expect(spawned.toSorted()).toEqual(ids);
     for (const id of ids) expect(accepted(ledger, id)).toBe(true);
+    ledger.close();
+  });
+});
+
+describe("a simulated kill in a parallel unit", () => {
+  test("propagates at once; a unit still in flight writes nothing after it", async () => {
+    const { go, ledger, repoDir } = await setup();
+    let killedAt = -1;
+    let release!: () => void;
+    const t2Done = new Promise<void>((r) => {
+      release = r;
+    });
+    const spawned: string[] = [];
+    const worker: Worker = {
+      async spawn(input: SpawnInput) {
+        const id = input.brief.task.id;
+        spawned.push(id);
+        if (id === "T1") {
+          await until(() => spawned.includes("T2"));
+          killedAt = ledger.read().length;
+          throw new Stopped("killed in T1");
+        }
+        // T2 is slow: it finishes green well after T1's kill.
+        await until(() => killedAt >= 0);
+        await new Promise((r) => setTimeout(r, 50));
+        writeFiles(input.workdir, { "c.txt": "two\n" });
+        setTimeout(release, 200);
+        return {
+          output: { schema: 1, summary: id, claims: [], touched: ["c.txt"] },
+          transcript: id,
+          usage,
+          exit: "ok",
+        };
+      },
+    };
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    await expect(go(p, { worker, config: config(2), gates: [] })).rejects.toBeInstanceOf(Stopped);
+    // Rejected before T2 finished its attempt.
+    expect(spawned.toSorted()).toEqual(["T1", "T2"]);
+    expect(accepted(ledger, "T2")).toBe(false);
+    await t2Done;
+    const after = ledger
+      .read()
+      .slice(killedAt)
+      .map((s) => s.event);
+    expect(after.filter((e) => e.unit_id === "T2").map((e) => e.type)).toEqual([]);
+    expect(accepted(ledger, "T2")).toBe(false);
+    expect(await log(repoDir, ["rev-list", "main..heph/R1"])).toEqual([]);
     ledger.close();
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { deriveEdges, type Plan, type Task, topoOrder, type Workspace } from "@hephaestus/core";
+import { Stopped } from "../src/effects.ts";
 import { rampStart, rateLimitRamp, schedule, type UnitResult } from "../src/scheduler.ts";
 
 const workspace: Workspace = {
@@ -353,5 +354,26 @@ describe("schedule", () => {
     // Paused again for something else and resumed: the throttle is over.
     expect(rateLimitRamp([resumed("rate_limit"), resumed("user")], 3)).toBeUndefined();
     expect(rateLimitRamp([resumed("rate_limit")], 1)).toBe(1);
+  });
+
+  test("a Stopped (a simulated kill) rejects at once, without waiting for units in flight", async () => {
+    const c = controlled();
+    const accepted = new Map<string, string[]>();
+    const out = schedule({
+      plan: plan([task("T1"), task("T2"), task("T3")]),
+      workspace,
+      parallel: 2,
+      accepted,
+      scopeOf: (id) => [`${id}.go`],
+      start: (id) => (id === "T1" ? Promise.reject(new Stopped("killed")) : c.start(id)),
+      stopped: () => false,
+    });
+    await expect(out).rejects.toBeInstanceOf(Stopped);
+    expect(c.inFlight()).toEqual(["T2"]);
+    // T2 settling later is never recorded: the process it ran in is gone.
+    c.finish("T2", ok(["b.go"]));
+    await tick();
+    expect(accepted.size).toBe(0);
+    expect(c.started).toEqual(["T2"]);
   });
 });
