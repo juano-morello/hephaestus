@@ -166,7 +166,8 @@ export type OmpWorkerOptions = {
  */
 let creating: Promise<unknown> = Promise.resolve();
 export function serializeCreation<T>(fn: () => Promise<T>): Promise<T> {
-  const run = creating.then(fn, fn);
+  // `creating` never rejects (each link swallows its error), so no rejection handler is needed.
+  const run = creating.then(() => fn());
   creating = run.catch(() => undefined);
   return run;
 }
