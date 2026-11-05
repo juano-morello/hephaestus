@@ -221,6 +221,35 @@ type MergeView = {
   restacked?: Record<string, { status: string; reason?: string }>;
 };
 
+type StatusOne = {
+  runs?: undefined;
+  run: { run_id: string; status: string };
+  plan_approved: boolean;
+  stack_on?: { run_id: string; status: string };
+  units: { unit_id: string; status: string; attempts: number }[];
+  attempts: { unit_id: string; attempt: number; status: string }[];
+  usage: { model: string; input?: unknown; output?: unknown; cache_read?: unknown }[];
+  prs?: Record<string, string>;
+};
+type StatusView = StatusOne | { runs: { run_id: string; status: string; updated_at: string }[] };
+
+/** `heph status` text. */
+export const statusText = (s: StatusView) => {
+  if (s.runs)
+    return `${s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}`).join("\n") || "no runs"}\n`;
+  return [
+    `run ${s.run.run_id}: ${s.run.status}${s.plan_approved ? "" : " (plan not approved)"}`,
+    ...(s.stack_on ? [`  stacked on ${s.stack_on.run_id} (${s.stack_on.status})`] : []),
+    ...s.units.map(
+      (u) => `  ${u.unit_id} ${u.status} (${u.attempts} attempt${u.attempts === 1 ? "" : "s"})`,
+    ),
+    ...inFlightLines(s.attempts),
+    ...s.usage.map((u) => `  ${u.model}: in ${u.input} out ${u.output} cache ${u.cache_read}`),
+    ...Object.entries(s.prs ?? {}).map(([repo, url]) => `  ${repo}: ${url}`),
+    "",
+  ].join("\n");
+};
+
 /** With parallel fan-out, which attempts run right now (listed only when more than one does). */
 export const inFlightLines = (attempts: { unit_id: string; attempt: number; status: string }[]) => {
   const running = attempts.filter((a) => a.status === "running");
@@ -388,21 +417,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
   }),
   status: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.status(ctx.args[0])),
-    render: (s) => {
-      if (s.runs)
-        return `${s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}`).join("\n") || "no runs"}\n`;
-      return [
-        `run ${s.run.run_id}: ${s.run.status}${s.plan_approved ? "" : " (plan not approved)"}`,
-        ...(s.stack_on ? [`  stacked on ${s.stack_on.run_id} (${s.stack_on.status})`] : []),
-        ...s.units.map(
-          (u) => `  ${u.unit_id} ${u.status} (${u.attempts} attempt${u.attempts === 1 ? "" : "s"})`,
-        ),
-        ...inFlightLines(s.attempts),
-        ...s.usage.map((u) => `  ${u.model}: in ${u.input} out ${u.output} cache ${u.cache_read}`),
-        ...Object.entries(s.prs ?? {}).map(([repo, url]) => `  ${repo}: ${url}`),
-        "",
-      ].join("\n");
-    },
+    render: (s) => statusText(s),
     usage: ["status [<run>]", "List runs, or show one"],
   }),
   watch: command({

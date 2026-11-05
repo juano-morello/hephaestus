@@ -75,6 +75,8 @@ const RunToolResult = z
     lines: z.array(z.string()),
     cursor: z.string().optional(),
     outcome: z.enum(OUTCOMES).optional(),
+    waiting_for: z.string().optional(),
+    blocked: z.string().optional(),
   })
   .strict();
 const WatchToolResult = z
@@ -84,6 +86,8 @@ const WatchToolResult = z
     lines: z.array(z.string()),
     cursor: z.string().optional(),
     outcome: z.enum(OUTCOMES),
+    waiting_for: z.string().optional(),
+    blocked: z.string().optional(),
   })
   .strict();
 /** What the daemon's `run` answers: a build job started on it, or one already going. */
@@ -312,6 +316,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           lines: w.lines,
           cursor: w.cursor,
           outcome: w.outcome,
+          waiting_for: w.waiting_for,
+          blocked: w.blocked,
         };
         return {
           content: [{ type: "text", text: runText(r) }],

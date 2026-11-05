@@ -46,8 +46,19 @@ export const waitingFor = (s: {
   run: { status: string };
   stack_on?: { run_id: string; status: string };
 }): string | undefined =>
-  s.run.status === "staged" && s.stack_on && s.stack_on.status !== "finished"
+  s.run.status === "staged" && s.stack_on && ["built", "staged"].includes(s.stack_on.status)
     ? s.stack_on.run_id
+    : undefined;
+
+/** A staged child whose parent can never land as it is (failed, cancelled, paused...): the line to print. */
+export const blockedByParent = (
+  id: string,
+  s: { run: { status: string }; stack_on?: { run_id: string; status: string } },
+): string | undefined =>
+  s.run.status === "staged" &&
+  s.stack_on &&
+  !["built", "staged", "finished"].includes(s.stack_on.status)
+    ? `stacked on ${s.stack_on.run_id} (${s.stack_on.status}): rebuild ${id}`
     : undefined;
 
 export type WatchView = {
@@ -125,6 +136,12 @@ export async function watchRun(
       } else if (["staged", "finished", "failed", "built"].includes(status)) {
         // `built` is the instant before staging; wait one more look for the staged line.
         if (status !== "built") {
+          const blocked = blockedByParent(id, s);
+          if (blocked) {
+            say(`${id}: staged`);
+            say(blocked);
+            return { run_id: id, status, reason: blocked };
+          }
           const parent = waitingFor(s);
           if (parent) {
             say(`${id}: staged`);

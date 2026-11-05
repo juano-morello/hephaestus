@@ -141,10 +141,15 @@ with `heph new --brief <file> --stack-on <run>` (the parent must be `built` or `
 child builds on the parent's branch and stages on its own; `heph status <child>` shows
 `stacked on <parent> (<status>)`. It cannot be merged before its parent: `heph watch <child>`
 ends with `waiting for <parent>`, and `heph approve merge <child>` says the same until the parent
-is merged. When the parent merges, heph restacks the child onto the target by itself (and moves
-its pull request base). If that restack stops, tell the user what `heph explain <child>` shows;
-after it is fixed, `heph approve merge <child>` only restacks and does not merge, so the user
-reviews the result and approves a second time. A failed or cancelled parent blocks its children.
+is finished. The child is restacked onto the target (and its pull request base moved) only when
+the user runs `heph approve merge <parent>` or `heph merge status <parent>`; a parent merged on
+GitHub directly stays `staged` until `heph merge status <parent>` is run, so tell the user that
+command. If the parent failed or was cancelled, watch says `rebuild <child>`: explain to the
+user; it can only be rebuilt. If a restack stops on a conflict or a red check, the child is
+`paused`: show the user `heph explain <child>`. Once the cause is fixed they run `heph run
+<child>`, then `heph approve merge <child>`, which only restacks and retargets and does not merge,
+then review and run `heph approve merge <child>` once more to merge. Never run any of these
+approvals yourself.
 Don't stack unless the user asked or the second change really needs the first.
 
 **Parallel units.** `limits.parallel` (default 1; `heph config explain` shows it) lets independent

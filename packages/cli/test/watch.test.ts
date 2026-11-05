@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { inFlightLines, mergeText } from "../src/main.ts";
+import { inFlightLines, mergeText, statusText } from "../src/main.ts";
 import { describe as explainLine } from "../src/runtime.ts";
 import { isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
 
@@ -103,6 +103,32 @@ describe("heph watch", () => {
       { status: "staged", events: [staged], stack_on: { run_id: "A", status: "finished" } },
     ]);
     expect(done.lines.at(-1)).toBe("r1: staged; review, then heph approve merge r1");
+  });
+
+  test("a staged child of a failed parent says to rebuild, not to wait", async () => {
+    const staged = ev("1", "merge.staged", "staged");
+    const { lines, r } = await run([
+      { status: "staged", events: [staged], stack_on: { run_id: "A", status: "failed" } },
+    ]);
+    expect(lines.at(-1)).toBe("stacked on A (failed): rebuild r1");
+    expect(lines).not.toContain("waiting for A");
+    expect(r.reason).toBe("stacked on A (failed): rebuild r1");
+  });
+
+  test("the status text lists the stack line and the attempts in flight", () => {
+    const text = statusText({
+      run: { run_id: "B", status: "running" },
+      plan_approved: true,
+      stack_on: { run_id: "A", status: "staged" },
+      units: [],
+      attempts: [
+        { unit_id: "T1", attempt: 1, status: "running" },
+        { unit_id: "T2", attempt: 1, status: "running" },
+      ],
+      usage: [],
+    });
+    expect(text).toContain("  stacked on A (staged)\n");
+    expect(text).toContain("  in flight: T1/a1, T2/a1\n");
   });
 
   test("status shows the stack line and, with parallel units, what is in flight", () => {

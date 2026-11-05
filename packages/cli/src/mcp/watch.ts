@@ -1,6 +1,6 @@
 // A cursor-based long-poll of a run's milestones, for the MCP heph_watch tool. Same polling and
 // classification as `watchRun` (src/watch.ts), but stateless: the caller carries the cursor.
-import { isMilestone, type WatchView, waitingFor, watchLine } from "../watch.ts";
+import { blockedByParent, isMilestone, type WatchView, waitingFor, watchLine } from "../watch.ts";
 
 export type Outcome =
   | "running"
@@ -17,6 +17,9 @@ export type WatchStepResult = {
   lines: string[];
   cursor: string | undefined;
   outcome: Outcome;
+  /** A staged child's parent it still waits for, or why its parent blocks it. */
+  waiting_for?: string | undefined;
+  blocked?: string | undefined;
 };
 
 export async function watchStep(
@@ -77,11 +80,21 @@ export async function watchStep(
       outcome = "waiting_for_you";
     else if (status === "staged" || status === "finished" || status === "failed") outcome = status;
 
+    const blocked = blockedByParent(id, s);
+    if (blocked && (catchUp || fresh.length > 0 || outcome !== "running")) say(blocked);
     const parent = waitingFor(s);
     if (parent && (catchUp || fresh.length > 0 || outcome !== "running"))
       say(`waiting for ${parent}`);
 
-    const done = (): WatchStepResult => ({ run_id: id, status, lines, cursor, outcome });
+    const done = (): WatchStepResult => ({
+      run_id: id,
+      status,
+      lines,
+      cursor,
+      outcome,
+      waiting_for: parent,
+      blocked,
+    });
     if (catchUp || fresh.length > 0 || outcome !== "running") return done();
 
     if (now() >= deadline) {

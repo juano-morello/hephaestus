@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { watchText } from "../../src/mcp/text.ts";
 import { watchStep } from "../../src/mcp/watch.ts";
 import type { WatchEvent } from "../../src/watch.ts";
 
@@ -262,5 +263,26 @@ describe("watchStep", () => {
     const r = await watchStep("r1", s.view, { waitMs: 0, ...clock() });
     expect(r.outcome).toBe("staged");
     expect(r.lines.at(-1)).toBe("waiting for P");
+  });
+
+  test("a staged child of a failed parent says to rebuild, and next does not say wait", async () => {
+    const s = script([
+      { status: "staged", events: [A], stack_on: { run_id: "P", status: "failed" } },
+    ]);
+    const r = await watchStep("r1", s.view, { waitMs: 0, ...clock() });
+    expect(r.lines.at(-1)).toBe("stacked on P (failed): rebuild r1");
+    expect(r.lines).not.toContain("waiting for P");
+    expect(watchText(r)).toContain("its parent cannot land");
+  });
+
+  test("next for a waiting child says to merge the parent first", async () => {
+    const s = script([
+      { status: "staged", events: [A], stack_on: { run_id: "P", status: "staged" } },
+    ]);
+    const r = await watchStep("r1", s.view, { waitMs: 0, ...clock() });
+    const text = watchText(r);
+    expect(text).toContain("wait for P");
+    expect(text).toContain("heph approve merge P");
+    expect(text).not.toContain("review, then run");
   });
 });

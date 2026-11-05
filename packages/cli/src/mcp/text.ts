@@ -78,7 +78,12 @@ export const hintText = (h: Hint): string =>
 export const cancelText = (c: Cancelled): string => `cancelled ${c.run_id}\n`;
 
 /** What the agent does after a watch step, per outcome. Approvals are always the user's. */
-export const nextFor = (outcome: Outcome, runId: string, cursor: string | undefined): string => {
+export const nextFor = (
+  outcome: Outcome,
+  runId: string,
+  cursor: string | undefined,
+  stack: { waiting_for?: string | undefined; blocked?: string | undefined } = {},
+): string => {
   switch (outcome) {
     case "running":
       return cursor
@@ -90,6 +95,10 @@ export const nextFor = (outcome: Outcome, runId: string, cursor: string | undefi
     case "planner_escalated":
       return "explain to the user and ask; do not retry";
     case "staged":
+      if (stack.waiting_for)
+        return `wait for ${stack.waiting_for}: tell the user to merge it first (\`heph approve merge ${stack.waiting_for}\`, themselves); then ${runId} is restacked and the user approves it`;
+      if (stack.blocked)
+        return "explain to the user that its parent cannot land; ask; do not retry";
       return `tell the user to review, then run \`heph approve merge ${runId}\` themselves`;
     case "finished":
       return "tell the user the run finished";
@@ -102,7 +111,7 @@ export const watchText = (w: WatchStepResult): string =>
   `${[
     ...w.lines,
     `run ${w.run_id}: ${w.status} (${w.outcome})${w.cursor ? `, cursor ${w.cursor}` : ""}`,
-    `next: ${nextFor(w.outcome, w.run_id, w.cursor)}`,
+    `next: ${nextFor(w.outcome, w.run_id, w.cursor, w)}`,
   ].join("\n")}\n`;
 
 export type RunState = "awaiting_plan_approval" | "started" | "already_running" | "not_runnable";
@@ -114,6 +123,8 @@ export const runText = (r: {
   lines: string[];
   cursor?: string;
   outcome?: Outcome;
+  waiting_for?: string | undefined;
+  blocked?: string | undefined;
 }): string => {
   if (r.state === "awaiting_plan_approval")
     return `run ${r.run_id} is not running: its plan is not approved\nnext: ask the user to run \`heph approve plan ${r.run_id}\` themselves — never approve it yourself\n`;
@@ -133,7 +144,7 @@ export const runText = (r: {
     ...r.lines,
     ...(stopped && r.state !== "not_runnable" ? [`it has already stopped: ${r.outcome}`] : []),
     stopped
-      ? `next: ${nextFor(r.outcome as Outcome, r.run_id, r.cursor)}`
+      ? `next: ${nextFor(r.outcome as Outcome, r.run_id, r.cursor, r)}`
       : `next: follow it with heph_watch${r.cursor ? ` (since ${r.cursor})` : ""}`,
   ].join("\n")}\n`;
 };
