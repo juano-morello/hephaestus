@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { type Api, type ApiError, createApi, readToken } from "./api.ts";
+import { Runs } from "./views/runs.tsx";
 
 export type Route = { page: "runs" } | { page: "run"; id: string };
 
@@ -47,10 +48,6 @@ export function ErrorBanner({ error }: { error: ApiError | undefined }) {
   );
 }
 
-function RunsPlaceholder() {
-  return <p className="text-muted">Runs list.</p>;
-}
-
 function RunPlaceholder({ id }: { id: string }) {
   return (
     <p className="text-muted">
@@ -64,14 +61,14 @@ function RunPlaceholder({ id }: { id: string }) {
 
 export function App() {
   const route = useRoute();
-  useApi();
+  const api = useApi();
   return (
     <div className="min-h-screen bg-bg text-fg">
       <header className="border-b border-line bg-surface px-4 py-3 font-semibold">
         Hephaestus
       </header>
       <main className="p-4">
-        {route.page === "runs" ? <RunsPlaceholder /> : <RunPlaceholder id={route.id} />}
+        {route.page === "runs" ? <Runs api={api} /> : <RunPlaceholder id={route.id} />}
       </main>
     </div>
   );

@@ -88,3 +88,17 @@ body {
     transition-duration: 0.001ms !important;
   }
 }
+
+@keyframes heph-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+.heph-pulse {
+  animation: heph-pulse 1.6s ease-in-out infinite;
+}
