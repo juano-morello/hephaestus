@@ -28,6 +28,7 @@ import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
+import { readUiFile } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { watchRun } from "./watch.ts";
 
@@ -61,6 +62,7 @@ type Flags = {
   on?: string;
   stackOn?: string;
   tests: boolean;
+  noOpen: boolean;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -558,6 +560,41 @@ const COMMANDS: Record<string, Command<unknown>> = {
     render: () => "",
     usage: ["mcp", "Serve heph to a chat host over MCP (stdio); the host starts this"],
   }),
+  /** Prints (and opens) the dashboard's URL, once the daemon's listener is verified alive. */
+  ui: command({
+    run: async (ctx) => {
+      const home = homeOf(ctx);
+      const ui = readUiFile(home);
+      // ui.json outlives the daemon, so a live daemon and an answering listener are both needed.
+      // Any HTTP response counts: the listener answers 404 on "/" when it has no bundle.
+      const live =
+        ui !== undefined &&
+        (await daemonAt(home)) !== undefined &&
+        (await fetch(`http://127.0.0.1:${ui.port}/`, {
+          signal: AbortSignal.timeout(1000),
+          redirect: "manual",
+        }).then(
+          () => true,
+          () => false,
+        ));
+      if (!ui || !live)
+        throw new Error("the dashboard is not running: no daemon is serving it (run heph doctor)");
+      const url = `http://127.0.0.1:${ui.port}/#t=${ui.token}`;
+      let opened = false;
+      if (!ctx.flags.noOpen && process.stdout.isTTY) {
+        try {
+          Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", url], {
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+          opened = true;
+        } catch {}
+      }
+      return { url, opened };
+    },
+    render: (r) => `${r.url}\n`,
+    usage: ["ui [--no-open]", "Open the read-only dashboard in your browser"],
+  }),
   sync: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.sync()),
     render: (r) =>
@@ -710,6 +747,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         "stack-on": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         tests: { type: "boolean", default: false },
+        "no-open": { type: "boolean", default: false },
         version: { type: "boolean", default: false },
       },
     });
@@ -734,6 +772,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       force: values.force ?? false,
       now: values.now ?? false,
       tests: values.tests ?? false,
+      noOpen: values["no-open"] ?? false,
       ...(values.home ? { home: values.home } : {}),
       ...(values.on ? { on: values.on } : {}),
       ...(values["stack-on"] ? { stackOn: values["stack-on"] } : {}),

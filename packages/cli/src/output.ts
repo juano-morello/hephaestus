@@ -250,4 +250,5 @@ export const OUTPUT = {
   handoff: HandedOff,
   adopt: Adopted,
   "merge status": MergeResult,
+  ui: z.object({ url: z.string(), opened: z.boolean() }).strict(),
 } as const;
