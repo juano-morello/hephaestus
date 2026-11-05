@@ -80,6 +80,9 @@ function build(target: string, platform: string): string {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   const commit = sh(["git", "describe", "--always", "--dirty"]).trim();
+  // The dashboard bundle is embedded in the binary; without it the daemon runs with no UI.
+  say("building the dashboard bundle");
+  sh(["bun", "run", "build:ui"]);
   say(`building ${platform} from ${commit}`);
   sh([
     "bun",
