@@ -376,7 +376,20 @@ A presentation zoom for the Godot client, driven from Claude Code with the skill
 
 ## Following a run from the chat host (2026-11-04)
 
-Feedback from using heph inside Claude Code: nothing told the agent what a background run was doing, and an obviously structural stall (a unit escalating over and over) cost attempts before anyone was asked. **Built: `heph watch <run>`** (SPEC section 16), a polling milestone stream that the skill starts with Monitor (Claude Code) and checks by hand in Codex. It ends with `waiting for you` or `the planner escalated`, and the skill tells the agent to explain and ask rather than retry. **Not built:** MCP progress notifications (hosts differ in whether the model sees them; the MCP server stays on the roadmap and can reuse the same milestones), and detecting a structural stall earlier than the unit's own escalation (the second half of the feedback; today it relies on the escalation and the agent asking).
+Feedback from using heph inside Claude Code: nothing told the agent what a background run was doing, and an obviously structural stall (a unit escalating over and over) cost attempts before anyone was asked. **Built: `heph watch <run>`** (SPEC section 16), a polling milestone stream that the skill starts with Monitor (Claude Code) and checks by hand in Codex. It ends with `waiting for you` or `the planner escalated`, and the skill tells the agent to explain and ask rather than retry. **Built later (2026-11-05): the MCP server** (`heph mcp`, SPEC section 16), with `heph_watch` as a cursor long-poll. Decision: the pull tool is the contract and MCP progress notifications are best-effort on top, because hosts differ in whether the model ever sees them. **Not built:** detecting a structural stall earlier than the unit's own escalation (the second half of the feedback; today it relies on the escalation and the agent asking).
+
+### MCP server: follow-ups and known issues (2026-11-05)
+
+- `mcp/watch.ts` duplicates the status-to-outcome mapping from the CLI's `watch.ts`. Extract a shared `watchStep` once the stall-detection change in `watch.ts` lands, so both surfaces get it.
+- The installer does not register the server with hosts yet: `claude mcp add heph -- heph mcp` for Claude Code, a config entry for Codex.
+- The skill and AGENTS.md should get a paragraph preferring the tools when present. The two files must change together (a test keeps them identical).
+- `heph_watch` ignores request cancellation (`extra.signal`); a cancelled call runs out its poll.
+- The daemon client's `/call` fetch has no timeout. For a run owned by another node, `status` and `explain` sync with the peer first. So `heph_watch` can run past host tool timeouts when the owner is unreachable. This is a pre-existing pattern in `daemon.ts` and was not changed here.
+- `heph_watch` and `heph_run`'s progress step retry every daemon error, not only transient ones. An unknown run id or a down daemon takes about 16 s (default `heph_watch`) or about 2 s (`heph_run`) to come back as an error. Retries stop one interval past the poll's wait.
+- No test pins that `serveStdio` builds its client with `buildClient` (the guarded one): the guard test calls `buildClient` directly. Swapping in the raw daemon client would still pass the tests, so the "never approves" guarantee there rests on a code read. A test that starts `serveStdio` against a fake daemon socket would close it.
+- `heph_run` on a `paused` or `built` run whose latest plan is unapproved still reports `started`: the daemon answers before `build` refuses. Rare (`revise` needs a `planned` run) and the same as before the MCP work.
+- Left minor: `heph_status` and `heph_explain` with an empty `run` string treat it as omitted; the unapproved-run e2e check cannot detect a regression (status stays `planned` even if `run` were called), so the unit test is what guards it; `heph mcp --json` prints one JSON line on stdout after the session closes.
+- Known, pre-existing: a plain `bun run build:heph` binary fails at start, because `version.ts` spawns git without the `HEPH_BUILD` define. The installer's build passes the define, and the MCP smoke test used that build.
 
 ## Environment and OMP
 

@@ -26,6 +26,7 @@ export { findWorkspace };
 import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
+import { serveStdio } from "./mcp/serve.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { watchRun } from "./watch.ts";
@@ -498,6 +499,22 @@ const COMMANDS: Record<string, Command<unknown>> = {
       "daemon",
       "Run this node's daemon in the foreground (the installer runs it as a service)",
     ],
+  }),
+  /** The MCP server a chat host starts over stdio. Prints nothing else on stdout. */
+  mcp: command({
+    run: (ctx) =>
+      serveStdio({
+        home: homeOf(ctx),
+        workspace: () => {
+          try {
+            return workspaceOf(ctx);
+          } catch {
+            return undefined;
+          }
+        },
+      }),
+    render: () => "",
+    usage: ["mcp", "Serve heph to a chat host over MCP (stdio); the host starts this"],
   }),
   sync: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.sync()),
