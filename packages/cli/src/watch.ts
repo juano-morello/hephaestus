@@ -61,13 +61,20 @@ export const blockedByParent = (
     ? `stacked on ${s.stack_on.run_id} (${s.stack_on.status}): rebuild ${id}`
     : undefined;
 
+/** `signal`, when given, aborts the call (the MCP watch passes one; the CLI does not). */
 export type WatchView = {
-  status(id: string): Promise<{
+  status(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<{
     run: { status: string };
     plan_approved: boolean;
     stack_on?: { run_id: string; status: string };
   }>;
-  explain(id: string): Promise<{ events: WatchEvent[] }> | { events: WatchEvent[] };
+  explain(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<{ events: WatchEvent[] }> | { events: WatchEvent[] };
 };
 
 export type Watched = { run_id: string; status: string; reason?: string };

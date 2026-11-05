@@ -558,6 +558,28 @@ describe("heph_run on a run that cannot run", () => {
       await client.close();
     });
 
+  test("heph_run is bounded as a whole: a hung daemon is an error within its budget", async () => {
+    for (const hang of ["status", "run", "explain"] as const) {
+      const { client: d } = fakeDaemon({
+        status: () => (hang === "status" ? new Promise(() => {}) : statusOf("running")),
+        run: () =>
+          hang === "run" ? new Promise(() => {}) : { run_id: "r1", started: true, after: "e1" },
+        explain: () => new Promise(() => {}),
+      });
+      const client = await connectTestClient({
+        client: d,
+        workspace: () => "/ws",
+        runBudgetMs: 60,
+      });
+      const t0 = Date.now();
+      const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toContain("not answering in time");
+      await client.close();
+    }
+  });
+
   test("a run that stops right after starting says so", async () => {
     const events = [ev("e1", "run.plan_ready", "plan ready")];
     let ran = false;
@@ -814,6 +836,18 @@ describe("heph_watch", () => {
     expect(polls).toBeLessThan(6);
     await Bun.sleep(100);
     expect(calls.filter((c) => c.method === "status").length).toBe(polls);
+    await client.close();
+  });
+
+  test("a daemon that never answers is cut at the overall deadline, with call again", async () => {
+    const { client: d } = fakeDaemon({ status: () => new Promise(() => {}) });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", graceMs: 50 });
+    const t0 = Date.now();
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1", wait_s: 0 } });
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("not answering in time");
+    expect(textOf(r)).toContain("call heph_watch again");
     await client.close();
   });
 

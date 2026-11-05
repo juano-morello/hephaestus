@@ -164,6 +164,38 @@ describe("MCP registration", () => {
     expect(f.calls).toContainEqual(add);
   });
 
+  test("Claude Code: the same command with stale args is re-registered", () => {
+    const f = fake({ exitCode: 0, stdout: `heph:\n  Command: ${heph}\n  Args: mcp --old\n` });
+    const r = registerClaudeMcp(f.run, heph);
+    expect(r.message).toContain("differed");
+    expect(f.calls).toContainEqual(add);
+  });
+
+  test("Claude Code: user scope with the same command is left alone", () => {
+    const f = fake({
+      exitCode: 0,
+      stdout: `heph:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: ${heph}\n  Args: mcp\n`,
+    });
+    expect(registerClaudeMcp(f.run, heph).done).toBe(true);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  for (const scope of [
+    "Local config (private to you in this project)",
+    "Project config (shared via .mcp.json)",
+  ])
+    test(`Claude Code: registered in another scope (${scope.split(" ")[0]}) is reported, not shadowed`, () => {
+      const f = fake({
+        exitCode: 0,
+        stdout: `heph:\n  Scope: ${scope}\n  Type: stdio\n  Command: /elsewhere/heph\n  Args: mcp\n`,
+      });
+      const r = registerClaudeMcp(f.run, heph);
+      expect(r.done).toBe(false);
+      expect(r.message).toContain(`${(scope.split(" ")[0] ?? "").toLowerCase()} scope`);
+      expect(r.message).toContain(add.join(" "));
+      expect(f.calls).toEqual([["claude", "mcp", "get", "heph"]]);
+    });
+
   test("Claude Code: absent, it prints the manual command and does not fail", () => {
     const f = fake(undefined);
     const r = registerClaudeMcp(f.run, heph);
@@ -181,7 +213,8 @@ describe("MCP registration", () => {
 
 describe("Codex config.toml", () => {
   const heph = "/home/u/.local/bin/heph";
-  const table = `[mcp_servers.heph]\ncommand = "${heph}"\nargs = ["mcp"]\n`;
+  const table = `[mcp_servers.heph]\ncommand = "${heph}"\nargs = ["mcp"]\ntool_timeout_sec = 120\n`;
+  const parsedHeph = { command: heph, args: ["mcp"], tool_timeout_sec: 120 };
 
   test("a new file gets the table", () => {
     expect(withHephMcp(undefined, heph)).toBe(table);
@@ -206,7 +239,51 @@ describe("Codex config.toml", () => {
     expect(Bun.TOML.parse(out)).toEqual({
       a: { x: 1 },
       b: { y: 2 },
-      mcp_servers: { heph: { command: heph, args: ["mcp"] } },
+      mcp_servers: { heph: parsedHeph },
     });
+  });
+
+  test("an inline heph in [mcp_servers] is replaced, never duplicated", () => {
+    const inline = `[mcp_servers]\nheph = { command = "/old/heph", args = ["mcp"] }\nother = { command = "x" }\n`;
+    const out = withHephMcp(inline, heph);
+    expect(Bun.TOML.parse(out)).toEqual({
+      mcp_servers: { other: { command: "x" }, heph: parsedHeph },
+    });
+    expect(out).not.toContain("/old/heph");
+  });
+
+  test("dotted heph keys, under [mcp_servers] or at the root, are replaced", () => {
+    const dotted = `[mcp_servers]\nheph.command = "/old/heph"\nheph.args = [\n  "mcp",\n]\nother.command = "x"\n`;
+    const out = withHephMcp(dotted, heph);
+    expect(Bun.TOML.parse(out)).toEqual({
+      mcp_servers: { other: { command: "x" }, heph: parsedHeph },
+    });
+    const root = `mcp_servers.heph.command = "/old/heph"\nmodel = "o3"\n`;
+    expect(Bun.TOML.parse(withHephMcp(root, heph))).toEqual({
+      model: "o3",
+      mcp_servers: { heph: parsedHeph },
+    });
+  });
+
+  test("a multi-line array inside the heph table does not end the skip early", () => {
+    const multi = `[mcp_servers.heph]\ncommand = "/old/heph"\nargs = [\n  ["nested"],\n  "mcp",\n]\nenv_vars = ["A"]\n\n[b]\ny = 2\n`;
+    const out = withHephMcp(multi, heph);
+    expect(out).toBe(`[b]\ny = 2\n\n${table}`);
+  });
+
+  test("a multi-line array elsewhere is kept whole", () => {
+    const multi = `[a]\nxs = [\n  [1],\n  [2],\n]\n`;
+    const out = withHephMcp(multi, heph);
+    expect(Bun.TOML.parse(out)).toEqual({
+      a: { xs: [[1], [2]] },
+      mcp_servers: { heph: parsedHeph },
+    });
+  });
+
+  test("CRLF input keeps CRLF line endings", () => {
+    const crlf = `model = "o3"\r\n\r\n[mcp_servers.heph]\r\ncommand = "/old"\r\n`;
+    const out = withHephMcp(crlf, heph);
+    expect(out).toBe(`model = "o3"\r\n\r\n${table.replaceAll("\n", "\r\n")}`);
+    expect(out.replaceAll("\r\n", "")).not.toContain("\n");
   });
 });

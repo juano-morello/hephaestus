@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DaemonError, DaemonTimeoutError } from "../../src/daemon.ts";
 import { NoDaemonError } from "../../src/mcp/guard.ts";
 import { watchText } from "../../src/mcp/text.ts";
-import { watchStep } from "../../src/mcp/watch.ts";
+import { StepDeadlineError, watchStep } from "../../src/mcp/watch.ts";
 import type { WatchEvent } from "../../src/watch.ts";
 
 const ev = (
@@ -357,6 +357,102 @@ describe("watchStep", () => {
     expect((e as Error).name).toBe("AbortError");
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(s.polls()).toBe(1);
+  });
+
+  test("an abort during status does not go on to explain", async () => {
+    const ac = new AbortController();
+    let explains = 0;
+    const view = {
+      status: async () => {
+        ac.abort();
+        return { run: { status: "running" }, plan_approved: true };
+      },
+      explain: async () => {
+        explains++;
+        return { events: [A] };
+      },
+    };
+    const e = await watchStep("r1", view, {
+      since: "01",
+      waitMs: 20_000,
+      signal: ac.signal,
+      ...clock(),
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(explains).toBe(0);
+  });
+
+  test("the abort reaches the daemon calls themselves", async () => {
+    const ac = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    const view = {
+      status: (_id: string, signal?: AbortSignal) => {
+        seen.push(signal);
+        return new Promise<never>((_, fail) =>
+          signal?.addEventListener("abort", () => fail(signal.reason), { once: true }),
+        );
+      },
+      explain: async () => ({ events: [A] }),
+    };
+    setTimeout(() => ac.abort(), 20);
+    const e = await watchStep("r1", view, { waitMs: 20_000, signal: ac.signal }).catch(
+      (x: unknown) => x,
+    );
+    expect((e as Error).name).toBe("AbortError");
+    expect(seen[0]?.aborted).toBe(true);
+  });
+
+  test("a hung daemon call is cut at the overall deadline (waitMs + graceMs)", async () => {
+    const t0 = Date.now();
+    const view = {
+      status: () => new Promise<never>(() => {}),
+      explain: async () => ({ events: [A] }),
+    };
+    const e = await watchStep("r1", view, { waitMs: 0, graceMs: 50 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(StepDeadlineError);
+    expect((e as Error).message).toContain("not answering in time");
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  test("no new daemon call starts once the overall deadline has passed", async () => {
+    const c = clock();
+    let explains = 0;
+    const view = {
+      status: async () => {
+        // A slow answer that lands after the step's whole budget.
+        await c.sleep(40_000);
+        return { run: { status: "running" }, plan_approved: true };
+      },
+      explain: async () => {
+        explains++;
+        return { events: [A] };
+      },
+    };
+    const e = await watchStep("r1", view, { since: "01", waitMs: 20_000, ...c }).catch(
+      (x: unknown) => x,
+    );
+    expect(e).toBeInstanceOf(StepDeadlineError);
+    expect(explains).toBe(0);
+  });
+
+  test("slow but answering calls never hold the step past waitMs + 15 s", async () => {
+    const c = clock();
+    const view = {
+      status: async () => {
+        await c.sleep(9000);
+        return { run: { status: "running" }, plan_approved: true };
+      },
+      explain: async () => {
+        await c.sleep(9000);
+        return { events: [A] };
+      },
+    };
+    const r = await watchStep("r1", view, { since: "01", waitMs: 20_000, ...c }).catch(
+      (x: unknown) => x,
+    );
+    // 18 s per poll: poll 1 ends at 18 s, poll 2 starts at 20 s and would end at 38 s.
+    expect(r).toBeInstanceOf(StepDeadlineError);
+    expect(c.now() - 1_000_000).toBeLessThanOrEqual(38_000);
   });
 
   test("onLine receives each line", async () => {

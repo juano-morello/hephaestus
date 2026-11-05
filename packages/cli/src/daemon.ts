@@ -8,12 +8,15 @@ import type { Host } from "./host.ts";
 export const socketOf = (home: string) => join(home, "daemon.sock");
 
 export type DaemonClient = {
-  /** `timeoutMs` bounds the call; without it the call waits (newRun and revise plan for minutes). */
+  /**
+   * `timeoutMs` bounds the call; without it the call waits (newRun and revise plan for minutes).
+   * `signal` lets the caller abort it; the call then rejects with the signal's reason.
+   */
   call(
     method: string,
     args: unknown[],
     cwd?: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<unknown>;
 };
 
@@ -46,6 +49,9 @@ export async function daemonAt(home: string): Promise<DaemonClient | undefined> 
   return {
     async call(method, args, cwd, opts) {
       const ms = opts?.timeoutMs;
+      const timeout = ms === undefined ? undefined : AbortSignal.timeout(ms);
+      const signals = [timeout, opts?.signal].filter((x): x is AbortSignal => x !== undefined);
+      const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
       let r: Response;
       let body: { ok: boolean; data?: unknown; error?: { message: string } };
       try {
@@ -54,12 +60,12 @@ export async function daemonAt(home: string): Promise<DaemonClient | undefined> 
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ method, args, cwd }),
-          ...(ms === undefined ? {} : { signal: AbortSignal.timeout(ms) }),
+          ...(signal ? { signal } : {}),
         });
         body = (await r.json()) as typeof body;
       } catch (e) {
-        if (ms !== undefined && e instanceof Error && e.name === "TimeoutError")
-          throw new DaemonTimeoutError(method, ms);
+        if (opts?.signal?.aborted) throw opts.signal.reason;
+        if (ms !== undefined && timeout?.aborted) throw new DaemonTimeoutError(method, ms);
         throw e;
       }
       if (!body.ok) throw new DaemonError(body.error?.message ?? `daemon answered ${r.status}`);

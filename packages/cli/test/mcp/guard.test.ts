@@ -89,7 +89,7 @@ describe("serve wiring", () => {
 });
 
 describe("per-method timeouts", () => {
-  test("quick methods get 20 s, newRun and revise none", async () => {
+  test("quick methods get 10 s, newRun and revise none", async () => {
     const seen: Record<string, unknown> = {};
     const client: DaemonClient = {
       async call(method, _args, _cwd, opts) {
@@ -102,13 +102,30 @@ describe("per-method timeouts", () => {
     expect(seen).toEqual({
       newRun: undefined,
       revise: undefined,
-      planShow: 20_000,
-      run: 20_000,
-      status: 20_000,
-      explain: 20_000,
-      hint: 20_000,
-      cancel: 20_000,
+      planShow: 10_000,
+      run: 10_000,
+      status: 10_000,
+      explain: 10_000,
+      hint: 10_000,
+      cancel: 10_000,
     });
+  });
+});
+
+describe("caller signal", () => {
+  test("reaches the daemon call, with or without a timeout", async () => {
+    const seen: Record<string, unknown> = {};
+    const client: DaemonClient = {
+      async call(method, _args, _cwd, opts) {
+        seen[method] = opts;
+        return null;
+      },
+    };
+    const mcp = guardedClient(async () => client);
+    const signal = new AbortController().signal;
+    await mcp.call("status", [], undefined, { signal });
+    await mcp.call("newRun", [], undefined, { signal });
+    expect(seen).toEqual({ status: { timeoutMs: 10_000, signal }, newRun: { signal } });
   });
 });
 

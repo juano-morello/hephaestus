@@ -196,7 +196,13 @@ async function installHere() {
   if (!values["no-claude"]) {
     const run: Runner = (cmd) => {
       try {
-        const r = Bun.spawnSync(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        // A `claude mcp get` that hangs (a health check that never ends) must not hang the install.
+        const r = Bun.spawnSync(cmd, {
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: 20_000,
+        });
         return { exitCode: r.exitCode ?? 1, stdout: r.stdout.toString() };
       } catch {
         return undefined;
@@ -206,10 +212,16 @@ async function installHere() {
     const codex = join(home, ".codex");
     if (existsSync(codex)) {
       const file = join(codex, "config.toml");
-      const before = existsSync(file) ? readFileSync(file, "utf8") : undefined;
-      const after = withHephMcp(before, heph);
-      if (after !== before) writeFileSync(file, after);
-      say(`Codex: heph's MCP server in ${file}`);
+      try {
+        const before = existsSync(file) ? readFileSync(file, "utf8") : undefined;
+        const after = withHephMcp(before, heph);
+        if (after !== before) writeFileSync(file, after);
+        say(`Codex: heph's MCP server in ${file}`);
+      } catch (e) {
+        say(
+          `warning: could not update ${file} (${e instanceof Error ? e.message : String(e)}); add [mcp_servers.heph] with command = "${heph}", args = ["mcp"] yourself`,
+        );
+      }
     }
   }
 

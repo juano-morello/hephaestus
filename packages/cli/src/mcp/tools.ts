@@ -18,7 +18,7 @@ import {
   statusText,
   watchText,
 } from "./text.ts";
-import { type Outcome, watchStep } from "./watch.ts";
+import { abortError, boundedBy, type Outcome, StepDeadlineError, watchStep } from "./watch.ts";
 
 export type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -109,10 +109,10 @@ const RunStarted = z
 const MAX_WAIT_S = 25;
 const DEFAULT_WAIT_S = 20;
 /**
- * Transient daemon errors (no daemon, a timeout, a dropped socket) retried within one step, about
- * 16 s at watchStep's 2 s interval: long enough to ride out a daemon restart, short enough for
- * host timeouts. An error the daemon answers (an unknown run) is not retried. watchStep also stops
- * one interval past the step's wait, so heph_run (wait 0) gives up after about 2 s.
+ * Transient daemon errors (no daemon, a timeout, a dropped socket) retried within one step, 2 s
+ * apart: enough to ride out a daemon restart. An error the daemon answers (an unknown run) is not
+ * retried. watchStep also stops retrying one interval past the step's wait (so heph_run, wait 0,
+ * retries once), and the step's overall bound (wait + 15 s; heph_run's 30 s) caps them all.
  */
 const STEP_RETRIES = 8;
 /** Run statuses `run` would only reject after already answering `started` (runtime.ts build). */
@@ -123,12 +123,25 @@ const NOT_RUNNABLE = new Set(["failed", "finished", "staged", "escalated"]);
  */
 const AWAITS_APPROVAL = new Set(["planned", "paused", "built"]);
 
+/**
+ * heph_run's whole budget: its status read, `run` and first progress read together. Each call is
+ * bounded at 10 s by the guard, and this keeps the sum under common host tool timeouts.
+ */
+const RUN_BUDGET_MS = 30_000;
+/** A `run` cut off by the budget may still have started the build. */
+const RUN_DEADLINE_HINT =
+  "check the run with heph_status; calling heph_run again is safe (a build that did start answers already_running)";
+
 /** status and explain through the guarded client, checked against the CLI's schemas. */
-function daemonView(ctx: McpCtx): WatchView {
+function daemonView(ctx: McpCtx, signal?: AbortSignal): WatchView {
   const cwd = () => ctx.workspace();
+  const opts = (s?: AbortSignal) => {
+    const sig = s ?? signal;
+    return sig ? { signal: sig } : undefined;
+  };
   return {
-    status: async (id) => StatusOne.parse(await ctx.client.call("status", [id], cwd())),
-    explain: async (id) => Explain.parse(await ctx.client.call("explain", [id], cwd())),
+    status: async (id, s) => StatusOne.parse(await ctx.client.call("status", [id], cwd(), opts(s))),
+    explain: async (id, s) => Explain.parse(await ctx.client.call("explain", [id], cwd(), opts(s))),
   };
 }
 
@@ -300,79 +313,106 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       outputSchema: RunToolResult.shape,
     },
     async ({ run }, extra) => {
-      const view = daemonView(ctx);
-      let s: Awaited<ReturnType<WatchView["status"]>>;
+      // One budget for the whole call: a hung daemon is an error before the host gives up.
+      const budget = ctx.runBudgetMs ?? RUN_BUDGET_MS;
+      const now = ctx.now ?? Date.now;
+      const t0 = now();
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(new StepDeadlineError(RUN_DEADLINE_HINT)), budget);
+      const onCancel = () => ac.abort(abortError(extra.signal));
+      if (extra.signal.aborted) onCancel();
+      else extra.signal.addEventListener("abort", onCancel, { once: true });
       try {
-        s = await view.status(run);
-      } catch (e) {
-        return failure(errorText(e));
-      }
-      if (AWAITS_APPROVAL.has(s.run.status) && !s.plan_approved) {
-        const r = {
-          run_id: run,
-          state: "awaiting_plan_approval" as const,
-          status: s.run.status,
-          lines: [],
-        };
-        return { content: [{ type: "text", text: runText(r) }], structuredContent: r };
-      }
-      const step = (since: string | undefined) =>
-        watchStep(run, view, {
-          since,
-          waitMs: 0,
-          retries: STEP_RETRIES,
-          sleep: ctx.sleep,
-          now: ctx.now,
-          signal: extra.signal,
-        });
-      const answer = (
-        state: "started" | "already_running" | "not_runnable",
-        w: Awaited<ReturnType<typeof watchStep>>,
-      ): ToolResult => {
-        const r = {
-          run_id: run,
-          state,
-          status: w.status,
-          lines: w.lines,
-          cursor: w.cursor,
-          outcome: w.outcome,
-          waiting_for: w.waiting_for,
-          blocked: w.blocked,
-        };
-        return {
-          content: [{ type: "text", text: runText(r) }],
-          structuredContent: withoutUndefined(r),
-        };
-      };
-      // `run` answers `started` before the build rejects these, so they are refused here. Only a
-      // running run resumes through `run` whatever its approval flag says.
-      if (NOT_RUNNABLE.has(s.run.status) || !(s.plan_approved || s.run.status === "running")) {
-        // The daemon would answer `started` and only then fail the build: say where it stands.
-        try {
-          return answer("not_runnable", await step(undefined));
-        } catch (e) {
-          return failure(errorText(e));
-        }
-      }
-      let started: z.infer<typeof RunStarted>;
-      try {
-        const raw = await ctx.client.call("run", [run, {}], ctx.workspace());
-        const parsed = RunStarted.safeParse(raw);
-        if (!parsed.success)
-          return failure(`unexpected daemon answer for run: ${parsed.error.message}`);
-        started = parsed.data;
-      } catch (e) {
-        return failure(errorText(e));
-      }
-      if (!started.started && !started.running)
-        return failure(`the daemon did not start ${run} and it is not running`);
-      try {
-        return answer(started.started ? "started" : "already_running", await step(started.after));
-      } catch (e) {
-        return failure(errorText(e));
+        return await runTool(run, ac.signal, () => Math.max(0, budget - (now() - t0)));
+      } finally {
+        clearTimeout(timer);
+        extra.signal.removeEventListener("abort", onCancel);
       }
     },
   );
+
+  async function runTool(
+    run: string,
+    signal: AbortSignal,
+    remaining: () => number,
+  ): Promise<ToolResult> {
+    const view = daemonView(ctx, signal);
+    let s: Awaited<ReturnType<WatchView["status"]>>;
+    try {
+      s = await boundedBy(view.status(run), signal);
+    } catch (e) {
+      return failure(errorText(e));
+    }
+    if (AWAITS_APPROVAL.has(s.run.status) && !s.plan_approved) {
+      const r = {
+        run_id: run,
+        state: "awaiting_plan_approval" as const,
+        status: s.run.status,
+        lines: [],
+      };
+      return { content: [{ type: "text", text: runText(r) }], structuredContent: r };
+    }
+    const step = (since: string | undefined) =>
+      watchStep(run, view, {
+        since,
+        waitMs: 0,
+        retries: STEP_RETRIES,
+        sleep: ctx.sleep,
+        now: ctx.now,
+        signal,
+        graceMs: remaining(),
+        onDeadline: RUN_DEADLINE_HINT,
+      });
+    const answer = (
+      state: "started" | "already_running" | "not_runnable",
+      w: Awaited<ReturnType<typeof watchStep>>,
+    ): ToolResult => {
+      const r = {
+        run_id: run,
+        state,
+        status: w.status,
+        lines: w.lines,
+        cursor: w.cursor,
+        outcome: w.outcome,
+        waiting_for: w.waiting_for,
+        blocked: w.blocked,
+      };
+      return {
+        content: [{ type: "text", text: runText(r) }],
+        structuredContent: withoutUndefined(r),
+      };
+    };
+    // `run` answers `started` before the build rejects these, so they are refused here. Only a
+    // running run resumes through `run` whatever its approval flag says.
+    if (NOT_RUNNABLE.has(s.run.status) || !(s.plan_approved || s.run.status === "running")) {
+      // The daemon would answer `started` and only then fail the build: say where it stands.
+      try {
+        return answer("not_runnable", await step(undefined));
+      } catch (e) {
+        return failure(errorText(e));
+      }
+    }
+    let started: z.infer<typeof RunStarted>;
+    try {
+      const raw = await boundedBy(
+        ctx.client.call("run", [run, {}], ctx.workspace(), { signal }),
+        signal,
+      );
+      const parsed = RunStarted.safeParse(raw);
+      if (!parsed.success)
+        return failure(`unexpected daemon answer for run: ${parsed.error.message}`);
+      started = parsed.data;
+    } catch (e) {
+      return failure(errorText(e));
+    }
+    if (!started.started && !started.running)
+      return failure(`the daemon did not start ${run} and it is not running`);
+    try {
+      return answer(started.started ? "started" : "already_running", await step(started.after));
+    } catch (e) {
+      return failure(errorText(e));
+    }
+  }
 
   server.registerTool(
     "heph_watch",
@@ -404,6 +444,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           retries: STEP_RETRIES,
           sleep: ctx.sleep,
           now: ctx.now,
+          ...(ctx.graceMs === undefined ? {} : { graceMs: ctx.graceMs }),
+          onDeadline: "call heph_watch again",
           // A cancelled request stops polling; the SDK drops whatever the tool returns then.
           signal: extra.signal,
           ...(token === undefined
