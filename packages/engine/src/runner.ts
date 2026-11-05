@@ -72,7 +72,38 @@ export type AttemptResult =
       gates: GateResult[];
       blocked?: string | undefined;
       promptHash?: string | undefined;
+      /** The worker's parsed result, when it gave a valid one (what a join re-gate needs). */
+      worker?: WorkerResult | undefined;
     };
+
+/** A green attempt to join onto a run branch whose tip moved since it started (design 4.3). */
+export type RejoinRequest = {
+  runId: string;
+  task: Task;
+  attempt: number;
+  repoDir: string;
+  projectPath: string;
+  project: ContextPack["project"];
+  locked: string[];
+  /** The attempt's commit, and the run-branch tip to replay it onto. */
+  commit: string;
+  tip: string;
+  worker: WorkerResult;
+  signal?: AbortSignal | undefined;
+};
+
+/**
+ * joined: the replayed commit on `tip`, green on the combined tree. red: a replay conflict (a
+ * failing `join` gate) or a red re-gate. interrupted: stopped during the re-gate; the attempt
+ * is interrupted like any other and nothing of the join is kept.
+ */
+export type RejoinResult =
+  | { kind: "joined"; sha: string; gates: GateResult[] }
+  | { kind: "red"; gates: GateResult[] }
+  | { kind: "interrupted"; reason: StopReason };
+
+/** The gates re-run on the combined tree after a replay: the command gates only. */
+const REGATES = new Set(["tests", "typecheck", "lint"]);
 
 /**
  * Runs attempts (SPEC section 7). The coordinator decides what to run and writes every ledger
@@ -84,6 +115,8 @@ export interface Runner {
     req: AttemptRequest,
     hooks: { started(s: AttemptStarted): void },
   ): Promise<AttemptResult>;
+  /** Replays a green attempt onto a moved tip and re-runs the command gates there. */
+  rejoin(req: RejoinRequest): Promise<RejoinResult>;
 }
 
 export type LocalRunnerOptions = {
@@ -235,7 +268,79 @@ export function localRunner(o: LocalRunnerOptions): Runner {
           gates,
           blocked: parsed.success ? parsed.data.blocked?.reason : undefined,
           promptHash: out.prompt_hash,
+          worker: parsed.success ? parsed.data : undefined,
         };
+      } finally {
+        await git.worktreeRemove(worktree);
+      }
+    },
+
+    async rejoin(req) {
+      const t = req.task;
+      const git = createGit(req.repoDir);
+      // Under <worktreesDir>/<run>, so a killed process's leftover is cleared on resume.
+      const worktree = join(o.worktreesDir, req.runId, t.id, `a${req.attempt}-join`);
+      await git.worktreeAddDetached(worktree, req.tip);
+      try {
+        const picked = await git.cherryPickIn(worktree, req.commit);
+        if (!picked.ok) {
+          return {
+            kind: "red",
+            gates: [
+              {
+                gate: "join",
+                verdict: "fail",
+                reason: "the attempt does not replay onto the run branch's new tip",
+                evidence: picked.conflicts,
+              },
+            ],
+          };
+        }
+        const workdir = join(worktree, req.projectPath === "." ? "" : req.projectPath);
+        const diff = await git.diff(req.tip, picked.sha);
+        const regates = o.gates.filter((g) => REGATES.has(g.name));
+        const stopped = () => req.signal?.aborted === true;
+        const gates: GateResult[] = [];
+        const sandbox =
+          !stopped() && o.gateSandbox && regates.some((g) => g.needsSandbox)
+            ? await o.gateSandbox(workdir, t)
+            : undefined;
+        try {
+          for (const gate of regates) {
+            if (stopped()) break;
+            try {
+              gates.push(
+                await gate.run({
+                  task: t,
+                  attempt: req.attempt,
+                  project: t.project,
+                  projectPath: req.projectPath,
+                  workdir,
+                  diff,
+                  lockedPaths: req.locked,
+                  worker: req.worker,
+                  commands: req.project.commands,
+                  timeoutMs: o.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
+                  ...(sandbox ? { sandbox } : {}),
+                }),
+              );
+            } catch (e) {
+              if (e instanceof Stopped) throw e;
+              gates.push({
+                gate: gate.name,
+                verdict: "fail",
+                reason: `gate crashed: ${e}`,
+                evidence: [String(e)],
+              });
+            }
+          }
+        } finally {
+          await sandbox?.dispose();
+        }
+        if (stopped()) return { kind: "interrupted", reason: stopReason(req.signal) };
+        return gates.some((g) => g.verdict === "fail")
+          ? { kind: "red", gates }
+          : { kind: "joined", sha: picked.sha, gates };
       } finally {
         await git.worktreeRemove(worktree);
       }

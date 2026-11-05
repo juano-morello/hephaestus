@@ -6,6 +6,7 @@ import {
   complexitySanity,
   DEFAULT_LIMITS,
   deriveEdges,
+  type GateResult,
   type Plan,
   type Return,
   reachability,
@@ -20,6 +21,7 @@ import { type Chaos, clearWorktrees, effect, type Reality, reconcile } from "./e
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
+import { type JoinLock, joinLocks } from "./join.ts";
 import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
@@ -98,6 +100,8 @@ type Ctx = RunPlanOptions & {
   base: { run_id: string; changeset_id: string; config_hash: string };
   repoOf: (t: Task) => string;
   dirOf: (repo: string) => string;
+  /** One per build(): serializes joins onto each repo's run branch. */
+  join: JoinLock;
 };
 
 /** The repos the plan touches, in first-use order. Unknown projects or repos are errors. */
@@ -399,6 +403,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     dirOf,
     repoOf: (t) => opts.workspace.projects[t.project]?.repo as string,
     hash,
+    join: joinLocks(),
   };
   const { ledger, runId } = opts;
   const gits = new Map(repos.map((r) => [r, createGit(dirOf(r))]));
@@ -503,7 +508,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     return runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
   };
 
-  // parallel > 1 is not safe yet: units still advance the run branch directly (joined in Task 5).
+  // Units in flight together join the run branch under ctx.join (see runUnit).
   const out = await schedule({
     plan: opts.plan,
     workspace: opts.workspace,
@@ -709,13 +714,11 @@ async function runUnit(
       diff: ledger.blobs.put(diff.text),
       transcript: ledger.blobs.put(result.transcript),
     };
-    const failures = result.gates.filter((g) => g.verdict === "fail");
     // The attempt's verdict and what follows from it are written together, so a crash
-    // can't leave a finished attempt without its consequence.
-    const finished: EventDraft[] = [
-      ...result.gates.map(
-        (r): EventDraft => ({ ...at, actor: "gate", type: "gate.result", data: r }),
-      ),
+    // can't leave a finished attempt without its consequence. A join's re-gate results are part
+    // of the verdict (design 4.3), so they come before unit.attempt.finished too.
+    const verdictOf = (gates: GateResult[], outcome: typeof result.outcome): EventDraft[] => [
+      ...gates.map((r): EventDraft => ({ ...at, actor: "gate", type: "gate.result", data: r })),
       {
         ...at,
         ...prompt,
@@ -725,6 +728,8 @@ async function runUnit(
         data: { ...info, usage: result.usage, duration_ms: result.durationMs, outcome },
       },
     ];
+    let failures = result.gates.filter((g) => g.verdict === "fail");
+    let finished = verdictOf(result.gates, outcome);
 
     if (outcome === "blocked") {
       const reason = `blocked: ${result.blocked}`;
@@ -733,26 +738,66 @@ async function runUnit(
     }
 
     if (outcome === "green") {
-      await effect(
-        { ledger, base: ctx.base, chaos: ctx.chaos },
-        {
-          effect: "run_branch_advance",
-          key: `run_branch_advance:${repo}:${t.id}:a${n}`,
-          target: branch,
-          before: tip,
-          after: sha,
-          on: { repo, project: t.project, unit_id: t.id, attempt: n },
-        },
-        async () => {
-          await git.updateRef(branch, sha, tip);
-          return { sha };
-        },
-        {
-          with: finished,
-          followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
-        },
-      );
-      return { status: "accepted", files: diff.files };
+      // Joins onto one repo's run branch are serialized (design 4.3). If the tip moved while
+      // the attempt ran, its commit is replayed onto the new tip and the command gates re-run
+      // on the combined tree; the replay is attempt-local work, the advance is the effect.
+      const joined = await ctx.join(repo, async () => {
+        const current = await git.revParse(branch);
+        let after = sha;
+        let verdict = finished;
+        if (current !== tip) {
+          if (!result.worker) throw new Error(`${t.id} a${n}: green attempt without a result`);
+          const r = await ctx.runner.rejoin({
+            runId: ctx.runId,
+            task,
+            attempt: n,
+            repoDir: ctx.dirOf(repo),
+            projectPath,
+            project,
+            locked,
+            commit: sha,
+            tip: current,
+            worker: result.worker,
+            signal: ctx.signal,
+          });
+          if (r.kind !== "joined") return r;
+          after = r.sha;
+          verdict = verdictOf([...result.gates, ...r.gates], outcome);
+        }
+        await effect(
+          { ledger, base: ctx.base, chaos: ctx.chaos },
+          {
+            effect: "run_branch_advance",
+            key: `run_branch_advance:${repo}:${t.id}:a${n}`,
+            target: branch,
+            before: current,
+            after,
+            on: { repo, project: t.project, unit_id: t.id, attempt: n },
+          },
+          async () => {
+            await git.updateRef(branch, after, current);
+            return { sha: after };
+          },
+          {
+            with: verdict,
+            followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
+          },
+        );
+        return { kind: "accepted" as const };
+      });
+      if (joined.kind === "accepted") return { status: "accepted", files: diff.files };
+      if (joined.kind === "interrupted") {
+        // Stopped during the re-gate: interrupted like any attempt, nothing of the join kept.
+        const { reason } = joined;
+        ledger.appendMany([
+          { ...engine, ...prompt, type: "unit.attempt.interrupted", data: { reason } },
+        ]);
+        return { status: "paused", reason, detail: `${t.id}: ${reason}` };
+      }
+      // Red on the combined tree (or a replay conflict): the normal red path, and it counts.
+      const gates = [...result.gates, ...joined.gates];
+      failures = gates.filter((g) => g.verdict === "fail");
+      finished = verdictOf(gates, "red");
     }
 
     feedback = {
