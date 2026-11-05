@@ -280,8 +280,10 @@ export function localRunner(o: LocalRunnerOptions): Runner {
       const git = createGit(req.repoDir);
       // Under <worktreesDir>/<run>, so a killed process's leftover is cleared on resume.
       const worktree = join(o.worktreesDir, req.runId, t.id, `a${req.attempt}-join`);
-      await git.worktreeAddDetached(worktree, req.tip);
+      let failed = false;
       try {
+        // Inside the try: an add that fails partway can leave a registered worktree behind.
+        await git.worktreeAddDetached(worktree, req.tip);
         const picked = await git.cherryPickIn(worktree, req.commit);
         if (!picked.ok) {
           return {
@@ -341,8 +343,15 @@ export function localRunner(o: LocalRunnerOptions): Runner {
         return gates.some((g) => g.verdict === "fail")
           ? { kind: "red", gates }
           : { kind: "joined", sha: picked.sha, gates };
+      } catch (e) {
+        failed = true;
+        throw e;
       } finally {
-        await git.worktreeRemove(worktree);
+        // After a failure the worktree may not exist: cleanup must not hide the first error.
+        await git.worktreeRemove(worktree).catch(async (e) => {
+          await git.prune();
+          if (!failed) throw e;
+        });
       }
     },
   };

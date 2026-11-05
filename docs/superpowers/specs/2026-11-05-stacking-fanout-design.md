@@ -10,7 +10,7 @@ Touches: SPEC sections 2, 4, 6, 13, 16, 19 (step 3). Closes NOTES "First real ru
 
 Both need one rule: a branch has a landing order relative to others, and anything based on a moving branch is rebased and re-gated. They share the rebase, re-gate and landing code, so they are one design.
 
-Non-goals: cross-node runners and leases, multiple parents per run, optimistic (lock-free) joins, auto-rebuild when a stack conflicts, rate-limit-driven throttling, stacking across workspaces.
+Non-goals: cross-node runners and leases, multiple parents per run, optimistic (lock-free) joins, auto-rebuild when a stack conflicts, rate-limit-driven throttling beyond the resume ramp (built afterwards, SPEC section 17), stacking across workspaces.
 
 ## 2. Decisions (settled with the user)
 
@@ -138,4 +138,5 @@ Kept to branch, landing and scheduling regions:
 
 - Whether the 4.4 spike lands on the in-process or the subprocess runner (decides plan size).
 - Restack as a daemon job versus run on `heph merge status` / `approve merge`; the plan should pick whichever reuses the daemon's existing scheduling.
-- Optimistic joins and rate-limit-aware throttling (SPEC section 17) are later work.
+- Optimistic joins stay later work (see NOTES, "Not built"). Rate-limit throttling was built afterwards in its minimal form: a build resuming from a rate limit starts at half its parallelism and ramps back up (SPEC section 17); budget tracking and rerouting are later work.
+- Built afterwards (NOTES, "Gaps closed"): the engine's `autoMerge` restacks the run's staged children like `approve merge`; joined commits are pinned under `refs/heph/join/` until accepted.

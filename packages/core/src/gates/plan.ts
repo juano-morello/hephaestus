@@ -137,18 +137,8 @@ const prefixOf = (projectPath: string | undefined) =>
     : `${projectPath.replace(/^\.\//, "").replace(/\/$/, "")}/`;
 const matches = (glob: string, files: string[]) => files.filter((f) => globsOverlap(glob, f));
 
-/**
- * Parallel tasks (no produces/consumes path between them) in the same repo must not share files.
- * Scopes are compared repo-relative, so projects with nested roots in one repo are covered too.
- * With the project's file list, globs that match existing files are compared on those files;
- * a glob that matches no file yet may create new ones, so it is compared as a glob.
- */
-/**
- * Every task must pass its project's tests, so a test task may only check what the tasks run by
- * then have done. A criterion tested early but covered by a later task fails every task between
- * them, however good their work. Order is the execution order (topological, plan order on ties).
- */
-type Stale = { test: Task; missing: string[]; by: string[] };
+/** An accepted test checking criteria (`missing`) that only remaining work covers. */
+type Stale = { test: Task; missing: string[] };
 
 /** Accepted tests in the candidate's project that check criteria no finished work covers yet. */
 function staleTests(tasks: Task[], accepted: ReadonlySet<string>, candidate: Task): Stale[] {
@@ -163,8 +153,7 @@ function staleTests(tasks: Task[], accepted: ReadonlySet<string>, candidate: Tas
       const missing = test.covers.filter(
         (c) => !done.has(c) && later.some((u) => u.covers.includes(c)),
       );
-      const by = later.filter((u) => u.covers.some((c) => missing.includes(c))).map((u) => u.id);
-      return missing.length ? [{ test, missing, by }] : [];
+      return missing.length ? [{ test, missing }] : [];
     });
 }
 
@@ -192,6 +181,11 @@ export function scopesOverlap(
   return a.some((ga) => b.some((gb) => globsOverlap(pa + ga, pb + gb)));
 }
 
+/**
+ * Every task must pass its project's tests, so a test task may only check what the tasks run by
+ * then have done. A criterion tested early but covered by a later task fails every task between
+ * them, however good their work. Order is the execution order (topological, plan order on ties).
+ */
 export function testsPassable(plan: Plan, _ctx: GateContext): GateResult {
   const { edges } = graph(plan);
   const order = topoOrder(ids(plan), edges);
@@ -203,7 +197,7 @@ export function testsPassable(plan: Plan, _ctx: GateContext): GateResult {
 
   run.forEach((x, i) => {
     const accepted = new Set(run.slice(0, i).map((t) => t.id));
-    for (const { test: t, missing: all, by: _ } of staleTests(plan.tasks, accepted, x)) {
+    for (const { test: t, missing: all } of staleTests(plan.tasks, accepted, x)) {
       const missing = all.filter((c) => !reported.has(`${t.id}:${c}`));
       if (!missing.length) continue;
       for (const c of missing) reported.add(`${t.id}:${c}`);
@@ -224,6 +218,12 @@ export function testsPassable(plan: Plan, _ctx: GateContext): GateResult {
   );
 }
 
+/**
+ * Parallel tasks (no produces/consumes path between them) in the same repo must not share files.
+ * Scopes are compared repo-relative, so projects with nested roots in one repo are covered too.
+ * With the project's file list, globs that match existing files are compared on those files;
+ * a glob that matches no file yet may create new ones, so it is compared as a glob.
+ */
 export function parallelScopesDisjoint(plan: Plan, ctx: GateContext): GateResult {
   const { reach } = graph(plan);
   const ordered = (a: Task, b: Task) => reach.get(a.id)?.has(b.id) || reach.get(b.id)?.has(a.id);

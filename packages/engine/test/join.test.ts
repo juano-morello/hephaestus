@@ -7,8 +7,8 @@ import { type Ledger, openLedger } from "@hephaestus/ledger";
 import { run, runOk, type Sandbox } from "@hephaestus/sandbox";
 import { builtinGates, lintGate, testsGate, typecheckGate } from "../src/builtin-gates.ts";
 import type { EngineConfig } from "../src/config.ts";
-import { pendingEffects, reconcile } from "../src/effects.ts";
-import { type RunPlanOptions, realityOf, runPlan } from "../src/engine.ts";
+import { pendingEffects, reconcile, Stopped } from "../src/effects.ts";
+import { buildRun, type RunPlanOptions, realityOf, runPlan } from "../src/engine.ts";
 import type { UnitGate } from "../src/gates.ts";
 import { joinLocks } from "../src/join.ts";
 import { localRunner, type Runner } from "../src/runner.ts";
@@ -435,6 +435,314 @@ describe("join", () => {
       ),
     ).toEqual([]);
     expect(await log(repoDir, ["rev-list", "main..heph/R1"])).toHaveLength(1);
+    ledger.close();
+  });
+});
+
+describe("rejoin cleanup", () => {
+  test("a join worktree that fails to be added is still cleaned up", async () => {
+    const { repoDir, worktreesDir } = await setup();
+    const main = (await log(repoDir, ["rev-parse", "main"]))[0] as string;
+    const path = join(worktreesDir, "R1", "T1", "a1-join");
+    // A failing post-checkout hook: git creates and registers the worktree, then fails the add.
+    const hooks = join(dir(), "hooks");
+    writeFiles(hooks, { "post-checkout": "#!/bin/sh\nexit 1\n" });
+    await runOk(["chmod", "+x", join(hooks, "post-checkout")]);
+    await runOk(["git", "config", "core.hooksPath", hooks], { cwd: repoDir });
+    const runner = localRunner({
+      worker: scripted({}).worker,
+      gates: [],
+      worktreesDir,
+      tools: [],
+    });
+    await expect(
+      runner.rejoin({
+        runId: "R1",
+        task: task("T1", ["b.txt"]),
+        attempt: 1,
+        repoDir,
+        projectPath: "server",
+        project: { name: "server", stack: "go", commands: {} },
+        locked: [],
+        commit: main,
+        tip: main,
+        worker: { schema: 1, summary: "", claims: [], touched: [] },
+      }),
+    ).rejects.toThrow("worktree add");
+    expect(await log(repoDir, ["worktree", "list"])).toHaveLength(1);
+    expect(filesUnder(path)).toEqual([]);
+  });
+});
+
+describe("the joined commit is pinned", () => {
+  const ref = "refs/heph/join/R1/T2-a1";
+  const refSha = async (repoDir: string, r: string) =>
+    (await run(["git", "rev-parse", "--verify", "--quiet", r], { cwd: repoDir })).stdout.trim() ||
+    undefined;
+  const advanceIntent = (ledger: Ledger) =>
+    ledger
+      .read({ types: ["effect.intended"] })
+      .map((s) => s.event)
+      .find(
+        (e) => e.unit_id === "T2" && (e.data as { effect: string }).effect === "run_branch_advance",
+      )?.data as { after: string } | undefined;
+
+  test("a ref holds the replayed commit from before its advance until the unit is accepted", async () => {
+    const { go, ledger, repoDir } = await setup();
+    const { worker } = lateT2(() => ledger, { "b.txt": "one\n" }, [{ "c.txt": "two\n" }]);
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    let pinned: string | undefined;
+    const result = await go(p, {
+      worker,
+      config: config(2),
+      gates: [],
+      chaos: async (point) => {
+        if (point === "before:run_branch_advance:game:T2:a1") pinned = await refSha(repoDir, ref);
+      },
+    });
+    expect(result.status).toBe("built");
+    expect(pinned).toBeDefined();
+    expect(pinned).toBe(advanceIntent(ledger)?.after);
+    expect(await refSha(repoDir, ref)).toBeUndefined();
+    ledger.close();
+  });
+
+  test("killed between the advance's intent and the move, resume applies it and drops the ref", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    const { worker } = lateT2(() => ledger, { "b.txt": "one\n" }, [{ "c.txt": "two\n" }]);
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    await expect(
+      go(p, {
+        worker,
+        config: config(2),
+        gates: [],
+        chaos: (point) => {
+          if (point === "before:run_branch_advance:game:T2:a1") throw new Stopped("killed");
+        },
+      }),
+    ).rejects.toBeInstanceOf(Stopped);
+    const after = advanceIntent(ledger)?.after as string;
+    expect(await refSha(repoDir, ref)).toBe(after);
+    // Nothing else holds the replayed commit: a gc here would lose it without the ref.
+    expect(await refSha(repoDir, "heph/R1")).not.toBe(after);
+
+    const out = await buildRun({
+      ledger,
+      workspace,
+      workspaceRoot: repoDir,
+      runId: "R1",
+      changesetId: "C1",
+      gates: [],
+      worktreesDir,
+      worker,
+      config: config(2),
+    });
+    expect(out.status).toBe("built");
+    expect(await refSha(repoDir, "heph/R1")).toBe(after);
+    expect(await refSha(repoDir, ref)).toBeUndefined();
+    expect(await log(repoDir, ["for-each-ref", "refs/heph/join/"])).toEqual([]);
+    ledger.close();
+  });
+});
+
+describe("join pins and kills", () => {
+  test("a unit whose rejoin ends after a simulated kill writes no join pin", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    let killed = false;
+    let inRejoin = false;
+    let rejoinDone = false;
+    const spawned: string[] = [];
+    const worker: Worker = {
+      async spawn(input: SpawnInput) {
+        const id = input.brief.task.id;
+        spawned.push(id);
+        if (id === "T2") await until(() => accepted(ledger, "T1"));
+        if (id === "T3") {
+          await until(() => inRejoin);
+          killed = true;
+          throw new Stopped("killed in T3");
+        }
+        const file = `${id.toLowerCase()}.txt`;
+        writeFiles(input.workdir, { [file]: `${id}\n` });
+        return {
+          output: { schema: 1, summary: id, claims: [], touched: [file] },
+          transcript: id,
+          usage,
+          exit: "ok",
+        };
+      },
+    };
+    const local = localRunner({ worker, gates: [], worktreesDir, tools: [] });
+    const runner: Runner = {
+      runAttempt: (req, hooks) => local.runAttempt(req, hooks),
+      async rejoin(req) {
+        inRejoin = true;
+        const r = await local.rejoin(req);
+        await until(() => killed);
+        await new Promise((res) => setTimeout(res, 20));
+        rejoinDone = true;
+        return r;
+      },
+    };
+    const p = plan([task("T1", ["t1.txt"]), task("T2", ["t2.txt"]), task("T3", ["t3.txt"])]);
+    await expect(go(p, { worker, runner, config: config(3), gates: [] })).rejects.toBeInstanceOf(
+      Stopped,
+    );
+    await until(() => rejoinDone);
+    await new Promise((res) => setTimeout(res, 100));
+    expect(await log(repoDir, ["for-each-ref", "refs/heph/join/"])).toEqual([]);
+    expect(accepted(ledger, "T2")).toBe(false);
+    ledger.close();
+  });
+});
+
+describe("join pins on failure", () => {
+  test("an advance whose compare-and-swap is lost drops its pin", async () => {
+    const { go, ledger, repoDir } = await setup();
+    const { worker } = lateT2(() => ledger, { "b.txt": "one\n" }, [{ "c.txt": "two\n" }]);
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    let pinned = false;
+    await expect(
+      go(p, {
+        worker,
+        config: config(2),
+        gates: [],
+        chaos: async (point) => {
+          if (point !== "before:run_branch_advance:game:T2:a1") return;
+          pinned = (await log(repoDir, ["for-each-ref", "refs/heph/join/"])).length === 1;
+          // Someone else moves the run branch: the advance's compare-and-swap fails.
+          await runOk(["git", "update-ref", "refs/heads/heph/R1", "main"], { cwd: repoDir });
+        },
+      }),
+    ).rejects.toThrow();
+    expect(pinned).toBe(true);
+    expect(
+      ledger
+        .read({ types: ["effect.done"] })
+        .map((s) => s.event.data as { key: string; state: string })
+        .find((d) => d.key === "run_branch_advance:game:T2:a1")?.state,
+    ).toBe("abandoned");
+    expect(await log(repoDir, ["for-each-ref", "refs/heph/join/"])).toEqual([]);
+    ledger.close();
+  });
+});
+
+describe("rate-limit throttle", () => {
+  test("a build resuming from a rate limit starts at half its parallelism and ramps up", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    let limited = true;
+    let inFlight = 0;
+    const spawned: string[] = [];
+    const overlap = new Map<string, number>();
+    const worker: Worker = {
+      async spawn(input: SpawnInput) {
+        const id = input.brief.task.id;
+        spawned.push(id);
+        inFlight++;
+        try {
+          if (limited) {
+            await until(() => spawned.length >= 3);
+            return { output: undefined, transcript: "", usage, exit: "rate_limited" };
+          }
+          // T1 runs a while; T2 and T3 hold on until both are in flight.
+          if (id === "T1") await new Promise((r) => setTimeout(r, 60));
+          if (id === "T2") await until(() => spawned.includes("T3"));
+          overlap.set(id, Math.max(overlap.get(id) ?? 0, inFlight));
+          if (id === "T3") await until(() => overlap.has("T2"));
+          const file = `${id.toLowerCase()}.txt`;
+          writeFiles(input.workdir, { [file]: `${id}\n` });
+          return {
+            output: { schema: 1, summary: id, claims: [], touched: [file] },
+            transcript: id,
+            usage,
+            exit: "ok",
+          };
+        } finally {
+          inFlight--;
+        }
+      },
+    };
+    const ids = ["T1", "T2", "T3", "T4"];
+    const p = plan(ids.map((id) => task(id, [`${id.toLowerCase()}.txt`])));
+    const first = await go(p, { worker, config: config(3), gates: [] });
+    expect(first.status).toBe("paused");
+    // Unthrottled: three at once.
+    expect(spawned.toSorted()).toEqual(["T1", "T2", "T3"]);
+    expect(ledger.read({ types: ["run.paused"] }).at(-1)?.event.data).toMatchObject({
+      reason: "rate_limit",
+    });
+
+    limited = false;
+    spawned.length = 0;
+    const second = await buildRun({
+      ledger,
+      workspace,
+      workspaceRoot: repoDir,
+      runId: "R1",
+      changesetId: "C1",
+      gates: [],
+      worktreesDir,
+      worker,
+      config: config(3),
+    });
+    expect(second.status).toBe("built");
+    expect(ledger.read({ types: ["run.resumed"] }).at(-1)?.event.data).toEqual({
+      reason: "rate_limit",
+    });
+    // floor(3 / 2) = 1: T1 alone; one accepted, 2: T2 and T3 together; then up to 3.
+    expect(spawned[0]).toBe("T1");
+    expect(overlap.get("T1")).toBe(1);
+    expect(overlap.get("T2")).toBe(2);
+    expect(spawned.toSorted()).toEqual(ids);
+    for (const id of ids) expect(accepted(ledger, id)).toBe(true);
+    ledger.close();
+  });
+});
+
+describe("a simulated kill in a parallel unit", () => {
+  test("propagates at once; a unit still in flight writes nothing after it", async () => {
+    const { go, ledger, repoDir } = await setup();
+    let killedAt = -1;
+    let release!: () => void;
+    const t2Done = new Promise<void>((r) => {
+      release = r;
+    });
+    const spawned: string[] = [];
+    const worker: Worker = {
+      async spawn(input: SpawnInput) {
+        const id = input.brief.task.id;
+        spawned.push(id);
+        if (id === "T1") {
+          await until(() => spawned.includes("T2"));
+          killedAt = ledger.read().length;
+          throw new Stopped("killed in T1");
+        }
+        // T2 is slow: it finishes green well after T1's kill.
+        await until(() => killedAt >= 0);
+        await new Promise((r) => setTimeout(r, 50));
+        writeFiles(input.workdir, { "c.txt": "two\n" });
+        setTimeout(release, 200);
+        return {
+          output: { schema: 1, summary: id, claims: [], touched: ["c.txt"] },
+          transcript: id,
+          usage,
+          exit: "ok",
+        };
+      },
+    };
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    await expect(go(p, { worker, config: config(2), gates: [] })).rejects.toBeInstanceOf(Stopped);
+    // Rejected before T2 finished its attempt.
+    expect(spawned.toSorted()).toEqual(["T1", "T2"]);
+    expect(accepted(ledger, "T2")).toBe(false);
+    await t2Done;
+    const after = ledger
+      .read()
+      .slice(killedAt)
+      .map((s) => s.event);
+    expect(after.filter((e) => e.unit_id === "T2").map((e) => e.type)).toEqual([]);
+    expect(accepted(ledger, "T2")).toBe(false);
+    expect(await log(repoDir, ["rev-list", "main..heph/R1"])).toEqual([]);
     ledger.close();
   });
 });

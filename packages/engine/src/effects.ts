@@ -33,7 +33,13 @@ async function point(scope: EffectScope, p: string) {
 /** The envelope every event of a run shares. */
 export type RunBase = { run_id: string; changeset_id: string; config_hash: string };
 
-export type EffectScope = { ledger: Ledger; base: RunBase; chaos?: Chaos | undefined };
+export type EffectScope = {
+  ledger: Ledger;
+  base: RunBase;
+  chaos?: Chaos | undefined;
+  /** True once the process is (simulated) killed: the effect is not applied. */
+  killed?: (() => boolean) | undefined;
+};
 
 export type Intent = {
   effect: EffectKind;
@@ -68,6 +74,7 @@ export async function effect<T extends Applied | undefined>(
     { ...env, type: "effect.intended", data: clean({ effect: kind, key, target, before, after }) },
   ]);
   await point(scope, `before:${key}`);
+  if (scope.killed?.()) throw new Stopped(`killed before ${key}`);
   let result: T;
   try {
     result = await apply();

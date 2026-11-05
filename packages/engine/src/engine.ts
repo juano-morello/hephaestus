@@ -17,17 +17,24 @@ import {
 import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
-import { type Chaos, clearWorktrees, effect, type Reality, reconcile } from "./effects.ts";
+import { type Chaos, clearWorktrees, effect, type Reality, reconcile, Stopped } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
 import { runIntegrationGate } from "./integration.ts";
 import { type JoinLock, joinLocks } from "./join.ts";
-import { landChangeset, mergeChangeset } from "./land.ts";
+import { type LandOptions, landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
-import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
-import { ancestorsOf, baseRef, stackRefs, unresolvedStack } from "./stack.ts";
+import {
+  isPauseReason,
+  PAUSE_RANK,
+  type PauseReason,
+  rateLimitRamp,
+  schedule,
+  type UnitResult,
+} from "./scheduler.ts";
+import { ancestorsOf, baseRef, restackChildren, stackRefs, unresolvedStack } from "./stack.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -43,6 +50,24 @@ export const runBranch = (run: string) => `heph/${run}`;
  */
 export const attemptBranch = (run: string, unit: string, n: number) =>
   `heph-attempt/${run}/${unit}/a${n}`;
+
+/**
+ * Pins a joined (replayed) commit from before its run_branch_advance intent until the unit is
+ * accepted: nothing else references it, and a resume's reconcile needs it to apply the advance.
+ */
+export const joinRef = (run: string, unit: string, n: number) =>
+  `refs/heph/join/${run}/${unit}-a${n}`;
+
+/**
+ * Deletes every join pin of a run in each workspace repo. Safe whenever no build of the run is
+ * mid-join: at a build's start (after reconcile closed every advance) and on cancel.
+ */
+export async function dropJoinPins(
+  o: Pick<RunPlanOptions, "workspace" | "workspaceRoot" | "runId">,
+): Promise<void> {
+  for (const path of Object.values(o.workspace.repos))
+    await createGit(resolve(o.workspaceRoot, path)).deleteRefs(`refs/heph/join/${o.runId}/`);
+}
 
 export type RunPlanOptions = {
   ledger: Ledger;
@@ -66,6 +91,11 @@ export type RunPlanOptions = {
   integrationSandbox?: (dir: string) => Promise<Sandbox>;
   /** Land right after a clean build, but only if every unit is lane contained (SPEC section 2). */
   autoMerge?: boolean;
+  /**
+   * Wraps each staged child's restack after an autoMerge lands this run (the CLI's per-run lock
+   * has this shape), so it is serialized against a concurrent `heph merge status`. Default: none.
+   */
+  around?: <T>(runId: string, fn: () => Promise<T>) => Promise<T>;
   /** Used when the touched repos have a remote: the changeset lands as pull requests. */
   prs?: PullRequests;
   eval?: boolean;
@@ -108,6 +138,8 @@ type Ctx = RunPlanOptions & {
   dirOf: (repo: string) => string;
   /** One per build(): serializes joins onto each repo's run branch. */
   join: JoinLock;
+  /** A unit of this build was killed (Stopped): nothing more may be written or applied. */
+  killed: () => boolean;
 };
 
 /** The repos the plan touches, in first-use order. Unknown projects or repos are errors. */
@@ -384,7 +416,7 @@ function lostPause(
     const pause: { reason: PauseReason; detail: string } | undefined =
       e.type === "unit.escalated" || e.type === "unit.stalled"
         ? { reason: "user", detail: `${e.unit_id}: ${reason}` }
-        : e.type === "unit.attempt.interrupted" && reason in PAUSE_RANK
+        : e.type === "unit.attempt.interrupted" && isPauseReason(reason)
           ? { reason: reason as PauseReason, detail: `${e.unit_id}: ${reason}` }
           : undefined;
     if (pause && (!lost || PAUSE_RANK[pause.reason] > PAUSE_RANK[lost.reason])) lost = pause;
@@ -392,7 +424,25 @@ function lostPause(
   return lost;
 }
 
-async function build(opts: RunPlanOptions): Promise<RunOutcome> {
+/**
+ * The build's ledger, refusing every write once a unit was killed (a Stopped, which only chaos
+ * throws): a killed process writes nothing more, so units still in flight must not either.
+ */
+function untilKilled(ledger: Ledger, killed: () => boolean): Ledger {
+  const appendMany = (drafts: EventDraft[]): LedgerEvent[] => {
+    if (killed()) throw new Stopped("the build was killed");
+    return ledger.appendMany(drafts);
+  };
+  return {
+    ...ledger,
+    appendMany,
+    append: ((d: EventDraft) => appendMany([d])[0]) as Ledger["append"],
+  };
+}
+
+async function build(input: RunPlanOptions): Promise<RunOutcome> {
+  let killed = false;
+  const opts = { ...input, ledger: untilKilled(input.ledger, () => killed) };
   const repos = touchedRepos(opts.workspace, opts.plan);
   const ids = opts.plan.tasks.map((t) => t.id);
   const { edges } = deriveEdges(opts.plan.tasks);
@@ -423,6 +473,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     repoOf: (t) => opts.workspace.projects[t.project]?.repo as string,
     hash,
     join: joinLocks(),
+    killed: () => killed,
   };
   const { ledger, runId } = opts;
   const gits = new Map(repos.map((r) => [r, createGit(dirOf(r))]));
@@ -447,6 +498,8 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   );
   await opts.reapSandboxes?.();
   await reconcile(ledger, runId, realityOf(opts, dirOf));
+  // Every advance is closed now (applied, confirmed or abandoned): no joined commit needs a pin.
+  await dropJoinPins(opts);
 
   const resuming = sinceLatestPlan(ledger, runId).some(
     (e) => e.type === "node.started" && e.graph_node === "build",
@@ -533,14 +586,24 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
       return { status: "paused", reason, detail: reason };
     }
     const h = history.get(id) ?? { next: 1, used: 0 };
-    return runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
+    try {
+      return await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
+    } catch (e) {
+      // Set before the scheduler sees it: from here on, units still in flight write nothing.
+      if (e instanceof Stopped) killed = true;
+      throw e;
+    }
   };
 
-  // Units in flight together join the run branch under ctx.join (see runUnit).
+  // Units in flight together join the run branch under ctx.join (see runUnit). Resumed from a
+  // rate limit, the build starts at half its parallelism and ramps back up (SPEC section 17).
+  const parallel = opts.config.parallel ?? 3;
+  const ramp = rateLimitRamp(sinceLatestPlan(ledger, runId), parallel);
   const out = await schedule({
     plan: opts.plan,
     workspace: opts.workspace,
-    parallel: opts.config.parallel ?? 3,
+    parallel,
+    ...(ramp !== undefined ? { ramp } : {}),
     accepted,
     scopeOf: (id) => humanInput(ctx, byId.get(id) as Task).scope,
     start,
@@ -587,8 +650,17 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
       };
     }
     const merged = await mergeChangeset(opts);
-    if (merged.status === "merged")
+    if (merged.status === "merged") {
+      // Staged children of this run are restacked onto the target and retargeted, as after
+      // `heph approve merge` (design 3.3); one that fails is paused on its own, never thrown.
+      await restackChildren({
+        ledger,
+        parentId: runId,
+        options: (id) => childOptions(opts, id),
+        ...(opts.around ? { around: opts.around } : {}),
+      });
       return { status: "landed", runBranch: branch, heads: await heads(), ...prs };
+    }
     if (merged.status === "not_ready")
       return { status: "staged", runBranch: branch, heads: await heads(), ...prs };
     return {
@@ -600,6 +672,23 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     };
   }
   return { status: "built", runBranch: branch, heads: await heads() };
+}
+
+/**
+ * Landing options for a run stacked on the one `opts` built, from what the ledger holds about it:
+ * its own brief, changeset and latest plan, in the same workspace, with the same gates and PRs.
+ */
+function childOptions(opts: RunPlanOptions, runId: string): LandOptions {
+  const { worker: _w, autoMerge: _a, stackOn: _s, around: _l, ...rest } = opts;
+  const created = opts.ledger.read({ run_id: runId, types: ["run.created"] }).at(-1)?.event;
+  const brief = (created?.data as { brief?: Brief } | undefined)?.brief;
+  const plan = (
+    opts.ledger.read({ run_id: runId, types: ["run.plan_ready"] }).at(-1)?.event.data as
+      | { plan: Plan }
+      | undefined
+  )?.plan;
+  if (!created || !brief || !plan) throw new Error(`run ${runId} has no recorded brief or plan`);
+  return { ...rest, runId, changesetId: created.changeset_id, brief, plan };
 }
 
 /**
@@ -801,27 +890,40 @@ async function runUnit(
           });
           if (r.kind !== "joined") return r;
           after = r.sha;
+          // Killed meanwhile: a resumed build may already have cleared the pins; write none.
+          if (ctx.killed()) throw new Stopped(`killed before pinning ${t.id} a${n}`);
+          await git.setRef(joinRef(ctx.runId, t.id, n), after);
           verdict = verdictOf([...result.gates, ...r.gates], outcome);
         }
-        await effect(
-          { ledger, base: ctx.base, chaos: ctx.chaos },
-          {
-            effect: "run_branch_advance",
-            key: `run_branch_advance:${repo}:${t.id}:a${n}`,
-            target: branch,
-            before: current,
-            after,
-            on: { repo, project: t.project, unit_id: t.id, attempt: n },
-          },
-          async () => {
-            await git.updateRef(branch, after, current);
-            return { sha: after };
-          },
-          {
-            with: verdict,
-            followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
-          },
-        );
+        const pinned = after !== sha;
+        try {
+          await effect(
+            { ledger, base: ctx.base, chaos: ctx.chaos, killed: ctx.killed },
+            {
+              effect: "run_branch_advance",
+              key: `run_branch_advance:${repo}:${t.id}:a${n}`,
+              target: branch,
+              before: current,
+              after,
+              on: { repo, project: t.project, unit_id: t.id, attempt: n },
+            },
+            async () => {
+              await git.updateRef(branch, after, current);
+              return { sha: after };
+            },
+            {
+              with: verdict,
+              followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
+            },
+          );
+        } catch (e) {
+          // The advance failed (abandoned): its pin goes too. A kill leaves it, as a dead
+          // process would, for the resume to drop after reconciling.
+          if (pinned && !(e instanceof Stopped) && !ctx.killed())
+            await git.deleteRefs(joinRef(ctx.runId, t.id, n));
+          throw e;
+        }
+        if (pinned) await git.deleteRefs(joinRef(ctx.runId, t.id, n));
         return { kind: "accepted" as const };
       });
       if (joined.kind === "accepted") return { status: "accepted", files: diff.files };

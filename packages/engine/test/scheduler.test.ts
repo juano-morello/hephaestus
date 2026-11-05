@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { deriveEdges, type Plan, type Task, topoOrder, type Workspace } from "@hephaestus/core";
-import { schedule, type UnitResult } from "../src/scheduler.ts";
+import { Stopped } from "../src/effects.ts";
+import {
+  isPauseReason,
+  rampStart,
+  rateLimitRamp,
+  schedule,
+  type UnitResult,
+} from "../src/scheduler.ts";
 
 const workspace: Workspace = {
   repos: { game: "." },
@@ -278,5 +285,112 @@ describe("schedule", () => {
     stopAuto();
     expect(out).toEqual({ kind: "done" });
     expect(c.started).toEqual(["T2"]);
+  });
+
+  test("after a rate-limit resume the parallelism ramps 1, 2, 3, one more per accepted unit", async () => {
+    const c = controlled();
+    const accepted = new Map<string, string[]>();
+    const p = plan(["T1", "T2", "T3", "T4", "T5", "T6"].map((id) => task(id)));
+    const out = schedule({
+      plan: p,
+      workspace,
+      parallel: 3,
+      ramp: rampStart(3, 0),
+      accepted,
+      scopeOf: (id) => [`${id}.go`],
+      start: c.start,
+      stopped: () => false,
+    });
+    await c.waitStarted("T1");
+    await tick();
+    expect(c.inFlight()).toEqual(["T1"]);
+    c.finish("T1", ok());
+    await c.waitStarted("T3");
+    await tick();
+    expect(c.inFlight()).toEqual(["T2", "T3"]);
+    c.finish("T2", ok());
+    await c.waitStarted("T5");
+    await tick();
+    expect(c.inFlight()).toEqual(["T3", "T4", "T5"]);
+    c.finish("T3", ok());
+    await c.waitStarted("T6");
+    await tick();
+    expect(c.inFlight()).toEqual(["T4", "T5", "T6"]);
+    for (const id of ["T4", "T5", "T6"]) c.finish(id, ok());
+    expect(await out).toEqual({ kind: "done" });
+    expect(c.maxInFlight()).toBe(3);
+  });
+
+  test("rampStart: half the configured parallelism (at least 1), plus units accepted since, capped", () => {
+    expect([0, 1, 2, 3].map((n) => rampStart(3, n))).toEqual([1, 2, 3, 3]);
+    expect([0, 1, 5].map((n) => rampStart(1, n))).toEqual([1, 1, 1]);
+    expect([0, 1, 2, 3].map((n) => rampStart(4, n))).toEqual([2, 3, 4, 4]);
+  });
+
+  test("a ramp at configured parallel 1 stays 1", async () => {
+    const c = controlled();
+    const stop = autoAccept(c);
+    const accepted = new Map<string, string[]>();
+    const p = plan(["T1", "T2", "T3"].map((id) => task(id)));
+    const out = await schedule({
+      plan: p,
+      workspace,
+      parallel: 1,
+      ramp: rampStart(1, 0),
+      accepted,
+      scopeOf: (id) => [`${id}.go`],
+      start: c.start,
+      stopped: () => false,
+    });
+    stop();
+    expect(out).toEqual({ kind: "done" });
+    expect(c.started).toEqual(["T1", "T2", "T3"]);
+    expect(c.maxInFlight()).toBe(1);
+  });
+
+  test("rateLimitRamp comes from the ledger alone: a crash mid-ramp resumes at the same value", () => {
+    const resumed = (reason: string) => ({ type: "run.resumed", data: { reason } });
+    const acceptedEv = { type: "unit.accepted", data: {} };
+    const paused = { type: "run.paused", data: { reason: "rate_limit" } };
+    expect(rateLimitRamp([], 3)).toBeUndefined();
+    expect(rateLimitRamp([acceptedEv, resumed("crash")], 3)).toBeUndefined();
+    expect(rateLimitRamp([paused, resumed("rate_limit")], 3)).toBe(1);
+    expect(rateLimitRamp([paused, resumed("rate_limit"), acceptedEv, resumed("crash")], 3)).toBe(2);
+    expect(rateLimitRamp([resumed("rate_limit"), acceptedEv, acceptedEv, acceptedEv], 3)).toBe(3);
+    // Paused again for something else and resumed: the throttle is over.
+    expect(rateLimitRamp([resumed("rate_limit"), resumed("user")], 3)).toBeUndefined();
+    expect(rateLimitRamp([resumed("rate_limit")], 1)).toBe(1);
+  });
+
+  test("a Stopped (a simulated kill) rejects at once, without waiting for units in flight", async () => {
+    const c = controlled();
+    const accepted = new Map<string, string[]>();
+    const out = schedule({
+      plan: plan([task("T1"), task("T2"), task("T3")]),
+      workspace,
+      parallel: 2,
+      accepted,
+      scopeOf: (id) => [`${id}.go`],
+      start: (id) => (id === "T1" ? Promise.reject(new Stopped("killed")) : c.start(id)),
+      stopped: () => false,
+    });
+    await expect(out).rejects.toBeInstanceOf(Stopped);
+    expect(c.inFlight()).toEqual(["T2"]);
+    // T2 settling later is never recorded: the process it ran in is gone.
+    c.finish("T2", ok(["b.go"]));
+    await tick();
+    expect(accepted.size).toBe(0);
+    expect(c.started).toEqual(["T2"]);
+  });
+
+  test("isPauseReason matches the pause reasons only, never an object prototype key", () => {
+    expect(["handoff", "user", "rate_limit"].map(isPauseReason)).toEqual([true, true, true]);
+    expect(["crash", "toString", "constructor", "__proto__", ""].map(isPauseReason)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 });

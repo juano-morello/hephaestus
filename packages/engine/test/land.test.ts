@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { briefHash, type Plan, type Task, type Workspace } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
 import { openSandbox, runOk, type Sandbox } from "@hephaestus/sandbox";
-import { type RunPlanOptions, runPlan } from "../src/engine.ts";
+import { buildRun, type RunPlanOptions, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
 import { checkChangeset, landChangeset, mergeChangeset } from "../src/land.ts";
 import { ghPullRequests, type PrState, type PullRequests } from "../src/prs.ts";
@@ -1238,6 +1238,58 @@ describe("landing a stacked run", () => {
       });
     }
 
+    test("autoMerge landing a parent restacks and retargets its staged child without merging it", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      const bBuilt = await f.git.revParse("heph/B");
+      const out = await buildRun({ ...f.opts("A"), autoMerge: true });
+      expect(out.status).toBe("landed");
+      expect(f.ledger.run("A")?.status).toBe("finished");
+      expect(f.fake.calls).toContain(`setBase ${f.urls.B} main`);
+      expect(f.fake.bases.get(f.urls.B as string)).toBe("main");
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);
+      expect(f.ledger.run("B")?.status).toBe("staged");
+      expect(stagedEvents(f, "B")).toBe(2);
+      expect(await f.git.revParse("heph/B")).not.toBe(bBuilt);
+      expect(await f.commits("origin/main", "heph/B")).toEqual(["B1"]);
+      f.ledger.close();
+    });
+
+    test("autoMerge restacks each child inside the caller's around hook, in order", async () => {
+      const f = await stagedStack({ B: "b.sh", C: "c.sh" });
+      const log: string[] = [];
+      const around = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+        log.push(`+${id}`);
+        try {
+          return await fn();
+        } finally {
+          log.push(`-${id}`);
+        }
+      };
+      const out = await buildRun({ ...f.opts("A"), autoMerge: true, around });
+      expect(out.status).toBe("landed");
+      expect(log).toEqual(["+B", "-B", "+C", "-C"]);
+      // Each child's retarget happened inside its own hook call.
+      expect(f.fake.calls.filter((c) => c.startsWith("setBase"))).toEqual([
+        `setBase ${f.urls.B} main`,
+        `setBase ${f.urls.C} main`,
+      ]);
+      f.ledger.close();
+    });
+
+    test("a child whose restack fails after an autoMerge is paused on its own; the parent still landed", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      f.fake.failSetBase.add(f.urls.B as string);
+      const out = await buildRun({ ...f.opts("A"), autoMerge: true });
+      expect(out.status).toBe("landed");
+      expect(f.ledger.run("A")?.status).toBe("finished");
+      expect(f.ledger.run("B")?.status).toBe("paused");
+      expect(f.ledger.read({ run_id: "B", types: ["merge.aborted"] })[0]?.event.data).toEqual({
+        reason: "restack failed: base branch protected",
+      });
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);
+      f.ledger.close();
+    });
+
     test("a chain A<-B<-C: A landing restacks B only; C stays staged on B's branch", async () => {
       const f = await stagedStack({ B: "b.sh" });
       await f.build("C", ["c.sh"], "B");
@@ -1348,6 +1400,20 @@ describe("landing a stacked run", () => {
         f.ledger.close();
       });
     }
+
+    test("merge status of a half-landed child again writes nothing more", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      f.fake.states.set(f.urls.B as string, { state: "merged", mergeCommit: "9".repeat(40) });
+      const first = await checkChangeset(f.opts("B"));
+      expect(first.status).toBe("half_landed");
+      const before = f.ledger.read().length;
+      expect(await checkChangeset(f.opts("B"))).toEqual(first);
+      expect(await checkChangeset(f.opts("B"))).toEqual(first);
+      expect(f.ledger.read().length).toBe(before);
+      expect(f.ledger.read({ run_id: "B", types: ["merge.aborted"] })).toHaveLength(1);
+      expect(f.ledger.read({ run_id: "B", types: ["run.paused"] })).toHaveLength(1);
+      f.ledger.close();
+    });
 
     test("merge status of a child merged on the target before its parent landed is half-landed", async () => {
       const f = await stagedStack({ B: "b.sh" });

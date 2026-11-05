@@ -103,7 +103,7 @@ function remote(api: Api, follow: (line: string) => void) {
       c<ReturnType<Runtime["explain"]>>("explain", id, ...(unit ? [unit] : [])),
     hint: (id: string, unit: string, text: string, o: { budget?: number; scope?: string[] }) =>
       c<ReturnType<Runtime["hint"]>>("hint", id, unit, text, o),
-    cancel: (id: string) => c<ReturnType<Runtime["cancel"]>>("cancel", id),
+    cancel: (id: string) => c<Awaited<ReturnType<Runtime["cancel"]>>>("cancel", id),
     approveMerge: (id: string) =>
       c<Awaited<ReturnType<Runtime["approveMerge"]>>>("approveMerge", id),
     mergeStatus: (id: string) => c<Awaited<ReturnType<Runtime["mergeStatus"]>>>("mergeStatus", id),
