@@ -238,6 +238,62 @@ describe("resuming a build", () => {
     reopened.close();
   });
 
+  test("a crash after an escalation but before run.paused pauses again, without fresh attempts", async () => {
+    let fail = true;
+    const gate: UnitGate = {
+      name: "red",
+      run: ({ task }) =>
+        fail && task.id === "S2"
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: [] }
+          : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
+    };
+    const { ledger, rest, node } = await setup([gate]);
+    const killed = crashing(ledger, (ds) => ds.some((d) => d.type === "run.paused"));
+    await expect(buildRun({ ...rest, ledger: killed })).rejects.toBeInstanceOf(Crash);
+    ledger.close();
+
+    const reopened = openLedger(node, { nodeId: "devserver" });
+    expect(reopened.run("R1")?.status).toBe("running");
+    const next = scripted();
+    const out = await buildRun({ ...rest, ledger: reopened, worker: next.worker });
+    expect(out).toMatchObject({ status: "paused", reason: "S2: red after 3 attempts" });
+    expect(next.ids()).toEqual([]);
+    expect(of(reopened, "run.paused").map((e) => e.data)).toEqual([{ reason: "user" }]);
+    expect(of(reopened, "unit.attempt.started").filter((e) => e.unit_id === "S2")).toHaveLength(3);
+    expect(reopened.units("R1").find((u) => u.unit_id === "S2")).toMatchObject({
+      status: "escalated",
+      attempts: 3,
+    });
+
+    // The user resuming it is what gives the unit a fresh set of attempts.
+    fail = false;
+    const after = scripted();
+    expect((await buildRun({ ...rest, ledger: reopened, worker: after.worker })).status).toBe(
+      "built",
+    );
+    expect(after.ids()).toEqual(["S2"]);
+    expect(of(reopened, "unit.accepted").find((e) => e.unit_id === "S2")?.attempt).toBe(4);
+    reopened.close();
+  });
+
+  test("a crash after a rate-limited attempt but before run.paused pauses for the rate limit", async () => {
+    const { ledger, rest, node } = await setup();
+    const killed = crashing(ledger, (ds) => ds.some((d) => d.type === "run.paused"));
+    const first = scripted((i) => (i.brief.task.id === "S2" ? "rate_limited" : "ok"));
+    await expect(
+      buildRun({ ...rest, ledger: killed, worker: first.worker }),
+    ).rejects.toBeInstanceOf(Crash);
+    ledger.close();
+
+    const reopened = openLedger(node, { nodeId: "devserver" });
+    const next = scripted();
+    const out = await buildRun({ ...rest, ledger: reopened, worker: next.worker });
+    expect(out).toMatchObject({ status: "paused", reason: "S2: rate_limit" });
+    expect(next.ids()).toEqual([]);
+    expect(of(reopened, "run.paused").map((e) => e.data.reason)).toEqual(["rate_limit"]);
+    reopened.close();
+  });
+
   test("a build after a plan revision starts fresh from the targets", async () => {
     const { ledger, rest, options, git } = await setup();
     const first = scripted((i) => (i.brief.task.id === "S2" ? "rate_limited" : "ok"));

@@ -24,7 +24,7 @@ import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
-import { schedule, type UnitResult } from "./scheduler.ts";
+import { PAUSE_RANK, type PauseReason, schedule, type UnitResult } from "./scheduler.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -334,6 +334,41 @@ function resume(
   ]);
 }
 
+function stallReason(gate: string | undefined, [a, b]: [number, number]): string {
+  return `stalled: ${gate} failed the same way on a${a} and a${b}`;
+}
+
+/**
+ * A pause a crash lost: a unit stopped the build (escalated, stalled, or interrupted by a rate limit or a
+ * stop) but the process died before build() wrote run.paused. Only for a run still `running`.
+ */
+function lostPause(
+  ledger: Ledger,
+  runId: string,
+): { reason: PauseReason; detail: string } | undefined {
+  const since = sinceLatestPlan(ledger, runId);
+  const from = since.findLastIndex(
+    (e) => (e.type === "node.started" && e.graph_node === "build") || e.type === "run.resumed",
+  );
+  const tail = since.slice(from + 1);
+  if (tail.some((e) => e.type === "run.paused")) return undefined;
+  let lost: { reason: PauseReason; detail: string } | undefined;
+  for (const e of tail) {
+    const reason =
+      e.type === "unit.stalled"
+        ? stallReason(e.data.failing[0]?.gate, e.data.attempts)
+        : ((e.data as { reason?: string }).reason ?? "");
+    const pause: { reason: PauseReason; detail: string } | undefined =
+      e.type === "unit.escalated" || e.type === "unit.stalled"
+        ? { reason: "user", detail: `${e.unit_id}: ${reason}` }
+        : e.type === "unit.attempt.interrupted" && reason in PAUSE_RANK
+          ? { reason: reason as PauseReason, detail: `${e.unit_id}: ${reason}` }
+          : undefined;
+    if (pause && (!lost || PAUSE_RANK[pause.reason] > PAUSE_RANK[lost.reason])) lost = pause;
+  }
+  return lost;
+}
+
 async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const repos = touchedRepos(opts.workspace, opts.plan);
   const ids = opts.plan.tasks.map((t) => t.id);
@@ -392,6 +427,8 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
   const resuming = sinceLatestPlan(ledger, runId).some(
     (e) => e.type === "node.started" && e.graph_node === "build",
   );
+  // Looked at before resume() writes run.resumed, which starts a new segment.
+  const lost = resuming && statusBefore === "running" ? lostPause(ledger, runId) : undefined;
   const scope = { ledger, base, chaos: opts.chaos };
   if (!resuming) {
     // One changeset branch per touched repo, from its target (SPEC section 4).
@@ -421,6 +458,11 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     Object.fromEntries(
       await Promise.all([...gits].map(async ([r, g]) => [r, await g.revParse(branch)])),
     );
+  if (lost) {
+    // Pause again instead of building: an escalated unit only gets fresh attempts from the user.
+    ledger.append({ ...engine, type: "run.paused", data: { reason: lost.reason } });
+    return { status: "paused", runBranch: branch, heads: await heads(), reason: lost.detail };
+  }
 
   const stopped = async (): Promise<RunOutcome> => {
     const reason = stopReason(opts.signal);
@@ -732,8 +774,7 @@ async function runUnit(
       t.id,
     );
     if (stall) {
-      const [a, b] = stall.attempts;
-      const reason = `stalled: ${feedback.reasons[0]?.gate} failed the same way on a${a} and a${b}`;
+      const reason = stallReason(feedback.reasons[0]?.gate, stall.attempts);
       ledger.appendMany([
         ...finished,
         returned,

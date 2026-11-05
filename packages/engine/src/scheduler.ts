@@ -14,7 +14,7 @@ export type ScheduleOutcome =
   | { kind: "cancelled"; reason: string };
 
 /** Which pause the run reports when several units stop: the one needing the most attention. */
-const RANK: Record<PauseReason, number> = { handoff: 3, user: 2, rate_limit: 1 };
+export const PAUSE_RANK: Record<PauseReason, number> = { handoff: 3, user: 2, rate_limit: 1 };
 
 const later = (a: string | undefined, b: string | undefined) => {
   if (!a) return b;
@@ -85,7 +85,7 @@ export async function schedule(o: {
     } else {
       draining = true;
       if (result.reason === "rate_limit") retryAfter = later(retryAfter, result.retryAfter);
-      if (!paused || RANK[result.reason] > RANK[paused.reason])
+      if (!paused || PAUSE_RANK[result.reason] > PAUSE_RANK[paused.reason])
         paused = { reason: result.reason, detail: result.detail };
     }
   }

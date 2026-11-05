@@ -229,6 +229,38 @@ describe("schedule", () => {
     expect([...accepted.keys()]).toEqual(["T1", "T2"]);
   });
 
+  test("start throwing drains, then rethrows the first error", async () => {
+    const c = controlled();
+    const accepted = new Map<string, string[]>();
+    const p = plan([task("T1"), task("T2"), task("T3")]);
+    const out = schedule({
+      plan: p,
+      workspace,
+      parallel: 2,
+      accepted,
+      scopeOf: (id) => [`${id}.go`],
+      start: (id) => (id === "T1" ? Promise.reject(new Error("boom")) : c.start(id)),
+      stopped: () => false,
+    });
+    await c.waitStarted("T2");
+    await tick();
+    expect(c.started).toEqual(["T2"]);
+    c.finish("T2", ok(["b.go"]));
+    await expect(out).rejects.toThrow("boom");
+    expect(accepted.get("T2")).toEqual(["b.go"]);
+    expect(c.started).toEqual(["T2"]);
+  });
+
+  test("a cancel arriving after a pause still returns cancelled", async () => {
+    const c = controlled();
+    const { out } = run(plan([task("T1"), task("T2")]), 2, c);
+    await c.waitStarted("T2");
+    c.finish("T1", { status: "paused", reason: "user", detail: "T1: blocked: x" });
+    await tick();
+    c.finish("T2", { status: "cancelled", reason: "cancelled by user" });
+    expect(await out).toEqual({ kind: "cancelled", reason: "cancelled by user" });
+  });
+
   test("units already accepted are not started again", async () => {
     const c = controlled();
     const stopAuto = autoAccept(c);
