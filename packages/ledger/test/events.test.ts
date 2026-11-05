@@ -13,7 +13,7 @@ const stamp = <T extends object>(draft: T) => ({
 describe("event schemas", () => {
   test("every v0 type from SPEC section 6 has a schema and a sample", () => {
     expect(Object.keys(EVENT_TYPES).sort()).toEqual(Object.keys(samples).sort());
-    expect(Object.keys(EVENT_TYPES)).toHaveLength(27);
+    expect(Object.keys(EVENT_TYPES)).toHaveLength(28);
   });
 
   for (const [type, draft] of Object.entries(samples)) {
