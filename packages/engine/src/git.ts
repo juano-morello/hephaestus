@@ -46,6 +46,8 @@ export type Git = {
   mergeBase(a: string, b: string): Promise<string>;
   /** Points any ref (e.g. refs/heph/staging/<run>) at a sha. */
   setRef(ref: string, sha: string): Promise<void>;
+  /** Deletes every ref under `prefix` (e.g. refs/heph/join/<run>/). */
+  deleteRefs(prefix: string): Promise<void>;
   /** Rebases `branch` onto `onto` in a temp worktree at `path`. On conflict the branch is untouched. */
   rebase(path: string, branch: string, onto: string, upstream?: string): Promise<RebaseResult>;
   /**
@@ -139,6 +141,10 @@ export function createGit(repoDir: string): Git {
       void (await git(["worktree", "add", "-q", "-f", "--detach", path, ref])),
     mergeBase: async (a, b) => (await git(["merge-base", a, b])).trim(),
     setRef: async (ref, sha) => void (await git(["update-ref", ref, sha])),
+    async deleteRefs(prefix) {
+      for (const ref of lines(await git(["for-each-ref", "--format=%(refname)", prefix])))
+        await git(["update-ref", "-d", ref]);
+    },
     async rebase(path, branch, onto, upstream) {
       await git(["worktree", "add", "-q", "-f", path, branch]);
       try {

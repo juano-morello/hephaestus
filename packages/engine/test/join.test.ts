@@ -474,6 +474,77 @@ describe("rejoin cleanup", () => {
   });
 });
 
+describe("the joined commit is pinned", () => {
+  const ref = "refs/heph/join/R1/T2-a1";
+  const refSha = async (repoDir: string, r: string) =>
+    (await run(["git", "rev-parse", "--verify", "--quiet", r], { cwd: repoDir })).stdout.trim() ||
+    undefined;
+  const advanceIntent = (ledger: Ledger) =>
+    ledger
+      .read({ types: ["effect.intended"] })
+      .map((s) => s.event)
+      .find(
+        (e) => e.unit_id === "T2" && (e.data as { effect: string }).effect === "run_branch_advance",
+      )?.data as { after: string } | undefined;
+
+  test("a ref holds the replayed commit from before its advance until the unit is accepted", async () => {
+    const { go, ledger, repoDir } = await setup();
+    const { worker } = lateT2(() => ledger, { "b.txt": "one\n" }, [{ "c.txt": "two\n" }]);
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    let pinned: string | undefined;
+    const result = await go(p, {
+      worker,
+      config: config(2),
+      gates: [],
+      chaos: async (point) => {
+        if (point === "before:run_branch_advance:game:T2:a1") pinned = await refSha(repoDir, ref);
+      },
+    });
+    expect(result.status).toBe("built");
+    expect(pinned).toBeDefined();
+    expect(pinned).toBe(advanceIntent(ledger)?.after);
+    expect(await refSha(repoDir, ref)).toBeUndefined();
+    ledger.close();
+  });
+
+  test("killed between the advance's intent and the move, resume applies it and drops the ref", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    const { worker } = lateT2(() => ledger, { "b.txt": "one\n" }, [{ "c.txt": "two\n" }]);
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    await expect(
+      go(p, {
+        worker,
+        config: config(2),
+        gates: [],
+        chaos: (point) => {
+          if (point === "before:run_branch_advance:game:T2:a1") throw new Stopped("killed");
+        },
+      }),
+    ).rejects.toBeInstanceOf(Stopped);
+    const after = advanceIntent(ledger)?.after as string;
+    expect(await refSha(repoDir, ref)).toBe(after);
+    // Nothing else holds the replayed commit: a gc here would lose it without the ref.
+    expect(await refSha(repoDir, "heph/R1")).not.toBe(after);
+
+    const out = await buildRun({
+      ledger,
+      workspace,
+      workspaceRoot: repoDir,
+      runId: "R1",
+      changesetId: "C1",
+      gates: [],
+      worktreesDir,
+      worker,
+      config: config(2),
+    });
+    expect(out.status).toBe("built");
+    expect(await refSha(repoDir, "heph/R1")).toBe(after);
+    expect(await refSha(repoDir, ref)).toBeUndefined();
+    expect(await log(repoDir, ["for-each-ref", "refs/heph/join/"])).toEqual([]);
+    ledger.close();
+  });
+});
+
 describe("rate-limit throttle", () => {
   test("a build resuming from a rate limit starts at half its parallelism and ramps up", async () => {
     const { go, ledger, repoDir, worktreesDir } = await setup();

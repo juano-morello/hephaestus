@@ -51,6 +51,14 @@ export const runBranch = (run: string) => `heph/${run}`;
 export const attemptBranch = (run: string, unit: string, n: number) =>
   `heph-attempt/${run}/${unit}/a${n}`;
 
+/**
+ * Pins a joined (replayed) commit from before its run_branch_advance intent until the unit is
+ * accepted: nothing else references it, and a resume's reconcile needs it to apply the advance.
+ */
+export const joinRef = (run: string, unit: string, n: number) =>
+  `refs/heph/join/${run}/${unit}-a${n}`;
+const joinRefs = (run: string) => `refs/heph/join/${run}/`;
+
 export type RunPlanOptions = {
   ledger: Ledger;
   workspace: Workspace;
@@ -475,6 +483,9 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
   );
   await opts.reapSandboxes?.();
   await reconcile(ledger, runId, realityOf(opts, dirOf));
+  // Every advance is closed now (applied, confirmed or abandoned): no joined commit needs a pin.
+  for (const r of Object.keys(opts.workspace.repos))
+    await createGit(dirOf(r)).deleteRefs(joinRefs(runId));
 
   const resuming = sinceLatestPlan(ledger, runId).some(
     (e) => e.type === "node.started" && e.graph_node === "build",
@@ -860,6 +871,7 @@ async function runUnit(
           });
           if (r.kind !== "joined") return r;
           after = r.sha;
+          await git.setRef(joinRef(ctx.runId, t.id, n), after);
           verdict = verdictOf([...result.gates, ...r.gates], outcome);
         }
         await effect(
@@ -881,6 +893,7 @@ async function runUnit(
             followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
           },
         );
+        if (after !== sha) await git.deleteRefs(joinRef(ctx.runId, t.id, n));
         return { kind: "accepted" as const };
       });
       if (joined.kind === "accepted") return { status: "accepted", files: diff.files };
