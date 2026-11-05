@@ -111,3 +111,141 @@ export function withApproveDenied(settings: Settings | undefined): Settings {
   if (deny.includes(APPROVE_DENY)) return s;
   return { ...s, permissions: { ...s.permissions, deny: [...deny, APPROVE_DENY] } };
 }
+
+/** Runs a command; undefined when it can't be started (not installed). */
+export type Runner = (cmd: string[]) => { exitCode: number; stdout: string } | undefined;
+
+/** The manual command that registers heph's MCP server with Claude Code. */
+export const claudeMcpAddCommand = (heph: string) => [
+  "claude",
+  "mcp",
+  "add",
+  "--scope",
+  "user",
+  "heph",
+  "--",
+  heph,
+  "mcp",
+];
+
+/**
+ * Registers `heph mcp` with Claude Code through its CLI, once: nothing when it is already
+ * registered with this command and args, a re-add when they differ, a manual command to print
+ * when `claude` is not installed or refuses, and a message (no add) when heph is registered in
+ * another scope, where a user-scope copy would only be shadowed. Never throws.
+ *
+ * Reads `claude mcp get heph`'s human output, whose format `claude mcp --help` does not state:
+ * lines like `Scope: User config (...)`, `Command: /path/heph`, `Args: mcp`. An Args line that
+ * is absent is not compared, and a Scope line that is absent counts as user scope; if Claude
+ * Code changes the format, the worst case is a needless re-add, never a failed install.
+ */
+export function registerClaudeMcp(run: Runner, heph: string): { done: boolean; message: string } {
+  const manual = claudeMcpAddCommand(heph).join(" ");
+  const got = run(["claude", "mcp", "get", "heph"]);
+  if (!got)
+    return { done: false, message: `claude is not on PATH; register heph's tools with: ${manual}` };
+  if (got.exitCode === 0) {
+    const field = (name: string) =>
+      got.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.startsWith(`${name}:`))
+        ?.slice(name.length + 1)
+        .trim();
+    const scope = field("Scope");
+    const scopeName = scope?.split(" ")[0]?.toLowerCase();
+    if (scopeName && scopeName !== "user")
+      return {
+        done: false,
+        message: `heph's MCP server is registered in Claude Code's ${scopeName} scope (${scope}), which wins over a user-scope one, so it was left as is; to use this heph everywhere, remove that one (claude mcp remove --scope ${scopeName} heph) and run: ${manual}`,
+      };
+    const args = field("Args");
+    const same = field("Command") === heph && (args === undefined || args === "mcp");
+    if (same)
+      return { done: true, message: "heph's MCP server already registered with Claude Code" };
+    run(["claude", "mcp", "remove", "--scope", "user", "heph"]);
+    const r = run(claudeMcpAddCommand(heph));
+    return r?.exitCode === 0
+      ? {
+          done: true,
+          message: "re-registered heph's MCP server with Claude Code (its command differed)",
+        }
+      : {
+          done: false,
+          message: `could not update heph's MCP server in Claude Code; run: ${manual}`,
+        };
+  }
+  const r = run(claudeMcpAddCommand(heph));
+  return r?.exitCode === 0
+    ? { done: true, message: "registered heph's MCP server with Claude Code" }
+    : {
+        done: false,
+        message: `could not register heph's MCP server with Claude Code; run: ${manual}`,
+      };
+}
+
+const tomlString = (s: string) => JSON.stringify(s);
+
+/** How far a line opens (+) or closes (-) brackets, outside strings and comments. */
+function bracketDepth(line: string): number {
+  let d = 0;
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === "\\" && quote === '"') i++;
+      else if (c === quote) quote = undefined;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "#") break;
+    else if (c === "[" || c === "{") d++;
+    else if (c === "]" || c === "}") d--;
+  }
+  return d;
+}
+
+/**
+ * Codex's config.toml with a `[mcp_servers.heph]` table running `heph mcp`: any existing heph
+ * definition (its table and sub-tables, an inline `heph = {...}` or dotted `heph.x = ...` keys
+ * under `[mcp_servers]`, or `mcp_servers.heph.x = ...` at the root) is replaced, everything else
+ * kept as it was, CRLF line endings included. `tool_timeout_sec` lifts Codex's 60 s tool
+ * default above heph_watch's long poll (at most about 40 s).
+ */
+export function withHephMcp(toml: string | undefined, heph: string): string {
+  const eol = toml?.includes("\r\n") ? "\r\n" : "\n";
+  const table = [
+    "[mcp_servers.heph]",
+    `command = ${tomlString(heph)}`,
+    'args = ["mcp"]',
+    "tool_timeout_sec = 120",
+    "",
+  ].join(eol);
+  const kept: string[] = [];
+  let section = ""; // the table a line is in ("" for the root)
+  let skippingTable = false;
+  let depth = 0; // > 0 inside a multi-line value
+  let skippingValue = false;
+  for (const line of (toml ?? "").split(/\r?\n/)) {
+    if (depth > 0) {
+      depth += bracketDepth(line);
+      if (!(skippingTable || skippingValue)) kept.push(line);
+      if (depth <= 0) skippingValue = false;
+      continue;
+    }
+    const header = line.match(/^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/);
+    if (header) {
+      section = (header[1] ?? "").replace(/\s+/g, "");
+      skippingTable = /^mcp_servers\."?heph"?(\.|$)/.test(section);
+      if (!skippingTable) kept.push(line);
+      continue;
+    }
+    depth = Math.max(0, bracketDepth(line));
+    const key = line.replace(/\s+/g, "");
+    skippingValue =
+      (section === "mcp_servers" && /^"?heph"?[.=]/.test(key)) ||
+      (section === "" && /^mcp_servers\."?heph"?[.=]/.test(key));
+    if (!(skippingTable || skippingValue)) kept.push(line);
+    if (depth === 0) skippingValue = false;
+  }
+  const rest = kept.join(eol).replace(/\s+$/, "");
+  return rest === "" ? table : `${rest}${eol}${eol}${table}`;
+}

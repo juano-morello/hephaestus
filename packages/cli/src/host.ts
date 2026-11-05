@@ -51,6 +51,8 @@ export type HostOptions = {
   daemon?: boolean;
   /** `--set` overrides for every workspace's config. */
   overrides?: Record<string, unknown>;
+  /** How long a read (status, explain, plan show) waits for the owner's sync: default 5 s. */
+  readSyncMs?: number;
   /** For a `heph peer` process: hand builds to this node's daemon when one is running. */
   localDaemon?: () => Promise<
     { call(method: string, args: unknown[]): Promise<unknown> } | undefined
@@ -142,15 +144,36 @@ export function openHost(o: HostOptions) {
     if (!row) throw new Error(`no run ${runId} on ${me} (heph sync?)`);
     return row.owner_node;
   };
-  /** Pulls the owner's latest events; false when it can't be reached. */
+  /** Syncs with a peer still in flight for a read, so retried reads share one. */
+  const readSyncs = new Map<string, Promise<boolean>>();
+  /**
+   * Pulls the owner's latest events; false when it can't be reached, or does not finish within
+   * `readSyncMs` (a peer that accepts and hangs): the read then answers as possibly stale
+   * instead of waiting for ssh to give up. The sync itself goes on, and the next read reuses it.
+   */
   const refresh = async (runId: string): Promise<boolean> => {
     const owner = ownerOf(runId);
     if (owner === me) return true;
+    let sync = readSyncs.get(owner);
+    if (!sync) {
+      sync = withPeer(owner, (t) => syncWith(ledger, t)).then(
+        () => true,
+        () => false,
+      );
+      readSyncs.set(owner, sync);
+      const started = sync;
+      void started.finally(() => {
+        if (readSyncs.get(owner) === started) readSyncs.delete(owner);
+      });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<boolean>((done) => {
+      timer = setTimeout(() => done(false), o.readSyncMs ?? 5000);
+    });
     try {
-      await withPeer(owner, (t) => syncWith(ledger, t));
-      return true;
-    } catch {
-      return false;
+      return await Promise.race([sync, late]);
+    } finally {
+      clearTimeout(timer);
     }
   };
   /**

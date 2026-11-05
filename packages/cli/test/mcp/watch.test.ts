@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { DaemonError, DaemonTimeoutError } from "../../src/daemon.ts";
+import { NoDaemonError } from "../../src/mcp/guard.ts";
 import { watchText } from "../../src/mcp/text.ts";
-import { watchStep } from "../../src/mcp/watch.ts";
+import { StepDeadlineError, watchStep } from "../../src/mcp/watch.ts";
 import type { WatchEvent } from "../../src/watch.ts";
 
 const ev = (
@@ -201,7 +203,7 @@ describe("watchStep", () => {
   });
 
   test("retries transient status errors, then rejects", async () => {
-    const boom = new Error("daemon down");
+    const boom = new NoDaemonError();
     const ok: Step = { status: "running", events: [A] };
     const r = await watchStep(
       "r1",
@@ -232,7 +234,7 @@ describe("watchStep", () => {
   });
 
   test("retries stop one interval past the deadline, whatever retries allows", async () => {
-    const boom = new Error("daemon down");
+    const boom = new NoDaemonError();
     const fast = script([{ status: "running", events: [A], fail: boom }]);
     const c = clock();
     await expect(watchStep("r1", fast.view, { waitMs: 0, retries: 30, ...c })).rejects.toBe(boom);
@@ -248,6 +250,211 @@ describe("watchStep", () => {
     expect(c2.now() - 1_000_000).toBe(22_000);
   });
 
+  test("an answered daemon error (unknown run) fails at once, without retries", async () => {
+    const unknown = new DaemonError("unknown run r9");
+    const s = script([{ status: "running", events: [A], fail: unknown }]);
+    const c = clock();
+    await expect(watchStep("r9", s.view, { waitMs: 20_000, retries: 8, ...c })).rejects.toBe(
+      unknown,
+    );
+    expect(s.polls()).toBe(1);
+    expect(c.now() - 1_000_000).toBe(0);
+  });
+
+  test("a non-daemon error (a drifted answer) is not retried either", async () => {
+    const drift = new Error("Invalid input: expected object");
+    const s = script([{ status: "running", events: [A], fail: drift }]);
+    await expect(watchStep("r1", s.view, { waitMs: 20_000, ...clock() })).rejects.toBe(drift);
+    expect(s.polls()).toBe(1);
+  });
+
+  test("a connection error is retried", async () => {
+    const refused = Object.assign(new TypeError("ECONNREFUSED: connection refused"), {
+      code: "ECONNREFUSED",
+    });
+    const ok: Step = { status: "running", events: [A] };
+    const s = script([{ ...ok, fail: refused }, ok]);
+    const c = clock();
+    const r = await watchStep("r1", s.view, { waitMs: 20_000, retries: 8, ...c });
+    expect(r.status).toBe("running");
+    expect(s.polls()).toBe(2);
+    expect(c.now() - 1_000_000).toBe(2000);
+  });
+
+  test("a timed-out call is retried", async () => {
+    const slow = new DaemonTimeoutError("status", 20_000);
+    const ok: Step = { status: "running", events: [A] };
+    const s = script([{ ...ok, fail: slow }, { ...ok, fail: slow }, ok]);
+    const r = await watchStep("r1", s.view, { waitMs: 20_000, retries: 8, ...clock() });
+    expect(r.status).toBe("running");
+    expect(s.polls()).toBe(3);
+  });
+
+  test("an aborted signal stops the poll at the next sleep, with an AbortError", async () => {
+    const ac = new AbortController();
+    const s = script([{ status: "running", events: [A] }]);
+    let t = 1_000_000;
+    let sleeps = 0;
+    const p = watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 20_000,
+      signal: ac.signal,
+      now: () => t,
+      sleep: async (ms) => {
+        // The host cancels during the second wait.
+        if (++sleeps === 2) ac.abort();
+        t += ms;
+      },
+    });
+    const e = await p.catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(s.polls()).toBe(2);
+    expect(t - 1_000_000).toBeLessThan(20_000);
+  });
+
+  test("an already aborted signal polls nothing", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const s = script([{ status: "running", events: [A] }]);
+    const e = await watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 20_000,
+      signal: ac.signal,
+      ...clock(),
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(s.polls()).toBe(0);
+  });
+
+  test("an abort also stops the retry wait of a transient error", async () => {
+    const ac = new AbortController();
+    const s = script([{ status: "running", events: [A], fail: new NoDaemonError() }]);
+    const c = clock();
+    const e = await watchStep("r1", s.view, {
+      waitMs: 20_000,
+      signal: ac.signal,
+      now: c.now,
+      sleep: async (ms) => {
+        ac.abort();
+        await c.sleep(ms);
+      },
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(s.polls()).toBe(1);
+  });
+
+  test("the default sleep wakes on abort and leaves no timer behind", async () => {
+    const ac = new AbortController();
+    const s = script([{ status: "running", events: [A] }]);
+    const t0 = Date.now();
+    setTimeout(() => ac.abort(), 30);
+    const e = await watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 20_000,
+      intervalMs: 10_000,
+      signal: ac.signal,
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(s.polls()).toBe(1);
+  });
+
+  test("an abort during status does not go on to explain", async () => {
+    const ac = new AbortController();
+    let explains = 0;
+    const view = {
+      status: async () => {
+        ac.abort();
+        return { run: { status: "running" }, plan_approved: true };
+      },
+      explain: async () => {
+        explains++;
+        return { events: [A] };
+      },
+    };
+    const e = await watchStep("r1", view, {
+      since: "01",
+      waitMs: 20_000,
+      signal: ac.signal,
+      ...clock(),
+    }).catch((x: unknown) => x);
+    expect((e as Error).name).toBe("AbortError");
+    expect(explains).toBe(0);
+  });
+
+  test("the abort reaches the daemon calls themselves", async () => {
+    const ac = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    const view = {
+      status: (_id: string, signal?: AbortSignal) => {
+        seen.push(signal);
+        return new Promise<never>((_, fail) =>
+          signal?.addEventListener("abort", () => fail(signal.reason), { once: true }),
+        );
+      },
+      explain: async () => ({ events: [A] }),
+    };
+    setTimeout(() => ac.abort(), 20);
+    const e = await watchStep("r1", view, { waitMs: 20_000, signal: ac.signal }).catch(
+      (x: unknown) => x,
+    );
+    expect((e as Error).name).toBe("AbortError");
+    expect(seen[0]?.aborted).toBe(true);
+  });
+
+  test("a hung daemon call is cut at the overall deadline (waitMs + graceMs)", async () => {
+    const t0 = Date.now();
+    const view = {
+      status: () => new Promise<never>(() => {}),
+      explain: async () => ({ events: [A] }),
+    };
+    const e = await watchStep("r1", view, { waitMs: 0, graceMs: 50 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(StepDeadlineError);
+    expect((e as Error).message).toContain("not answering in time");
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  test("no new daemon call starts once the overall deadline has passed", async () => {
+    const c = clock();
+    let explains = 0;
+    const view = {
+      status: async () => {
+        // A slow answer that lands after the step's whole budget.
+        await c.sleep(40_000);
+        return { run: { status: "running" }, plan_approved: true };
+      },
+      explain: async () => {
+        explains++;
+        return { events: [A] };
+      },
+    };
+    const e = await watchStep("r1", view, { since: "01", waitMs: 20_000, ...c }).catch(
+      (x: unknown) => x,
+    );
+    expect(e).toBeInstanceOf(StepDeadlineError);
+    expect(explains).toBe(0);
+  });
+
+  test("slow but answering calls never hold the step past waitMs + 15 s", async () => {
+    const c = clock();
+    const view = {
+      status: async () => {
+        await c.sleep(9000);
+        return { run: { status: "running" }, plan_approved: true };
+      },
+      explain: async () => {
+        await c.sleep(9000);
+        return { events: [A] };
+      },
+    };
+    const r = await watchStep("r1", view, { since: "01", waitMs: 20_000, ...c }).catch(
+      (x: unknown) => x,
+    );
+    // 18 s per poll: poll 1 ends at 18 s, poll 2 starts at 20 s and would end at 38 s.
+    expect(r).toBeInstanceOf(StepDeadlineError);
+    expect(c.now() - 1_000_000).toBeLessThanOrEqual(38_000);
+  });
+
   test("onLine receives each line", async () => {
     const got: string[] = [];
     const s = script([{ status: "running", events: [A, B] }]);
@@ -261,7 +468,7 @@ describe("watchStep", () => {
       { status: "staged", events: [A], stack_on: { run_id: "P", status: "staged" } },
     ]);
     const r = await watchStep("r1", s.view, { waitMs: 0, ...clock() });
-    expect(r.outcome).toBe("staged");
+    expect(r.outcome).toBe("waiting_for_parent");
     expect(r.lines.at(-1)).toBe("waiting for P");
   });
 
@@ -284,5 +491,78 @@ describe("watchStep", () => {
     expect(text).toContain("wait for P");
     expect(text).toContain("heph approve merge P");
     expect(text).not.toContain("review, then run");
+  });
+
+  test("stacked behind an unmerged parent: waiting_for_parent, even without news", async () => {
+    const staged = ev("05", "merge.staged", "staged");
+    const s = script([
+      { status: "staged", events: [A, staged], stack_on: { run_id: "P", status: "built" } },
+    ]);
+    const c = clock();
+    const t0 = c.now();
+    const r = await watchStep("r1", s.view, { since: "05", waitMs: 600_000, ...c });
+    expect(c.now() - t0).toBe(0);
+    expect(r).toMatchObject({ outcome: "waiting_for_parent", waiting_for: "P", cursor: "05" });
+    expect(r.blocked).toBeUndefined();
+    expect(r.lines).toEqual(["waiting for P"]);
+    expect(watchText(r)).toContain(
+      "next: wait for P: tell the user to merge it first (`heph approve merge P`, themselves); then r1 is restacked and the user approves it",
+    );
+  });
+
+  test("a parent that failed: blocked_by_parent with the rebuild line", async () => {
+    const staged = ev("05", "merge.staged", "staged");
+    const s = script([
+      { status: "staged", events: [A, staged], stack_on: { run_id: "P", status: "failed" } },
+    ]);
+    const r = await watchStep("r1", s.view, { since: "01", waitMs: 600_000, ...clock() });
+    expect(r).toMatchObject({
+      outcome: "blocked_by_parent",
+      blocked: "stacked on P (failed): rebuild r1",
+    });
+    expect(r.waiting_for).toBeUndefined();
+    expect(r.lines).toEqual(["staged", "stacked on P (failed): rebuild r1"]);
+    const text = watchText(r);
+    expect(text).toContain(
+      "next: explain to the user that its parent cannot land, so r1 has to be rebuilt; ask; do not retry",
+    );
+    expect(text).not.toMatch(/approve/);
+  });
+
+  test("a cancelled parent blocks too; a finished one leaves a plain staged run", async () => {
+    const cancelled = await watchStep(
+      "r1",
+      script([{ status: "staged", events: [A], stack_on: { run_id: "P", status: "cancelled" } }])
+        .view,
+      { waitMs: 0, ...clock() },
+    );
+    expect(cancelled.outcome).toBe("blocked_by_parent");
+    expect(cancelled.lines.at(-1)).toBe("stacked on P (cancelled): rebuild r1");
+    const landed = await watchStep(
+      "r1",
+      script([{ status: "staged", events: [A], stack_on: { run_id: "P", status: "finished" } }])
+        .view,
+      { waitMs: 0, ...clock() },
+    );
+    expect(landed.outcome).toBe("staged");
+    expect(landed.lines).toEqual(["r1: staged", "run resumed"]);
+  });
+
+  test("a stalled unit pauses the run: waiting_for_you, with the stall line", async () => {
+    const stalled = ev(
+      "05",
+      "unit.stalled",
+      "stalled: tests failed the same way on a1 and a2",
+      "T2",
+    );
+    const paused = ev("06", "run.paused", "run paused: waiting for you");
+    const s = script([{ status: "paused", events: [A, stalled, paused] }]);
+    const r = await watchStep("r1", s.view, { since: "01", waitMs: 600_000, ...clock() });
+    expect(r.outcome).toBe("waiting_for_you");
+    expect(r.lines).toEqual([
+      "T2 stalled: tests failed the same way on a1 and a2",
+      "run paused: waiting for you",
+    ]);
+    expect(watchText(r)).toContain("next: explain to the user and ask; do not retry");
   });
 });

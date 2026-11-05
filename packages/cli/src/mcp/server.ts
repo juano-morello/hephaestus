@@ -12,6 +12,10 @@ export type McpCtx = {
   cwd?: string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Tests: how far past its wait a heph_watch may run (default 15 s). */
+  graceMs?: number;
+  /** Tests: heph_run's whole budget (default 30 s). */
+  runBudgetMs?: number;
 };
 
 export function createMcpServer(ctx: McpCtx): McpServer {

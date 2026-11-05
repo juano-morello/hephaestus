@@ -227,6 +227,40 @@ describe("a run on another node", () => {
       stale: "possibly stale: denver is unreachable",
     });
   });
+  test("a peer that hangs: reads answer stale within the read-sync bound, one sync in flight", async () => {
+    await heph(["init", "--force"]);
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R5"]);
+    let connects = 0;
+    const mbp = openHost({
+      home: homeA,
+      config: await loadHomeConfig(homeA),
+      deps,
+      readSyncMs: 100,
+      connect: () => {
+        connects++;
+        // Accepts the connection, then never answers (a peer whose ssh has not dropped yet).
+        return { request: () => new Promise<never>(() => {}), close: async () => {} };
+      },
+    });
+    try {
+      const t0 = Date.now();
+      const status = (await mbp.api.call("status", ["R5"], ws)) as Record<string, unknown>;
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(status).toMatchObject({
+        run: { owner_node: "denver" },
+        stale: "possibly stale: denver is unreachable",
+      });
+      const t1 = Date.now();
+      await mbp.api.call("explain", ["R5"], ws);
+      await mbp.api.call("planShow", ["R5"], ws);
+      await mbp.api.call("status", ["R5"], ws);
+      expect(Date.now() - t1).toBeLessThan(1500);
+      // Every read after the first reuses the sync still in flight to denver.
+      expect(connects).toBe(1);
+    } finally {
+      await mbp.close();
+    }
+  });
 });
 
 describe("the daemon as scheduler", () => {

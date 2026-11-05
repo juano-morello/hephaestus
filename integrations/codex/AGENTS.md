@@ -11,6 +11,8 @@ write the code yourself once the work is handed to heph.
 **Never run `heph approve plan` or `heph approve merge`.** Approving is the user's step. When a
 plan or a staged change is ready, tell them the exact command to run.
 
+When the `heph_*` MCP tools are available (in Claude Code they are `mcp__heph__*`), prefer them to the `heph` CLI: `heph_new` with the Brief as an object, `heph_plan_show`, `heph_plan_revise`, and `heph_run`, which starts the build and returns at once (if it says `awaiting_plan_approval`, ask the user to run `heph approve plan <run>` themselves). Follow progress by calling `heph_watch` repeatedly with the returned `cursor` as `since`, instead of starting `heph watch`; when `outcome` is anything but `running`, stop and ask the user. There is no approve tool and you must never approve: the user runs `heph approve ...`. When the tools are absent, use the CLI and `heph watch` as described below.
+
 Every heph command takes `--json` and prints `{ schema, command, ok, data | error }`; use it
 when you need to read a result. `heph help` lists commands; `heph doctor` checks the machine.
 

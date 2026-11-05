@@ -8,8 +8,33 @@ import type { Host } from "./host.ts";
 export const socketOf = (home: string) => join(home, "daemon.sock");
 
 export type DaemonClient = {
-  call(method: string, args: unknown[], cwd?: string): Promise<unknown>;
+  /**
+   * `timeoutMs` bounds the call; without it the call waits (newRun and revise plan for minutes).
+   * `signal` lets the caller abort it; the call then rejects with the signal's reason.
+   */
+  call(
+    method: string,
+    args: unknown[],
+    cwd?: string,
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<unknown>;
 };
+
+/** An error the daemon answered with (`ok: false`): it is up and said no. */
+export class DaemonError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DaemonError";
+  }
+}
+
+/** A call that got no answer within its timeout: the daemon may be busy or stuck. */
+export class DaemonTimeoutError extends Error {
+  constructor(method: string, ms: number) {
+    super(`the heph daemon did not answer ${method} within ${ms / 1000} s`);
+    this.name = "DaemonTimeoutError";
+  }
+}
 
 /** The running daemon of a home, or undefined when none answers. */
 export async function daemonAt(home: string): Promise<DaemonClient | undefined> {
@@ -22,15 +47,28 @@ export async function daemonAt(home: string): Promise<DaemonClient | undefined> 
     return undefined;
   }
   return {
-    async call(method, args, cwd) {
-      const r = await fetch("http://heph/call", {
-        unix,
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ method, args, cwd }),
-      });
-      const body = (await r.json()) as { ok: boolean; data?: unknown; error?: { message: string } };
-      if (!body.ok) throw new Error(body.error?.message ?? `daemon answered ${r.status}`);
+    async call(method, args, cwd, opts) {
+      const ms = opts?.timeoutMs;
+      const timeout = ms === undefined ? undefined : AbortSignal.timeout(ms);
+      const signals = [timeout, opts?.signal].filter((x): x is AbortSignal => x !== undefined);
+      const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+      let r: Response;
+      let body: { ok: boolean; data?: unknown; error?: { message: string } };
+      try {
+        r = await fetch("http://heph/call", {
+          unix,
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ method, args, cwd }),
+          ...(signal ? { signal } : {}),
+        });
+        body = (await r.json()) as typeof body;
+      } catch (e) {
+        if (opts?.signal?.aborted) throw opts.signal.reason;
+        if (ms !== undefined && timeout?.aborted) throw new DaemonTimeoutError(method, ms);
+        throw e;
+      }
+      if (!body.ok) throw new DaemonError(body.error?.message ?? `daemon answered ${r.status}`);
       return body.data;
     },
   };

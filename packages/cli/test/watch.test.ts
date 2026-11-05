@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { inFlightLines, mergeText, statusText } from "../src/main.ts";
 import { describe as explainLine } from "../src/runtime.ts";
-import { isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
+import { classifyRun, isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
 
 const ev = (id: string, type: string, summary: string, unit_id?: string, attempt?: number) =>
   ({
@@ -270,5 +270,49 @@ describe("heph watch", () => {
     expect(lines.some((l) => /^T2\/a1 still working, \d+ min into this attempt$/.test(l))).toBe(
       true,
     );
+  });
+
+  test("classifyRun is the one status-to-outcome step", () => {
+    const at = (status: string, extra: Record<string, unknown> = {}) => ({
+      run: { status },
+      plan_approved: true,
+      ...extra,
+    });
+    const waiting = [ev("1", "run.paused", "run paused: waiting for you")];
+    const limited = [ev("1", "run.paused", "run paused: rate_limit")];
+    expect(classifyRun("r1", { ...at("planned"), plan_approved: false }, []).outcome).toBe(
+      "awaiting_plan_approval",
+    );
+    expect(classifyRun("r1", at("planned"), []).outcome).toBe("running");
+    expect(classifyRun("r1", at("built"), []).outcome).toBe("running");
+    expect(classifyRun("r1", at("paused"), limited).outcome).toBe("running");
+    expect(classifyRun("r1", at("paused"), waiting)).toEqual({
+      outcome: "waiting_for_you",
+      notes: [],
+      reason: "waiting for you",
+    });
+    expect(classifyRun("r1", at("escalated"), []).outcome).toBe("planner_escalated");
+    expect(
+      classifyRun("r1", at("staged", { stack_on: { run_id: "A", status: "built" } }), []),
+    ).toEqual({
+      outcome: "waiting_for_parent",
+      notes: ["waiting for A"],
+      reason: "waiting for A",
+      waiting_for: "A",
+    });
+    expect(
+      classifyRun("r1", at("staged", { stack_on: { run_id: "A", status: "cancelled" } }), []),
+    ).toEqual({
+      outcome: "blocked_by_parent",
+      notes: ["stacked on A (cancelled): rebuild r1"],
+      reason: "stacked on A (cancelled): rebuild r1",
+      blocked: "stacked on A (cancelled): rebuild r1",
+    });
+    expect(
+      classifyRun("r1", at("staged", { stack_on: { run_id: "A", status: "finished" } }), [])
+        .outcome,
+    ).toBe("staged");
+    expect(classifyRun("r1", at("finished"), []).outcome).toBe("finished");
+    expect(classifyRun("r1", at("failed"), []).outcome).toBe("failed");
   });
 });
