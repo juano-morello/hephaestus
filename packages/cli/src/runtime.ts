@@ -21,6 +21,7 @@ import {
   checkChangeset,
   configHash,
   createRun,
+  dropJoinPins,
   type EngineConfig,
   ghPullRequests,
   type LandOptions,
@@ -709,13 +710,28 @@ export function openRuntime(opts: {
       return { run_id: runId, unit, recorded, ...(scope.length ? { scope } : {}) };
     },
 
-    cancel(runId: string) {
+    async cancel(runId: string) {
       const row = runRow(runId);
       if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is already ${row.status}`);
-      human(runId, created(runId).changesetId, {
+      const c = created(runId);
+      human(runId, c.changesetId, {
         type: "run.failed",
         data: { reason: "cancelled by user" },
       });
+      // A cancelled run never resumes, so join pins a killed build left would stay forever. A
+      // process still driving the run holds its lock and is left alone: none of its pins outlive
+      // its joins.
+      let release: (() => void) | undefined;
+      try {
+        release = lockRun(opts.home, runId);
+      } catch {}
+      if (release) {
+        try {
+          await dropJoinPins({ workspace, workspaceRoot: c.workspaceRoot, runId });
+        } finally {
+          release();
+        }
+      }
       return { run_id: runId, status: "failed" as const };
     },
 

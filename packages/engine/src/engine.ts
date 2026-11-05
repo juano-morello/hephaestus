@@ -57,7 +57,17 @@ export const attemptBranch = (run: string, unit: string, n: number) =>
  */
 export const joinRef = (run: string, unit: string, n: number) =>
   `refs/heph/join/${run}/${unit}-a${n}`;
-const joinRefs = (run: string) => `refs/heph/join/${run}/`;
+
+/**
+ * Deletes every join pin of a run in each workspace repo. Safe whenever no build of the run is
+ * mid-join: at a build's start (after reconcile closed every advance) and on cancel.
+ */
+export async function dropJoinPins(
+  o: Pick<RunPlanOptions, "workspace" | "workspaceRoot" | "runId">,
+): Promise<void> {
+  for (const path of Object.values(o.workspace.repos))
+    await createGit(resolve(o.workspaceRoot, path)).deleteRefs(`refs/heph/join/${o.runId}/`);
+}
 
 export type RunPlanOptions = {
   ledger: Ledger;
@@ -489,8 +499,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
   await opts.reapSandboxes?.();
   await reconcile(ledger, runId, realityOf(opts, dirOf));
   // Every advance is closed now (applied, confirmed or abandoned): no joined commit needs a pin.
-  for (const r of Object.keys(opts.workspace.repos))
-    await createGit(dirOf(r)).deleteRefs(joinRefs(runId));
+  await dropJoinPins(opts);
 
   const resuming = sinceLatestPlan(ledger, runId).some(
     (e) => e.type === "node.started" && e.graph_node === "build",
@@ -886,26 +895,35 @@ async function runUnit(
           await git.setRef(joinRef(ctx.runId, t.id, n), after);
           verdict = verdictOf([...result.gates, ...r.gates], outcome);
         }
-        await effect(
-          { ledger, base: ctx.base, chaos: ctx.chaos, killed: ctx.killed },
-          {
-            effect: "run_branch_advance",
-            key: `run_branch_advance:${repo}:${t.id}:a${n}`,
-            target: branch,
-            before: current,
-            after,
-            on: { repo, project: t.project, unit_id: t.id, attempt: n },
-          },
-          async () => {
-            await git.updateRef(branch, after, current);
-            return { sha: after };
-          },
-          {
-            with: verdict,
-            followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
-          },
-        );
-        if (after !== sha) await git.deleteRefs(joinRef(ctx.runId, t.id, n));
+        const pinned = after !== sha;
+        try {
+          await effect(
+            { ledger, base: ctx.base, chaos: ctx.chaos, killed: ctx.killed },
+            {
+              effect: "run_branch_advance",
+              key: `run_branch_advance:${repo}:${t.id}:a${n}`,
+              target: branch,
+              before: current,
+              after,
+              on: { repo, project: t.project, unit_id: t.id, attempt: n },
+            },
+            async () => {
+              await git.updateRef(branch, after, current);
+              return { sha: after };
+            },
+            {
+              with: verdict,
+              followedBy: () => [{ ...engine, type: "unit.accepted", data: {} }],
+            },
+          );
+        } catch (e) {
+          // The advance failed (abandoned): its pin goes too. A kill leaves it, as a dead
+          // process would, for the resume to drop after reconciling.
+          if (pinned && !(e instanceof Stopped) && !ctx.killed())
+            await git.deleteRefs(joinRef(ctx.runId, t.id, n));
+          throw e;
+        }
+        if (pinned) await git.deleteRefs(joinRef(ctx.runId, t.id, n));
         return { kind: "accepted" as const };
       });
       if (joined.kind === "accepted") return { status: "accepted", files: diff.files };

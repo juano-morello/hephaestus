@@ -496,6 +496,20 @@ describe("heph lifecycle", () => {
     expect((await heph(["run", "R5"], { worker: w })).error?.message).toBe("run R5 is failed");
   });
 
+  test("cancel drops the run's join pins and nobody else's", async () => {
+    await initWithTests();
+    await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R6"], {
+      planner: planner([PLAN]).fn,
+    });
+    // Left by a process killed mid-join that never resumed.
+    sh(["git", "update-ref", "refs/heph/join/R6/T2-a1", "HEAD"], ws);
+    sh(["git", "update-ref", "refs/heph/join/R7/T2-a1", "HEAD"], ws);
+    expect((await heph(["cancel", "R6"])).data).toMatchObject({ run_id: "R6", status: "failed" });
+    expect(sh(["git", "for-each-ref", "--format=%(refname)", "refs/heph/join/"], ws)).toBe(
+      "refs/heph/join/R7/T2-a1\n",
+    );
+  });
+
   async function approved(runId: string, deps: Deps) {
     await initWithTests();
     await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", runId], deps);

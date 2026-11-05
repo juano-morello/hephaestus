@@ -596,6 +596,37 @@ describe("join pins and kills", () => {
   });
 });
 
+describe("join pins on failure", () => {
+  test("an advance whose compare-and-swap is lost drops its pin", async () => {
+    const { go, ledger, repoDir } = await setup();
+    const { worker } = lateT2(() => ledger, { "b.txt": "one\n" }, [{ "c.txt": "two\n" }]);
+    const p = plan([task("T1", ["b.txt"]), task("T2", ["c.txt"])]);
+    let pinned = false;
+    await expect(
+      go(p, {
+        worker,
+        config: config(2),
+        gates: [],
+        chaos: async (point) => {
+          if (point !== "before:run_branch_advance:game:T2:a1") return;
+          pinned = (await log(repoDir, ["for-each-ref", "refs/heph/join/"])).length === 1;
+          // Someone else moves the run branch: the advance's compare-and-swap fails.
+          await runOk(["git", "update-ref", "refs/heads/heph/R1", "main"], { cwd: repoDir });
+        },
+      }),
+    ).rejects.toThrow();
+    expect(pinned).toBe(true);
+    expect(
+      ledger
+        .read({ types: ["effect.done"] })
+        .map((s) => s.event.data as { key: string; state: string })
+        .find((d) => d.key === "run_branch_advance:game:T2:a1")?.state,
+    ).toBe("abandoned");
+    expect(await log(repoDir, ["for-each-ref", "refs/heph/join/"])).toEqual([]);
+    ledger.close();
+  });
+});
+
 describe("rate-limit throttle", () => {
   test("a build resuming from a rate limit starts at half its parallelism and ramps up", async () => {
     const { go, ledger, repoDir, worktreesDir } = await setup();
