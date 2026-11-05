@@ -1379,6 +1379,20 @@ describe("landing a stacked run", () => {
       });
     }
 
+    test("merge status of a half-landed child again writes nothing more", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      f.fake.states.set(f.urls.B as string, { state: "merged", mergeCommit: "9".repeat(40) });
+      const first = await checkChangeset(f.opts("B"));
+      expect(first.status).toBe("half_landed");
+      const before = f.ledger.read().length;
+      expect(await checkChangeset(f.opts("B"))).toEqual(first);
+      expect(await checkChangeset(f.opts("B"))).toEqual(first);
+      expect(f.ledger.read().length).toBe(before);
+      expect(f.ledger.read({ run_id: "B", types: ["merge.aborted"] })).toHaveLength(1);
+      expect(f.ledger.read({ run_id: "B", types: ["run.paused"] })).toHaveLength(1);
+      f.ledger.close();
+    });
+
     test("merge status of a child merged on the target before its parent landed is half-landed", async () => {
       const f = await stagedStack({ B: "b.sh" });
       f.fake.bases.set(f.urls.B as string, "main");

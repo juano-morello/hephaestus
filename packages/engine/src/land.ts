@@ -602,6 +602,15 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   return { status: "merged" };
 }
 
+/** Whether a paused run's latest abort, since its latest staging, is exactly `reason`. */
+function halfLandedAgain(opts: LandOptions, reason: string): boolean {
+  if (opts.ledger.run(opts.runId)?.status !== "paused") return false;
+  const last = opts.ledger
+    .read({ run_id: opts.runId, types: ["merge.staged", "merge.aborted"] })
+    .at(-1)?.event;
+  return last?.type === "merge.aborted" && (last.data as { reason?: string }).reason === reason;
+}
+
 export type CheckOutcome =
   | { status: "merged" }
   | { status: "closed" }
@@ -643,7 +652,8 @@ export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
             : undefined;
       if (!why) continue;
       const reason = `half-landed: ${s.r}: pull request ${why} (${s.url})`;
-      abort(opts.ledger, base, reason, staged.refs);
+      // Recorded already, with nothing staged since: asking again writes nothing more.
+      if (!halfLandedAgain(opts, reason)) abort(opts.ledger, base, reason, staged.refs);
       return { status: "half_landed", reason };
     }
   }
