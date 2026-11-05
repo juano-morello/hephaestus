@@ -3,7 +3,10 @@
 // scripted worker; the parent SIGKILLs it at a random moment, resumes it in a fresh process,
 // and checks the outcome against a run never killed.
 //
-//   bun packages/engine/scripts/chaos-smoke.ts [--runs 10] [--seed 1]
+//   bun packages/engine/scripts/chaos-smoke.ts [--runs 10] [--seed 1] [--parallel 2]
+//
+// S2 and S3 are independent units in one repo: at --parallel 2 they run together from the same
+// tip and the second to finish is replayed onto the first and re-gated (design 4.3).
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -100,7 +103,7 @@ const slowWorker: Worker = {
   },
 };
 
-function options(dir: string): RunPlanOptions & { node: string } {
+function options(dir: string, parallel: number): RunPlanOptions & { node: string } {
   const node = join(dir, "node");
   return {
     node,
@@ -119,7 +122,7 @@ function options(dir: string): RunPlanOptions & { node: string } {
         implementer: { default: { model: "claude/sonnet" } },
       },
       maxAttempts: 3,
-      parallel: 1,
+      parallel,
       budgetTokens: 20_000,
       tools: [],
       commands: { server: { test: "sh check.sh" } },
@@ -130,7 +133,7 @@ function options(dir: string): RunPlanOptions & { node: string } {
   };
 }
 
-async function scenario(): Promise<string> {
+async function scenario(parallel: number): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "heph-chaos-"));
   const fixtures: Record<string, Record<string, string>> = {
     proto: { "messages.txt": "base\n" },
@@ -146,7 +149,7 @@ async function scenario(): Promise<string> {
     await git("add", "-A");
     await git("-c", "user.name=T", "-c", "user.email=t@x", "commit", "-qm", "base");
   }
-  const o = options(dir);
+  const o = options(dir, parallel);
   createRun(o);
   recordPlan(o, plan);
   o.ledger.close();
@@ -154,8 +157,8 @@ async function scenario(): Promise<string> {
 }
 
 /** The child: what heph run then heph approve merge do, from wherever the run is. */
-async function child(dir: string) {
-  const o = options(dir);
+async function child(dir: string, parallel: number) {
+  const o = options(dir, parallel);
   const status = () => o.ledger.run("R1")?.status;
   const { brief: _b, plan: _p, ...rest } = o;
   if (["planned", "running", "paused"].includes(status() as string)) await buildRun(rest);
@@ -197,11 +200,14 @@ async function outcome(dir: string) {
   return { result, interrupted };
 }
 
-const spawnChild = (dir: string) =>
-  Bun.spawn(["bun", import.meta.path, "--child", dir], { stdout: "ignore", stderr: "pipe" });
+const spawnChild = (dir: string, parallel: number) =>
+  Bun.spawn(["bun", import.meta.path, "--child", dir, "--parallel", String(parallel)], {
+    stdout: "ignore",
+    stderr: "pipe",
+  });
 
-async function finish(dir: string) {
-  const p = spawnChild(dir);
+async function finish(dir: string, parallel: number) {
+  const p = spawnChild(dir, parallel);
   if ((await p.exited) !== 0)
     throw new Error(`resume failed: ${await new Response(p.stderr).text()}`);
 }
@@ -213,9 +219,12 @@ async function main() {
       child: { type: "string" },
       runs: { type: "string", default: "10" },
       seed: { type: "string", default: String(Date.now() % 100_000) },
+      parallel: { type: "string", default: "1" },
     },
   });
-  if (values.child) return child(values.child);
+  const parallel = Number(values.parallel);
+  if (!Number.isInteger(parallel) || parallel < 1) throw new Error("--parallel must be >= 1");
+  if (values.child) return child(values.child, parallel);
 
   let seed = Number(values.seed);
   const random = () => {
@@ -223,24 +232,24 @@ async function main() {
     return seed / 2 ** 31;
   };
 
-  const base = await scenario();
+  const base = await scenario(parallel);
   const t0 = Date.now();
-  await finish(base);
+  await finish(base, parallel);
   const took = Date.now() - t0;
   const expected = JSON.stringify((await outcome(base)).result);
   rmSync(base, { recursive: true, force: true });
-  console.log(`baseline: ${took} ms, seed ${values.seed}`);
+  console.log(`baseline: ${took} ms, seed ${values.seed}, parallel ${parallel}`);
 
   let same = 0;
   const runs = Number(values.runs);
   for (let i = 1; i <= runs; i++) {
-    const dir = await scenario();
+    const dir = await scenario(parallel);
     const at = Math.floor(random() * took);
-    const p = spawnChild(dir);
+    const p = spawnChild(dir, parallel);
     const timer = setTimeout(() => p.kill("SIGKILL"), at);
     const code = await p.exited;
     clearTimeout(timer);
-    await finish(dir);
+    await finish(dir, parallel);
     const { result, interrupted } = await outcome(dir);
     const ok = JSON.stringify(result) === expected;
     if (ok) same++;

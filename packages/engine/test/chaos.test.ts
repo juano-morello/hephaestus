@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { briefHash, type Plan, type Task } from "@hephaestus/core";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
 import { openSandbox, runOk } from "@hephaestus/sandbox";
 import { pendingEffects, Stopped } from "../src/effects.ts";
 import { buildRun, createRun, type RunPlanOptions, recordPlan } from "../src/engine.ts";
 import type { UnitGate } from "../src/gates.ts";
 import { landChangeset, mergeChangeset } from "../src/land.ts";
-import { tempDir } from "./helpers.ts";
+import type { Worker } from "../src/worker.ts";
+import { tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, crossRepoPlan, threeRepos, writer } from "./workspace.ts";
 
 /**
@@ -39,10 +42,18 @@ function killer(at: number) {
       append: ((d: EventDraft) => appendMany([d])[0]) as Ledger["append"],
     };
   };
-  return { wrap, chaos: (_p: string) => hit(), count: () => n };
+  return { wrap, chaos: (_p: string) => hit(), count: () => n, dead: () => dead };
 }
 
-async function scenario() {
+type Shape = { plan: Plan; commands: Record<string, Record<string, string>>; parallel: number };
+
+const serial: Shape = {
+  plan: crossRepoPlan(),
+  commands: { server: { test: "sh check.sh" } },
+  parallel: 1,
+};
+
+async function scenario(shape: Shape = serial) {
   const { root, workspace } = await threeRepos(dir());
   const node = join(dir(), "node");
   const ledger = openLedger(node, { nodeId: "devserver" });
@@ -51,12 +62,12 @@ async function scenario() {
     workspace,
     workspaceRoot: root,
     brief,
-    plan: crossRepoPlan(),
+    plan: shape.plan,
     runId: "R1",
     changesetId: "C1",
     worker: writer,
     gates: [],
-    config: { ...config, commands: { server: { test: "sh check.sh" } } },
+    config: { ...config, parallel: shape.parallel, commands: shape.commands },
     worktreesDir: join(dir(), "worktrees"),
     gateSandbox: (w) => openSandbox({ mode: "native", hostDir: w }),
     integrationSandbox: (d) => openSandbox({ mode: "native", hostDir: d }),
@@ -82,9 +93,143 @@ const redOnce = (ledger: () => Ledger): UnitGate => ({
       : { gate: "red_once", verdict: "pass", reason: "ok", evidence: [] },
 });
 
+/**
+ * The fan-out shape (design 4.2-4.3): T1 -> T2, T3 -> T4, with T2 and T3 independent units in one
+ * repo with disjoint scopes, run two at a time. T4 is red once, so the Return path is in it too.
+ */
+const unit = (id: string, t: Partial<Task>): Task => ({
+  id,
+  title: id,
+  kind: "implement",
+  project: "server",
+  lane: "contained",
+  complexity: "standard",
+  complexity_reason: "x",
+  scope: [],
+  covers: ["AC1"],
+  spec: id,
+  ...t,
+});
+const diamond: Shape = {
+  plan: {
+    schema: 1,
+    brief_hash: briefHash(brief),
+    tasks: [
+      unit("T1", {
+        project: "proto",
+        kind: "codegen",
+        covers: [],
+        scope: ["loot.txt"],
+        produces: ["proto:Loot"],
+      }),
+      unit("T2", { scope: ["a.sh"], consumes: ["proto:Loot"], produces: ["server:A"] }),
+      unit("T3", { scope: ["b.sh"], consumes: ["proto:Loot"], produces: ["server:B"] }),
+      unit("T4", { scope: ["c.sh"], consumes: ["server:A", "server:B"] }),
+    ],
+    risks: [],
+  },
+  commands: { server: { test: "test -f a.sh && test -f b.sh && test -f c.sh" } },
+  parallel: 2,
+};
+const DIAMOND_FILES: Record<string, Record<string, string>> = {
+  T1: { "loot.txt": "LootDrop\n" },
+  T2: { "a.sh": "echo a\n" },
+  T3: { "b.sh": "echo b\n" },
+  T4: { "c.sh": "echo c\n" },
+};
+
+/**
+ * T2 and T3 meet at a barrier before they finish, so both start from the same tip and the one
+ * that joins second is replayed onto the other and re-gated. The barrier lets go once the other
+ * has spawned in this process, is already accepted (a resume after its join), or the process is
+ * dead (so a kill elsewhere doesn't hang the unit at the barrier).
+ */
+function diamondWorker(ledger: Ledger, dead: () => boolean): Worker {
+  const spawned = new Set<string>();
+  const other: Record<string, string> = { T2: "T3", T3: "T2" };
+  const accepted = (id: string) =>
+    ledger.read({ run_id: "R1", unit_id: id, types: ["unit.accepted"] }).length > 0;
+  return {
+    async spawn(input) {
+      const id = input.brief.task.id;
+      spawned.add(id);
+      const peer = other[id];
+      if (peer) {
+        for (let i = 0; i < 2000 && !(spawned.has(peer) || accepted(peer) || dead()); i++)
+          await new Promise((r) => setTimeout(r, 5));
+      }
+      const files = DIAMOND_FILES[id] ?? {};
+      writeFiles(input.workdir, files);
+      return {
+        output: { schema: 1, summary: "", claims: [], touched: Object.keys(files) },
+        transcript: "",
+        usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        exit: "ok",
+      };
+    },
+  };
+}
+
+/**
+ * A `tests` gate, so it is one of the gates a join re-runs. On a join (the replay worktree) it
+ * checks the combined tree holds both T2's and T3's work, and says so in its reason.
+ */
+const combinedTests: UnitGate = {
+  name: "tests",
+  run: ({ workdir }) => {
+    if (!workdir.includes("-join"))
+      return { gate: "tests", verdict: "pass", reason: "ok", evidence: [] };
+    const both = existsSync(join(workdir, "a.sh")) && existsSync(join(workdir, "b.sh"));
+    return both
+      ? { gate: "tests", verdict: "pass", reason: "combined", evidence: [] }
+      : { gate: "tests", verdict: "fail", reason: "join tree lacks a.sh or b.sh", evidence: [] };
+  },
+};
+
+/** T4 is red on its first finished attempt. */
+const t4RedOnce = (ledger: () => Ledger): UnitGate => ({
+  name: "red_once",
+  run: ({ task }) =>
+    task.id === "T4" &&
+    !ledger()
+      .read({ run_id: "R1", unit_id: "T4", types: ["unit.attempt.finished"] })
+      .some((e) => (e.event.data as { outcome: string }).outcome === "red")
+      ? { gate: "red_once", verdict: "fail", reason: "first try", evidence: [] }
+      : { gate: "red_once", verdict: "pass", reason: "ok", evidence: [] },
+});
+
+function diamondRun(s: Scenario, ledger: Ledger, kill?: ReturnType<typeof killer>) {
+  const wrapped = kill ? kill.wrap(ledger) : ledger;
+  return pipeline(
+    s,
+    wrapped,
+    {
+      worker: diamondWorker(ledger, kill ? kill.dead : () => false),
+      ...(kill ? { chaos: kill.chaos } : {}),
+    },
+    [combinedTests, t4RedOnce(() => ledger)],
+  );
+}
+
+/** Joins that replayed a unit onto a moved tip and re-gated it green on the combined tree. */
+function rejoins(node: string): string[] {
+  const ledger = openLedger(node, { nodeId: "devserver" });
+  const out = ledger
+    .read({ run_id: "R1", types: ["gate.result"] })
+    .filter((e) => (e.event.data as { reason: string }).reason === "combined")
+    .map((e) => e.event.unit_id as string);
+  ledger.close();
+  return out;
+}
+
 /** What `heph run` then `heph approve merge` do, picking up from the run's status. */
-async function pipeline(s: Scenario, ledger: Ledger, extra: Partial<RunPlanOptions> = {}) {
-  const opts = { ...s.rest, ...extra, ledger, gates: [redOnce(() => ledger)] };
+async function pipeline(
+  s: Scenario,
+  ledger: Ledger,
+  extra: Partial<RunPlanOptions> = {},
+  gates: UnitGate[] = [redOnce(() => ledger)],
+) {
+  const opts = { ...s.rest, gates, ...extra, ledger };
   const status = () => ledger.run("R1")?.status;
   if (["planned", "running", "paused"].includes(status() as string)) {
     const out = await buildRun(opts);
@@ -164,6 +309,50 @@ describe("chaos", () => {
       // A new process: the ledger reopened from disk, nothing carried over in memory.
       const second = openLedger(s.node, { nodeId: "devserver" });
       await pipeline(s, second);
+      second.close();
+      const got = await outcome(s);
+      expect({ k, ...got }).toEqual({ k, ...expected });
+    }
+  }, 600_000);
+  test("a fan-out run at parallel 2 killed at any point and resumed ends like one never killed", async () => {
+    const base = await scenario(diamond);
+    const counter = killer(Number.POSITIVE_INFINITY);
+    const ledger = openLedger(base.node, { nodeId: "devserver" });
+    await diamondRun(base, ledger, counter);
+    ledger.close();
+    const expected = await outcome(base);
+    expect(expected).toMatchObject({
+      status: "finished",
+      accepted: ["T1", "T2", "T3", "T4"],
+      greens: ["T1", "T2", "T3", "T4"],
+      commits: { proto: 2, server: 4, web: 1 },
+      pending: [],
+      worktrees: { proto: 1, server: 1, web: 1 },
+    });
+    // The barrier makes T2 and T3 finish from one tip: one of them went through the join.
+    const joined = rejoins(base.node);
+    expect(joined).toHaveLength(1);
+    expect(["T2", "T3"]).toContain(joined[0] as string);
+    const points = counter.count();
+    expect(points).toBeGreaterThan(30);
+
+    // Scheduling order may vary between runs, so outcomes compare trees and per-unit counts.
+    for (let k = 0; k < points; k++) {
+      const s = await scenario(diamond);
+      const kill = killer(k);
+      const first = openLedger(s.node, { nodeId: "devserver" });
+      const killed = await diamondRun(s, first, kill).then(
+        () => false,
+        (e) => {
+          if (!(e instanceof Stopped)) throw e;
+          return true;
+        },
+      );
+      first.close();
+      expect({ k, killed }).toEqual({ k, killed: true });
+
+      const second = openLedger(s.node, { nodeId: "devserver" });
+      await diamondRun(s, second);
       second.close();
       const got = await outcome(s);
       expect({ k, ...got }).toEqual({ k, ...expected });
