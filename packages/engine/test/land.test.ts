@@ -8,7 +8,7 @@ import { type RunPlanOptions, runPlan } from "../src/engine.ts";
 import { createGit } from "../src/git.ts";
 import { checkChangeset, landChangeset, mergeChangeset } from "../src/land.ts";
 import { ghPullRequests, type PrState, type PullRequests } from "../src/prs.ts";
-import { restack, restackChildren } from "../src/stack.ts";
+import { pendingRestack, restack, restackChildren } from "../src/stack.ts";
 import type { Worker } from "../src/worker.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, crossRepoPlan, threeRepos, writer, writeScript } from "./workspace.ts";
@@ -1325,9 +1325,71 @@ describe("landing a stacked run", () => {
       f.ledger.close();
     });
 
+    test("a child GitHub retargeted by itself after its parent landed is not merged until restacked", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      // heph/A auto-deleted on merge: GitHub points B's PR at main, but B was never restacked.
+      f.fake.bases.set(f.urls.B as string, "main");
+      expect(await pendingRestack(f.opts("B"))).toEqual({ server: "main" });
+      const before = f.ledger.read().length;
+      expect(await mergeChangeset(f.opts("B"))).toEqual({
+        status: "not_ready",
+        reasons: [
+          `server: staged before A landed; heph approve merge B restacks it onto main first (${f.urls.B})`,
+        ],
+      });
+      expect(f.ledger.read().length).toBe(before);
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toEqual([]);
+
+      expect((await restack(f.opts("B"))).status).toBe("staged");
+      expect(await pendingRestack(f.opts("B"))).toEqual({});
+      expect(await mergeChangeset(f.opts("B"))).toEqual({ status: "merged" });
+      expect(mergesOf(f.fake.calls, f.urls.B as string)).toHaveLength(1);
+      f.ledger.close();
+    });
+
+    test("restackChildren leaves a child already restacked since its parent landed alone", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      const first = await restackChildren({
+        ledger: f.ledger,
+        parentId: "A",
+        options: f.optionsFor,
+      });
+      expect(first.B?.status).toBe("staged");
+      const gated = f.regates("B").length;
+      const staged = stagedEvents(f, "B");
+      const calls = f.fake.calls.length;
+
+      expect(
+        await restackChildren({ ledger: f.ledger, parentId: "A", options: f.optionsFor }),
+      ).toEqual({});
+      expect(f.regates("B")).toHaveLength(gated);
+      expect(stagedEvents(f, "B")).toBe(staged);
+      expect(f.fake.calls.slice(calls).filter((c) => !c.startsWith("find"))).toEqual([]);
+      f.ledger.close();
+    });
+
+    test("a finished run's merge status writes nothing again", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      const before = f.ledger.read().length;
+      expect(await checkChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      expect(f.ledger.read().length).toBe(before);
+      f.ledger.close();
+    });
+
     test("a child whose PR is still based on the landed parent's branch is not merged", async () => {
       const f = await stagedStack({ B: "b.sh" });
       expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+      expect(await mergeChangeset(f.opts("B"))).toEqual({
+        status: "not_ready",
+        reasons: [
+          `server: staged before A landed; heph approve merge B restacks it onto main first (${f.urls.B})`,
+        ],
+      });
+      // Landed again on the target (heph run B never retargets): the PR base still guards it.
+      expect((await landChangeset(f.opts("B"))).status).toBe("staged");
       const before = f.ledger.read().length;
       expect(await mergeChangeset(f.opts("B"))).toEqual({
         status: "not_ready",

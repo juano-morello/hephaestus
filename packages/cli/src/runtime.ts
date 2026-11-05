@@ -28,7 +28,7 @@ import {
   mergeChangeset,
   normalizePath,
   type PullRequests,
-  pendingRetargets,
+  pendingRestack,
   projectFiles,
   type RunPlanOptions,
   recordEscalation,
@@ -720,17 +720,21 @@ export function openRuntime(opts: {
     },
 
     async approveMerge(runId: string) {
+      const notStaged = (status: string) =>
+        new Error(`run ${runId} is ${status}, not staged (heph run ${runId} first)`);
       const row = runRow(runId);
-      if (row.status !== "staged")
-        throw new Error(`run ${runId} is ${row.status}, not staged (heph run ${runId} first)`);
-      human(runId, created(runId).changesetId, {
+      if (row.status !== "staged") throw notStaged(row.status);
+      const approval = human(runId, created(runId).changesetId, {
         type: "human.input",
         data: { kind: "approve", target: "merge" },
       });
       return locked(runId, async () => {
-        // A stacked run whose parent landed but whose restack never finished (the process
-        // stopped): restacked now, not merged. Its code moved, so merging is a fresh approval.
-        const onto = await pendingRetargets(landOptions(runId));
+        const now = runRow(runId).status;
+        if (now !== "staged") throw notStaged(now);
+        // A stacked run staged before its parent landed (the ledger says so, whatever its PR's
+        // base now is), or whose retarget never finished: restacked now, not merged. Its code
+        // moved, so merging is a fresh approval.
+        const onto = await pendingRestack(landOptions(runId));
         if (Object.keys(onto).length) {
           const out = await restack(landOptions(runId));
           return {
@@ -739,6 +743,20 @@ export function openRuntime(opts: {
               out.status === "staged"
                 ? { status: "restacked" as const, onto, ...(out.prs ? { prs: out.prs } : {}) }
                 : { status: "aborted" as const, reason: out.reason ?? "restack failed" },
+          };
+        }
+        // Restacked by someone else (heph merge status of its parent) after this approval was
+        // recorded: what would merge is not what was approved, so it waits for a fresh one.
+        const staged = ledger.read({ run_id: runId, types: ["merge.staged"] }).at(-1)?.event;
+        if (staged && staged.id > approval.id) {
+          const d = staged.data as { refs: Record<string, string>; prs?: Record<string, string> };
+          return {
+            run_id: runId,
+            result: {
+              status: "restacked" as const,
+              onto: Object.fromEntries(Object.keys(d.refs).map((r) => [r, targets?.[r] ?? "main"])),
+              ...(d.prs ? { prs: d.prs } : {}),
+            },
           };
         }
         const result = await mergeChangeset(landOptions(runId));

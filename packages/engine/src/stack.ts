@@ -205,10 +205,40 @@ export async function restack(opts: LandOptions): Promise<LandOutcome> {
   }
 }
 
+/** When a run first landed (its run.finished; a run never un-finishes), if it did. */
+const landedAt = (ledger: Ledger, runId: string) =>
+  ledger.read({ run_id: runId, types: ["run.finished"] })[0]?.event.id;
+
+/**
+ * Whether a stacked run needs a restack, from the ledger (design 3.3), never from a PR's base
+ * (GitHub retargets a PR by itself when it deletes a merged branch): its direct parent landed
+ * after the run's latest staging, so what it staged, in a repo with a pull request, sits on an
+ * ancestor's branch (one not landed then, whose latest plan touches the repo). Those repos.
+ * Event ids are ULIDs, so their order is the ledger's.
+ */
+export function stagedBeforeParentLanded(
+  ledger: Ledger,
+  runId: string,
+  stackOn?: string,
+): string[] {
+  const ancestors = ancestorsOf(ledger, runId, stackOn);
+  const parent = ancestors[0];
+  if (parent?.status !== "finished") return [];
+  const staged = ledger.read({ run_id: runId, types: ["merge.staged"] }).at(-1)?.event;
+  const parentLanded = landedAt(ledger, parent.runId);
+  if (!staged || !parentLanded || parentLanded < staged.id) return [];
+  const unmerged = ancestors.filter((a) => {
+    const at = landedAt(ledger, a.runId);
+    return !at || at > staged.id;
+  });
+  const prs = Object.keys((staged.data as { prs?: Record<string, string> }).prs ?? {});
+  return prs.filter((r) => unmerged.some((a) => a.repos?.includes(r)));
+}
+
 /**
  * For a staged stacked run whose direct parent landed: the repos (and their targets) whose
  * open pull request is still based on something other than the target, i.e. a restack that
- * never finished. Empty when there is nothing to restack.
+ * never finished its retarget. An additional guard to stagedBeforeParentLanded, not the trigger.
  */
 export async function pendingRetargets(opts: LandOptions): Promise<Record<string, string>> {
   const parent = ancestorsOf(opts.ledger, opts.runId, opts.stackOn)[0];
@@ -227,13 +257,26 @@ export async function pendingRetargets(opts: LandOptions): Promise<Record<string
   return out;
 }
 
+/**
+ * A staged stacked run's restack still owed, per repo to the target it goes onto: staged before
+ * its parent landed (the ledger), or a pull request not yet based on the target. Empty: none.
+ */
+export async function pendingRestack(opts: LandOptions): Promise<Record<string, string>> {
+  if (opts.ledger.run(opts.runId)?.status !== "staged") return {};
+  const out = await pendingRetargets(opts);
+  for (const r of stagedBeforeParentLanded(opts.ledger, opts.runId, opts.stackOn))
+    out[r] = opts.targets?.[r] ?? "main";
+  return out;
+}
+
 export type RestackOutcome = LandOutcome | { status: "skipped"; reason: string };
 
 /**
  * After `parentId` landed: restacks each of its staged children, oldest first. `around` wraps
  * each child's restack (the CLI takes the child's run lock); one that fails before the restack
- * starts, or a child no longer staged once inside it, is skipped untouched. A child that fails
- * is aborted on its own: never thrown.
+ * starts, or a child no longer staged once inside it, is skipped untouched. A child already
+ * restacked since the parent landed is left alone, with no entry. A child that fails is aborted
+ * on its own: never thrown.
  */
 export async function restackChildren(o: {
   ledger: Ledger;
@@ -247,7 +290,7 @@ export async function restackChildren(o: {
     if (o.ledger.run(id)?.status !== "staged") continue;
     let started = false;
     try {
-      out[id] = await around(id, async (): Promise<RestackOutcome> => {
+      const r = await around(id, async (): Promise<RestackOutcome | undefined> => {
         // Looked at again under the lock: it may have changed since the look above.
         const status = o.ledger.run(id)?.status;
         if (status !== "staged")
@@ -255,9 +298,11 @@ export async function restackChildren(o: {
         const parent = ancestorsOf(o.ledger, id)[0];
         if (parent?.status !== "finished")
           return { status: "skipped", reason: `${id}'s parent ${parent?.runId} has not landed` };
+        if (!Object.keys(await pendingRestack(o.options(id))).length) return undefined;
         started = true;
         return restack(o.options(id));
       });
+      if (r) out[id] = r;
     } catch (e) {
       if (e instanceof Stopped) throw e;
       if (!started) {

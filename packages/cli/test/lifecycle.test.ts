@@ -814,6 +814,85 @@ describe("heph lifecycle", () => {
     );
   });
 
+  test("approve merge of a child GitHub retargeted by itself restacks it instead of merging it", async () => {
+    const { calls, pulls, prs, optionsFor } = await stagedPair();
+    const url = "https://github.com/acme/calc/pull/2";
+    const ledger = openLedger(home, { nodeId: "test-node" });
+    // A merged, and the process gone before B's restack; heph/A auto-deleted on GitHub, which
+    // points B's PR at main by itself.
+    expect(await mergeChangeset(optionsFor(ledger, "A"))).toEqual({ status: "merged" });
+    ledger.close();
+    (pulls.get(url) as { base: string }).base = "main";
+
+    const first = await heph(["approve", "merge", "B"], { prs });
+    expect(first.data).toEqual({
+      run_id: "B",
+      result: { status: "restacked", onto: { calc: "main" }, prs: { calc: url } },
+    });
+    expect(calls.filter((c) => c === `merge ${url}`)).toEqual([]);
+    const second = await heph(["approve", "merge", "B"], { prs });
+    expect(second.data).toMatchObject({ run_id: "B", result: { status: "merged" } });
+    expect(calls.filter((c) => c === `merge ${url}`)).toHaveLength(1);
+  });
+
+  test("merge status of a landed parent twice restacks its child once", async () => {
+    const { calls, prs } = await stagedPair();
+    expect((await heph(["approve", "merge", "A"], { prs })).data).toMatchObject({
+      restacked: { B: { status: "staged" } },
+    });
+    const staged = () => {
+      const l = openLedger(home, { nodeId: "test-node" });
+      const n = l.read({ run_id: "B", types: ["merge.staged"] }).length;
+      l.close();
+      return n;
+    };
+    const before = staged();
+    const made = calls.length;
+    for (let i = 0; i < 2; i++)
+      expect((await heph(["merge", "status", "A"], { prs })).data).toEqual({
+        run_id: "A",
+        result: { status: "merged" },
+      });
+    expect(staged()).toBe(before);
+    expect(calls.slice(made)).toEqual([]);
+  });
+
+  test("approve merge does not merge a head restacked after the approval was recorded", async () => {
+    const { calls, prs, optionsFor } = await stagedPair();
+    const url = "https://github.com/acme/calc/pull/2";
+    const ledger = openLedger(home, { nodeId: "test-node" });
+    expect(await mergeChangeset(optionsFor(ledger, "A"))).toEqual({ status: "merged" });
+    expect((await restack(optionsFor(ledger, "B"))).status).toBe("staged");
+    ledger.close();
+
+    // Between the approval being recorded and the merge, B is restacked again elsewhere
+    // (heph merge status A, say): the head that would merge is not the one approved.
+    let armed = true;
+    const racing: PullRequests = {
+      ...prs,
+      async status(o) {
+        if (armed) {
+          armed = false;
+          const l = openLedger(home, { nodeId: "test-node" });
+          try {
+            expect((await restack(optionsFor(l, "B"))).status).toBe("staged");
+          } finally {
+            l.close();
+          }
+        }
+        return prs.status(o);
+      },
+    };
+    const first = await heph(["approve", "merge", "B"], { prs: racing });
+    expect(first.data).toEqual({
+      run_id: "B",
+      result: { status: "restacked", onto: { calc: "main" }, prs: { calc: url } },
+    });
+    expect(calls.filter((c) => c === `merge ${url}`)).toEqual([]);
+    const second = await heph(["approve", "merge", "B"], { prs });
+    expect(second.data).toMatchObject({ result: { status: "merged" } });
+  });
+
   test("errors use the envelope", async () => {
     const r = await heph(["status", "nope"]);
     expect(r).toMatchObject({

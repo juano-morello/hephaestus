@@ -14,7 +14,13 @@ import {
 } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import type { PullRequests } from "./prs.ts";
-import { ancestorBranch, ancestorsOf, ontoFor, unresolvedStack } from "./stack.ts";
+import {
+  ancestorBranch,
+  ancestorsOf,
+  ontoFor,
+  stagedBeforeParentLanded,
+  unresolvedStack,
+} from "./stack.ts";
 
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
 
@@ -525,10 +531,19 @@ export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
   const pending = order.filter((r) => !merged.includes(r));
 
   const reasons: string[] = [];
+  // Staged before the parent landed (the ledger says so, whatever the PR's base says now): what
+  // would merge was never gated on the target, so it is restacked first (design 3.3).
+  const stale = parent ? stagedBeforeParentLanded(opts.ledger, opts.runId, opts.stackOn) : [];
   for (const r of pending) {
     const url = staged.prs?.[r] as string;
-    // A stacked PR still based on its landed parent's branch would merge into that branch, not
-    // the target: it is retargeted by a restack first (heph approve merge does that).
+    if (parent && stale.includes(r)) {
+      reasons.push(
+        `${r}: staged before ${parent.runId} landed; heph approve merge ${opts.runId} restacks it onto ${target(r)} first (${url})`,
+      );
+      continue;
+    }
+    // An additional guard: a stacked PR still based on its landed parent's branch would merge
+    // into that branch, not the target: it is retargeted by a restack first.
     const prBase = baseOf.get(r);
     if (parent && prBase !== target(r)) {
       reasons.push(
@@ -595,6 +610,8 @@ export type CheckOutcome =
 
 /** For a changeset staged as pull requests: finish the run once all are merged, abort if one closed. */
 export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
+  // Landed already: nothing to finish again (a second run.finished would read as a new landing).
+  if (opts.ledger.run(opts.runId)?.status === "finished") return { status: "merged" };
   const c = context(opts);
   const { base, dirOf } = c;
   const staged = lastStaged(opts, true);
