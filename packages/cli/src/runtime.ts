@@ -53,7 +53,8 @@ export type Deps = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-const PLANNER_ATTEMPTS = 3;
+/** The first answer plus one correction with the gate evidence (SPEC section 2). */
+const PLANNER_ATTEMPTS = 2;
 /** How long a rate-limited run waits when the provider gave no retry_after. */
 const DEFAULT_RETRY_MS = 60_000;
 const BUILTIN_GATES = builtinGates().map((g) => g.name);
@@ -301,6 +302,7 @@ export function openRuntime(opts: {
     const base = { run_id: runId, changeset_id: changesetId, config_hash: hash };
     ledger.append({ ...base, actor: "engine", type: "node.started", graph_node: "plan", data: {} });
     let feedback: GateResult[] | undefined;
+    let previousOutput: string | undefined;
     for (let attempt = 1; attempt <= PLANNER_ATTEMPTS; attempt++) {
       const r = await planner({
         brief,
@@ -310,9 +312,17 @@ export function openRuntime(opts: {
         repoMap: (await workers()).repoMapFromFiles(files),
         route,
         ...extra,
-        ...(feedback ? { feedback } : {}),
+        ...(feedback ? { feedback, ...(previousOutput ? { previousOutput } : {}) } : {}),
       });
       const ev = r.evaluation;
+      const answer = (outcome: "valid" | "invalid" | "escalated", failures: string[]) =>
+        ledger.append({
+          ...base,
+          actor: "engine",
+          type: "plan.answer",
+          graph_node: "plan",
+          data: { attempt, outcome, failures },
+        });
       const done = (outcome: string) =>
         ledger.append({
           ...base,
@@ -322,6 +332,7 @@ export function openRuntime(opts: {
           data: { outcome },
         });
       if (ev.escalate) {
+        answer("escalated", []);
         recordEscalation(m, ev.escalate);
         done("escalated");
         return {
@@ -332,6 +343,7 @@ export function openRuntime(opts: {
         };
       }
       if (ev.plan && ev.valid) {
+        answer("valid", []);
         const planId = recordPlan(m, ev.plan);
         done("planned");
         return {
@@ -351,6 +363,7 @@ export function openRuntime(opts: {
           reason: "the answer is not a valid Plan",
           evidence: [ev.error],
         });
+      answer("invalid", ev.failures);
       ledger.appendMany(
         failed.map(
           (g) =>
@@ -364,6 +377,7 @@ export function openRuntime(opts: {
         ),
       );
       feedback = failed;
+      previousOutput = r.output;
     }
     const reason = `the planner produced no valid plan in ${PLANNER_ATTEMPTS} attempts`;
     ledger.appendMany([

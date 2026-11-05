@@ -52,6 +52,12 @@ export const samples: { [K in EventType]: EventDraft<K> } = {
     data: { owner_node: "devserver", brief_hash: "b".repeat(64), eval: false },
   },
   "run.plan_ready": { ...base, type: "run.plan_ready", data: { plan } },
+  "plan.answer": {
+    ...base,
+    type: "plan.answer",
+    graph_node: "plan",
+    data: { attempt: 1, outcome: "invalid", failures: ["criteria_covered"] },
+  },
   "run.plan_escalated": {
     ...base,
     type: "run.plan_escalated",

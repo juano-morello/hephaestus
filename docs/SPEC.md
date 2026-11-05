@@ -54,6 +54,7 @@ Rule: if a transformation can be described without "judge, decide, assess, summa
 ### Return paths
 
 - **Correction edge (short):** a gate returns one unit to its producer with reason, evidence and scope. Never the batch.
+  - **Plan gates:** a failed plan goes back to the planner once, with its own output and the gate evidence. Two invalid answers fail the run. Measured as first-try vs second-try validity (`plan.answer`, `plan-proto --correct`).
 - **Learning edge (long):** accepted results produce constraints that land in the splitter's brief for future runs. Gated by eval and human review.
 
 ### Lanes (blast radius)
@@ -249,6 +250,7 @@ Event = {
 ```
 run.created            (owner_node)
 run.plan_ready
+plan.answer            (attempt, outcome: valid | invalid | escalated, failures; one per planner answer)
 run.plan_escalated     (reasons; the run waits for a revised Brief)
 run.paused             (reason: rate_limit | handoff | user; retry_after?)
 run.resumed            (reason: rate_limit | handoff | user | crash)

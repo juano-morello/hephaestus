@@ -228,7 +228,7 @@ How it works and what I interpreted:
 
 1. **The node's home** (`$HEPH_HOME`, default `~/.heph`) holds `ledger.db`, `blobs/`, `worktrees/` and the node-level `config.yaml`. Run ids are `r-<yyyymmdd>-<6 hex>` unless `--run-id`.
 2. **`run.created` carries the Brief and the workspace root**, so `plan revise`, `run` and the merge commands rebuild everything from the ledger.
-3. **Planner loop:** up to 3 answers per `new` or `revise`; failed plan gates (and schema errors as a `plan_schema` result) are recorded as `gate.result` with `graph_node: plan` and fed back into the next prompt. After 3 invalid plans the run fails. An Escalation stops the loop at once. Plan gates run against the workspace's real file list.
+3. **Planner loop:** (changed 2026-11-05: now the first answer plus one correction, see "Planner correction edge" below) up to 3 answers per `new` or `revise`; failed plan gates (and schema errors as a `plan_schema` result) are recorded as `gate.result` with `graph_node: plan` and fed back into the next prompt. After 3 invalid plans the run fails. An Escalation stops the loop at once. Plan gates run against the workspace's real file list.
 4. **Approval is tied to a plan version:** `approve plan` names the `run.plan_ready` event id; a revision makes a new one, so `run` refuses until it is approved again.
 5. **Landing is two steps:** `landChangeset` stages (rebase and re-gate if a target moved, push and open PRs where there is a remote, staging refs otherwise); `mergeChangeset` merges PRs and fast-forwards local repos. `heph run` stages right after a clean build; `heph approve merge` merges. `autoMerge` (library option) does both.
 6. **Hints and budgets:** `heph hint <run> <unit> "<text>" [--budget N]` writes `human.input`; the engine adds every hint for that unit or for the whole run to the next attempt's constraints, and the latest budget override for the unit to its context pack.
@@ -417,9 +417,19 @@ Feedback from using heph inside Claude Code: nothing told the agent what a backg
 
 ## Deferred (urges noted, not built)
 
-- **Planner correction edge.** The obvious next experiment: when a plan fails, send the gate evidence back once and measure second-try validity. That is engine behaviour (section 2 return paths), so it was not built here.
 - JSON Schema generation from the zod schemas for editor autocomplete (section 3).
 - Reading the real repos to build repo maps instead of hand-written ones (section 9 per-stack adapters). The real-repo maps are still hand-trimmed; a generated full file list would remove the guessed-path problem (stress test finding 6).
 - A plan gate that matches scope globs against the worktree file list (no guessed existing files, no test globs that lock unrelated existing tests). Needs worktree access, so it is engine work.
 - An execution gate that runs locked tests before the implement task and requires them to be red.
 - A `heph plan` CLI surface around the same evaluation.
+
+## Planner correction edge (2026-11-05)
+
+The loop already fed failed gates back (up to 3 answers), but the planner never saw the answer it was correcting, and nothing recorded which attempt produced what. Built:
+
+1. **One correction.** The planner loop (in `packages/cli/src/runtime.ts`, not `engine.ts`) is the first answer plus one correction; two invalid answers fail the run. An Escalation on either answer is honored.
+2. **The correction prompt** shows the previous raw output (cut at 40k characters) above the failed gates and evidence, and asks for the whole corrected Plan or an Escalation.
+3. **`plan.answer` events** (attempt, outcome, failed gate names) make first-try vs second-try validity readable from the ledger.
+4. **`plan-proto --correct`** corrects each invalid first answer once and reports first-try, second-try and overall validity (`correctionStats` in core). **`--seed-faults`** breaks each valid first answer with one known fault and runs only the correction: a mechanism test, reported apart from the model's natural rate.
+5. **Success:** second-try validity on first-try failures >= 60% (report n; first-try validity is ~97%, so few natural failures); seeded faults fixed without introducing other failures; first-try validity unchanged (the first prompt is untouched).
+6. **Cost of the cap:** a run that used to pass on the third try now fails. **Not measured yet:** no live model runs were made for this change, only unit tests with scripted planners.

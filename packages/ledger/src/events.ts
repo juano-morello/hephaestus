@@ -98,6 +98,16 @@ export const EVENT_TYPES = {
       .strict(),
   ),
   "run.plan_ready": def(z.object({ plan: Plan }).strict()),
+  /** One planner answer: the plan loop's first try and its one correction (SPEC section 2). */
+  "plan.answer": def(
+    z
+      .object({
+        attempt: z.number().int().positive(),
+        outcome: z.enum(["valid", "invalid", "escalated"]),
+        failures: z.array(z.string().min(1)),
+      })
+      .strict(),
+  ),
   "run.plan_escalated": def(z.object({ reasons: z.array(z.string().min(1)).min(1) }).strict()),
   "run.paused": def(
     z.object({ reason: PauseReason, retry_after: z.iso.datetime().optional() }).strict(),
