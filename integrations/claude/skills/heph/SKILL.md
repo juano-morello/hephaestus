@@ -117,8 +117,10 @@ its own approval; the waiting `heph run` builds whichever plan is approved. It e
 `heph watch <run>` with the Monitor tool (or as a second background command) right after
 `heph run`: it prints one line per milestone (attempt started or finished, a unit accepted or
 returned, escalations, pauses, staging) and exits when the run is staged, failed, or needs the
-user. Tell the user each time a unit is accepted or goes red, in one short line, not every
-line. In Codex there is no streaming: look at `heph watch <run>` or `heph status <run>` whenever
+user. Every line it prints is news for the user: answer each one with one short sentence
+(`T2 attempt 2 started`, `T2 accepted`, `T2 returned: tests fail`), and a `still working` line
+means the build is alive, so say that too. Never let a watch line go by without telling the user.
+Don't wait for the user to ask how it's going. In Codex there is no streaming: look at `heph watch <run>` or `heph status <run>` whenever
 you come back to the conversation.
 
 When `heph watch` ends with `waiting for you` or `the planner escalated`, don't retry and don't

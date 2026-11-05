@@ -57,6 +57,7 @@ describe("heph watch", () => {
     ]);
     expect(lines).toEqual([
       "r1: running",
+      "run resumed",
       "T1/a1 attempt 1 started",
       "T1 unit accepted",
       expect.stringContaining("r1: staged; review, then heph approve merge r1"),
@@ -110,5 +111,37 @@ describe("heph watch", () => {
     await expect(
       watchRun("r1", dead, () => {}, { sleep: async () => {}, retries: 2 }),
     ).rejects.toThrow("gone");
+  });
+
+  test("catches up on the last milestones when started mid-run", async () => {
+    const evs = ["1", "2", "3", "4", "5"].map((n) => ev(n, "unit.accepted", `done ${n}`, `T${n}`));
+    const { lines } = await run([{ status: "finished", events: evs }]);
+    expect(lines.slice(0, 4)).toEqual(["r1: finished", "T3 done 3", "T4 done 4", "T5 done 5"]);
+  });
+
+  test("says it is still working while an attempt runs silently", async () => {
+    let t = Date.parse("2026-11-05T00:00:00Z");
+    const started = {
+      ...ev("1", "unit.attempt.started", "attempt 1 started", "T2", 1),
+      ts: new Date(t).toISOString(),
+    };
+    const steps = [
+      { status: "running", events: [started] },
+      { status: "running", events: [started] },
+      { status: "running", events: [started] },
+      { status: "finished", events: [started] },
+    ];
+    const s = script(steps);
+    const lines: string[] = [];
+    await watchRun("r1", s.view, (l) => lines.push(l), {
+      sleep: async () => {
+        t += 90_000;
+      },
+      now: () => t,
+      heartbeatMs: 60_000,
+    });
+    expect(lines.some((l) => /^T2\/a1 still working, \d+ min into this attempt$/.test(l))).toBe(
+      true,
+    );
   });
 });
