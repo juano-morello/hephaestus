@@ -5,8 +5,9 @@
 //
 //   bun packages/engine/scripts/chaos-smoke.ts [--runs 10] [--seed 1] [--parallel 2]
 //
-// S2 and S3 are independent units in one repo: at --parallel 2 they run together from the same
-// tip and the second to finish is replayed onto the first and re-gated (design 4.3).
+// S2 and S3 are independent units in one repo: at --parallel 2 they usually run together from
+// the same tip, so the second to finish is usually replayed onto the first and re-gated (design
+// 4.3). That depends on timing here; the in-process chaos test forces it with a barrier.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { briefHash, type Plan, type Task } from "@hephaestus/core";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
@@ -8,6 +8,7 @@ import { pendingEffects, Stopped } from "../src/effects.ts";
 import { buildRun, createRun, type RunPlanOptions, recordPlan } from "../src/engine.ts";
 import type { UnitGate } from "../src/gates.ts";
 import { landChangeset, mergeChangeset } from "../src/land.ts";
+import { localRunner, type Runner } from "../src/runner.ts";
 import type { Worker } from "../src/worker.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
 import { brief, config, crossRepoPlan, threeRepos, writer } from "./workspace.ts";
@@ -80,6 +81,15 @@ async function scenario(shape: Shape = serial) {
 }
 
 type Scenario = Awaited<ReturnType<typeof scenario>>;
+
+/**
+ * Removes a checked scenario's repos, node and worktrees now, rather than leaving ~100 of them
+ * for tempDir's afterEach, which can then overrun its hook timeout on a loaded machine.
+ */
+const dispose = (s: Scenario) => {
+  for (const d of [s.root, s.node, s.rest.worktreesDir])
+    rmSync(d, { recursive: true, force: true });
+};
 
 /** S2 is red on its first finished attempt, so the Return path is in every run. */
 const redOnce = (ledger: () => Ledger): UnitGate => ({
@@ -198,17 +208,51 @@ const t4RedOnce = (ledger: () => Ledger): UnitGate => ({
       : { gate: "red_once", verdict: "pass", reason: "ok", evidence: [] },
 });
 
+/** More attempts than any unit needs in one run (3 at most here): a restart loop. */
+const MAX_ATTEMPTS_PER_RUN = 8;
+
+/**
+ * One process's build, stage and merge of the diamond. Attempts are counted per unit at the
+ * runner (after a kill, attempts stop before the worker spawns): a unit started more than
+ * MAX_ATTEMPTS_PER_RUN times fails the run at once, and its later attempts never settle, so a
+ * scheduler that keeps restarting units fails the test in seconds instead of spinning.
+ */
 function diamondRun(s: Scenario, ledger: Ledger, kill?: ReturnType<typeof killer>) {
   const wrapped = kill ? kill.wrap(ledger) : ledger;
-  return pipeline(
+  const worker = diamondWorker(ledger, kill ? kill.dead : () => false);
+  const gates = [combinedTests, t4RedOnce(() => ledger)];
+  const local = localRunner({
+    worker,
+    gates,
+    gateSandbox: s.rest.gateSandbox,
+    worktreesDir: s.rest.worktreesDir,
+    tools: s.rest.config.tools,
+    gateTimeoutMs: s.rest.config.gateTimeoutMs,
+  });
+  const attempts = new Map<string, number>();
+  let runaway: (e: Error) => void = () => {};
+  const failed = new Promise<never>((_, reject) => {
+    runaway = reject;
+  });
+  const runner: Runner = {
+    runAttempt(req, hooks) {
+      const n = (attempts.get(req.task.id) ?? 0) + 1;
+      attempts.set(req.task.id, n);
+      if (n > MAX_ATTEMPTS_PER_RUN) {
+        runaway(new Error(`${req.task.id} was started ${n} times in one run: a restart loop`));
+        return new Promise(() => {});
+      }
+      return local.runAttempt(req, hooks);
+    },
+    rejoin: (req) => local.rejoin(req),
+  };
+  const run = pipeline(
     s,
     wrapped,
-    {
-      worker: diamondWorker(ledger, kill ? kill.dead : () => false),
-      ...(kill ? { chaos: kill.chaos } : {}),
-    },
-    [combinedTests, t4RedOnce(() => ledger)],
+    { worker, runner, ...(kill ? { chaos: kill.chaos } : {}) },
+    gates,
   );
+  return Promise.race([run, failed]);
 }
 
 /** Joins that replayed a unit onto a moved tip and re-gated it green on the combined tree. */
@@ -312,6 +356,7 @@ describe("chaos", () => {
       second.close();
       const got = await outcome(s);
       expect({ k, ...got }).toEqual({ k, ...expected });
+      dispose(s);
     }
   }, 600_000);
   test("a fan-out run at parallel 2 killed at any point and resumed ends like one never killed", async () => {
@@ -356,6 +401,7 @@ describe("chaos", () => {
       second.close();
       const got = await outcome(s);
       expect({ k, ...got }).toEqual({ k, ...expected });
+      dispose(s);
     }
-  }, 600_000);
+  }, 240_000);
 });
