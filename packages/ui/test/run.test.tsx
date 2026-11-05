@@ -331,7 +331,7 @@ describe("Run routing", () => {
     seen.push(args[0] ?? "");
     const d = byId[args[0] ?? ""];
     return new Response(
-      JSON.stringify(d ? { ok: true, result: d } : { ok: false, error: "no such run" }),
+      JSON.stringify(d ? { ok: true, data: d } : { ok: false, error: { message: "no such run" } }),
       { status: 200 },
     );
   }) as unknown as typeof fetch;

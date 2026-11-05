@@ -18,7 +18,7 @@ describe("api client", () => {
       token: () => "tok",
       fetch: (async (url: string, init: RequestInit) => {
         seen = { url, init };
-        return reply({ ok: true, result: { n: 1 } });
+        return reply({ ok: true, data: { n: 1 } });
       }) as unknown as typeof fetch,
     });
     const out = await api.call<{ n: number }>("dashboard", "r-1");
@@ -51,7 +51,7 @@ describe("api client", () => {
   test("maps ok:false to a daemon error with its message", async () => {
     const api = createApi({
       token: () => "x",
-      fetch: (async () => reply({ ok: false, error: "no such run" })) as never,
+      fetch: (async () => reply({ ok: false, error: { message: "no such run" } })) as never,
     });
     const e = await fail(api.call("explain", "r-9"));
     expect(e.kind).toBe("daemon");

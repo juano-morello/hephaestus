@@ -36,16 +36,19 @@ export function createApi(o: {
         throw new ApiError("unreachable", e instanceof Error ? e.message : String(e));
       }
       if (res.status === 401) throw new ApiError("unauthorized", "missing or wrong token");
-      let body: { ok?: boolean; result?: unknown; error?: string };
+      // the daemon wraps replies as { ok: true, data } or { ok: false, error: { message } }
+      let body: { ok?: boolean; data?: unknown; error?: { message?: string } | string };
       try {
         body = await res.json();
       } catch {
         throw new ApiError("daemon", `unexpected response (${res.status})`);
       }
       if (!res.ok || body.ok === false) {
-        throw new ApiError("daemon", body.error ?? `request failed (${res.status})`);
+        const e = body.error;
+        const msg = typeof e === "string" ? e : e?.message;
+        throw new ApiError("daemon", msg ?? `request failed (${res.status})`);
       }
-      return body.result as T;
+      return body.data as T;
     },
   };
 }
