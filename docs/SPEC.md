@@ -262,6 +262,7 @@ unit.attempt.interrupted   (reason: rate_limit | crash | handoff | user)
 gate.result            (gate, verdict, reason, evidence)
 unit.returned          (Return payload)
 unit.accepted / unit.escalated / unit.needs_input
+unit.stalled           (signature, attempts, failing; two red attempts in a row failed the same way)
 merge.staged / merge.committed / merge.aborted
 human.input            (hints, plan edits, budget overrides, approvals of a plan or a merge)
 context.pack_built     (size, truncated items, expansions)
@@ -527,6 +528,7 @@ As built, the defaults name exact model ids (`claude/claude-opus-5-5`, `claude/c
 - Attempt 1 at assigned tier.
 - Red with substantive failures: next attempt one tier up (haiku -> sonnet -> sonnet high -> opus).
 - `blocked: spec unclear`: no model bump, goes to replan.
+- Stall: when a unit's last two red attempts have the same failure signature (its failing gates, reasons and evidence, as a hash), the engine writes `unit.stalled` and pauses the run for the user at once, without spending the remaining attempts or bumping the tier. The check spans escalations and restarts after a `human.input` for the unit or the run, so a hint buys fresh comparison. More attempts cannot fix a structural failure (a criterion outside the unit's scope, a wrong decision in the Brief); the user can.
 - Interrupted or rate-limited attempts never escalate.
 - Fallback providers used only on rate limit or provider failure, logged as such.
 
@@ -737,7 +739,7 @@ Every command supports `--json` with stable, versioned output schemas: `{ schema
 
 `heph run` on a run whose latest plan isn't approved yet waits for the approval, then builds; it prints the build's events from when it starts.
 
-`heph watch <run>` prints one line per milestone of a run (attempts, units accepted or returned, escalations, pauses, staging, the pull request) on stdout, and ends when the run is staged, finished, failed, escalated by the planner, or paused waiting for the user; a rate-limit pause is waited out. It works on any run on any node by polling status and events, so it needs no daemon (decided 2026-11-04, after the LegendsAO runs showed an agent in Claude Code seeing nothing of a background build). The skill starts it next to `heph run` through the host's background-command stream (Claude Code's Monitor).
+`heph watch <run>` prints one line per milestone of a run (attempts, units accepted or returned, escalations, stalls, pauses, staging, the pull request) on stdout, and ends when the run is staged, finished, failed, escalated by the planner, or paused waiting for the user; a rate-limit pause is waited out. It works on any run on any node by polling status and events, so it needs no daemon (decided 2026-11-04, after the LegendsAO runs showed an agent in Claude Code seeing nothing of a background build). The skill starts it next to `heph run` through the host's background-command stream (Claude Code's Monitor).
 
 `heph hint --scope` widens one unit's scope by the paths or globs given, relative to its project (decided 2026-11-04): the owner's direction can need a file the plan gave another task, and replanning for one file throws away accepted work. It is recorded as a `human.input` of kind `scope` and holds for that unit's later attempts; locked paths stay locked.
 
