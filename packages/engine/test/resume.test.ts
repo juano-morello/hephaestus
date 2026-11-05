@@ -240,11 +240,12 @@ describe("resuming a build", () => {
 
   test("a crash after an escalation but before run.paused pauses again, without fresh attempts", async () => {
     let fail = true;
+    let calls = 0;
     const gate: UnitGate = {
       name: "red",
       run: ({ task }) =>
         fail && task.id === "S2"
-          ? { gate: "red", verdict: "fail", reason: "red", evidence: [] }
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: [`call ${++calls}`] }
           : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
     };
     const { ledger, rest, node } = await setup([gate]);
@@ -273,6 +274,33 @@ describe("resuming a build", () => {
     );
     expect(after.ids()).toEqual(["S2"]);
     expect(of(reopened, "unit.accepted").find((e) => e.unit_id === "S2")?.attempt).toBe(4);
+    reopened.close();
+  });
+
+  test("a crash after a stall but before run.paused pauses again, without fresh attempts", async () => {
+    const gate: UnitGate = {
+      name: "red",
+      run: ({ task }) =>
+        task.id === "S2"
+          ? { gate: "red", verdict: "fail", reason: "red", evidence: ["same"] }
+          : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
+    };
+    const { ledger, rest, node } = await setup([gate]);
+    const killed = crashing(ledger, (ds) => ds.some((d) => d.type === "run.paused"));
+    await expect(buildRun({ ...rest, ledger: killed })).rejects.toBeInstanceOf(Crash);
+    ledger.close();
+
+    const reopened = openLedger(node, { nodeId: "devserver" });
+    expect(reopened.run("R1")?.status).toBe("running");
+    const next = scripted();
+    const out = await buildRun({ ...rest, ledger: reopened, worker: next.worker });
+    expect(out).toMatchObject({
+      status: "paused",
+      reason: "S2: stalled: red failed the same way on a1 and a2",
+    });
+    expect(next.ids()).toEqual([]);
+    expect(of(reopened, "run.paused").map((e) => e.data)).toEqual([{ reason: "user" }]);
+    expect(of(reopened, "unit.stalled").map((e) => e.unit_id)).toEqual(["S2"]);
     reopened.close();
   });
 
