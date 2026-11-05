@@ -78,6 +78,7 @@ describe("loadConfig", () => {
       attempts_per_unit: 5,
       budget_tokens: 20000,
       gate_timeout_ms: 600000,
+      parallel: 1,
     });
     expect(config.sandbox.runtime).toBe("podman");
     expect(sources["limits.attempts_per_unit"]).toBe(file);

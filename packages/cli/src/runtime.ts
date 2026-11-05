@@ -647,6 +647,7 @@ function toEngineConfig(config: ResolvedConfig): EngineConfig {
     maxAttempts: config.limits.attempts_per_unit,
     budgetTokens: config.limits.budget_tokens,
     gateTimeoutMs: config.limits.gate_timeout_ms,
+    parallel: config.limits.parallel,
     tools: [],
     commands: Object.fromEntries(Object.entries(config.projects).map(([p, s]) => [p, s.commands])),
   };

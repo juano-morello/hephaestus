@@ -37,6 +37,7 @@ describe("defaultConfig", () => {
       attempts_per_unit: 3,
       budget_tokens: 20000,
       gate_timeout_ms: 600000,
+      parallel: 1,
     });
     expect(d.sandbox).toEqual({ mode: "native", runtime: "docker", image: "alpine:3.20" });
   });
@@ -121,5 +122,14 @@ describe("layers", () => {
     expect(RepoConfigLayer.safeParse({ project: { commands: { build: "make" } } }).success).toBe(
       false,
     );
+  });
+});
+
+describe("limits.parallel", () => {
+  test("defaults to 1 and rejects 0", () => {
+    expect(defaultConfig({ nodeId: "mbp" }).limits.parallel).toBe(1);
+    const bad = { ...resolved(), limits: { ...resolved().limits, parallel: 0 } };
+    expect(ResolvedConfig.safeParse(bad).success).toBe(false);
+    expect(ResolvedConfig.safeParse(resolved()).success).toBe(true);
   });
 });

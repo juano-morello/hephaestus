@@ -119,6 +119,7 @@ function options(dir: string): RunPlanOptions & { node: string } {
         implementer: { default: { model: "claude/sonnet" } },
       },
       maxAttempts: 3,
+      parallel: 1,
       budgetTokens: 20_000,
       tools: [],
       commands: { server: { test: "sh check.sh" } },

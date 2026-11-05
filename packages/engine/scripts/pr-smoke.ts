@@ -118,6 +118,7 @@ const worker: Worker = {
 const config: EngineConfig = {
   routing: { implementer: { default: { model: "none/scripted" } } },
   maxAttempts: 1,
+  parallel: 1,
   budgetTokens: 1000,
   tools: [],
   commands: {},

@@ -89,6 +89,7 @@ export const config: EngineConfig = {
     implementer: { default: { model: "claude/sonnet" } },
   },
   maxAttempts: 3,
+  parallel: 1,
   budgetTokens: 20_000,
   tools: [],
   commands: {},

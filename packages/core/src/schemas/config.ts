@@ -27,6 +27,7 @@ export const Limits = z
     attempts_per_unit: z.int().positive(),
     budget_tokens: z.int().positive(),
     gate_timeout_ms: z.int().positive(),
+    parallel: z.int().positive(),
   })
   .strict();
 export type Limits = z.infer<typeof Limits>;
@@ -181,7 +182,7 @@ export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
       implementer: tiered(),
       documenter: { default: { model: "claude/claude-haiku-5-5" } },
     },
-    limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000 },
+    limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000, parallel: 1 },
     // Native by default (decided 2026-11-04): container mode has no per-project images, network
     // allowlist or dependency caches yet. runtime and image apply when mode is container.
     sandbox: { mode: "native", runtime: "docker", image: "alpine:3.20" },

@@ -101,6 +101,7 @@ const config: EngineConfig = {
     implementer: { default: { model: values.model, effort: "medium" } },
   },
   maxAttempts: 3,
+  parallel: 1,
   budgetTokens: 20_000,
   tools: [],
   commands: { calc: { test: "sh test_add.sh" } },

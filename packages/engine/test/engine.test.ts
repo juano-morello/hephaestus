@@ -66,6 +66,7 @@ const config: EngineConfig = {
     implementer: { standard: { model: "claude/sonnet" }, default: { model: "claude/haiku" } },
   },
   maxAttempts: 3,
+  parallel: 1,
   budgetTokens: 20_000,
   tools: ["read", "edit", "bash"],
   commands: { server: { test: "go test ./..." } },
