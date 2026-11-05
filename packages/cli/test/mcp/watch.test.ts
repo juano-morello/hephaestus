@@ -121,9 +121,27 @@ describe("watchStep", () => {
     expect(r.lines).toEqual(["r1: still running"]);
   });
 
-  test("no heartbeat while silence is shorter than heartbeatMs", async () => {
+  test("default options: a quiet 20 s long-poll ends with a heartbeat", async () => {
     const s = script([{ status: "running", events: [A] }]);
-    const r = await watchStep("r1", s.view, { since: "01", waitMs: 5000, ...clock() });
+    const r = await watchStep("r1", s.view, { since: "01", waitMs: 20_000, ...clock() });
+    expect(r.outcome).toBe("running");
+    expect(r.lines).toEqual(["r1: still running"]);
+  });
+
+  test("waitMs 0 with no news still returns a heartbeat", async () => {
+    const s = script([{ status: "running", events: [A] }]);
+    const r = await watchStep("r1", s.view, { since: "01", waitMs: 0, ...clock() });
+    expect(r.lines).toEqual(["r1: still running"]);
+  });
+
+  test("heartbeatMs, when set, suppresses a shorter quiet poll", async () => {
+    const s = script([{ status: "running", events: [A] }]);
+    const r = await watchStep("r1", s.view, {
+      since: "01",
+      waitMs: 5000,
+      heartbeatMs: 60_000,
+      ...clock(),
+    });
     expect(r.lines).toEqual([]);
   });
 

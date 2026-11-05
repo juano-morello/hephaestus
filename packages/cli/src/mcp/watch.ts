@@ -36,7 +36,7 @@ export async function watchStep(
   const now = o.now ?? Date.now;
   const sleep = o.sleep ?? ((ms: number) => Bun.sleep(ms));
   const interval = o.intervalMs ?? 2000;
-  const beat = o.heartbeatMs ?? 60_000;
+  const beat = o.heartbeatMs ?? 0;
   const retries = o.retries ?? 30;
   const start = now();
   const deadline = start + o.waitMs;
