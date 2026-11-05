@@ -1,5 +1,5 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { type Api, ApiError } from "../api.ts";
 import { ErrorBanner, runHref } from "../app.tsx";
 import { StatusBadge } from "../components/status-badge.tsx";
@@ -78,6 +78,14 @@ export function Run({ id, api }: { id: string; api: Api }) {
     fast: (d) => d?.run.status === "running",
   });
   const [selected, setSelected] = useState<string | undefined>();
+  // A selection whose unit left both the plan and the unit list (a newer poll) is dropped.
+  useEffect(() => {
+    if (!data || selected === undefined) return;
+    const known =
+      data.plan.units.some((u) => u.id === selected) ||
+      data.units.some((u) => u.unit_id === selected && !u.in_plan);
+    if (!known) setSelected(undefined);
+  }, [data, selected]);
   const layout = useMemo(() => layoutGraph(data?.plan.units ?? []), [data]);
 
   const failure =

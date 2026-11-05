@@ -14,6 +14,7 @@
   --surface: #f3ebd9;
   --surface-2: #dccfb2;
   --border: #b9a982;
+  --border-strong: #7a6a45;
   --text: #17301f;
   --muted: #4a4636;
   --primary: #1f5f3b;
@@ -29,6 +30,7 @@
     --surface: #17382a;
     --surface-2: #1f4535;
     --border: #35634d;
+    --border-strong: #58957a;
     --text: #e8dcc4;
     --muted: #bdb39b;
     --primary: #4fb37a;
@@ -44,6 +46,7 @@
   --surface: #17382a;
   --surface-2: #1f4535;
   --border: #35634d;
+  --border-strong: #58957a;
   --text: #e8dcc4;
   --muted: #bdb39b;
   --primary: #4fb37a;
@@ -61,6 +64,7 @@
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
   --color-fg: var(--text);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
@@ -105,4 +109,9 @@ body {
 
 .heph-pulse {
   animation: heph-pulse 1.6s ease-in-out infinite;
+}
+
+/* Keyboard focus on a graph node shows its dashed ring (the selection ring is solid). */
+g[data-node]:focus-visible > rect[data-ring="focus"] {
+  opacity: 1;
 }

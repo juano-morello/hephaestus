@@ -15,16 +15,20 @@ export type PanelUnit = {
 
 function Gate({ gate }: { gate: DashboardGate }) {
   const [open, setOpen] = useState(false);
-  const pass = gate.verdict === "pass";
+  const verdict = gate.verdict;
+  const tone =
+    verdict === "pass"
+      ? { cls: "text-primary", glyph: "✓" }
+      : verdict === "fail"
+        ? { cls: "text-danger", glyph: "✕" }
+        : { cls: "text-muted", glyph: "–" };
   return (
     <li className="rounded border border-line bg-surface p-2" data-gate={gate.gate}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{gate.gate}</span>
-        <span
-          className={`inline-flex items-center gap-1 text-sm font-medium ${pass ? "text-primary" : "text-danger"}`}
-        >
-          <span aria-hidden="true">{pass ? "✓" : "✕"}</span>
-          {pass ? "pass" : gate.verdict === "fail" ? "fail" : gate.verdict}
+        <span className={`inline-flex items-center gap-1 text-sm font-medium ${tone.cls}`}>
+          <span aria-hidden="true">{tone.glyph}</span>
+          {verdict}
         </span>
       </div>
       {gate.reason && <p className="mt-1 text-sm text-muted">{gate.reason}</p>}
@@ -54,6 +58,12 @@ const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 export function UnitPanel({ unit, attempts }: { unit: PanelUnit; attempts: DashboardAttempt[] }) {
   const sorted = [...attempts].sort((a, b) => a.attempt - b.attempt);
   const latest = sorted[sorted.length - 1];
+  // null until the user picks a tab; until then the panel follows the newest attempt
+  const [chosen, setChosen] = useState<string | null>(null);
+  const shown =
+    chosen !== null && sorted.some((a) => String(a.attempt) === chosen)
+      ? chosen
+      : latest && String(latest.attempt);
   return (
     <section aria-label={`Unit ${unit.id}`} className="rounded border border-line bg-surface p-3">
       <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
@@ -69,7 +79,7 @@ export function UnitPanel({ unit, attempts }: { unit: PanelUnit; attempts: Dashb
       {sorted.length === 0 || !latest ? (
         <p className="mt-2 text-sm text-muted">No attempts yet.</p>
       ) : (
-        <Tabs.Root defaultValue={String(latest.attempt)} className="mt-3">
+        <Tabs.Root value={shown} onValueChange={setChosen} className="mt-3">
           <Tabs.List aria-label="Attempts" className="flex flex-wrap gap-1 border-b border-line">
             {sorted.map((a) => (
               <Tabs.Trigger

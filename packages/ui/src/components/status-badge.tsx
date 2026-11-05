@@ -48,7 +48,7 @@ const TONES: Record<string, Tone> = {
 const NEUTRAL: Tone = { cls: "text-muted border-line", icon: dot };
 
 export function StatusBadge({ status }: { status: string }) {
-  const tone = TONES[status] ?? NEUTRAL;
+  const tone = Object.hasOwn(TONES, status) ? (TONES[status] as Tone) : NEUTRAL;
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${tone.cls}`}

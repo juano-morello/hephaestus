@@ -36,10 +36,14 @@ const PAIRS: [string, string][] = [
   ["--accent", "--surface"],
   ["--danger", "--bg"],
   ["--danger", "--surface"],
+  ["--accent", "--surface-2"],
   ["--on-primary", "--primary"],
 ];
 
-export function checkContrast(css: string, min = 4.5): string[] {
+/** Pairs that carry meaning without text (WCAG 1.4.11, 3:1): [foreground, background]. */
+const NON_TEXT_PAIRS: [string, string][] = [["--border-strong", "--bg"]];
+
+export function checkContrast(css: string, textMin = 4.5): string[] {
   const themes: [string, Vars][] = [
     ["light", block(css, ":root")],
     ["dark (media)", block(css, '  :root:not([data-theme="light"])')],
@@ -47,7 +51,10 @@ export function checkContrast(css: string, min = 4.5): string[] {
   ];
   const problems: string[] = [];
   for (const [name, vars] of themes) {
-    for (const [fg, bg] of PAIRS) {
+    for (const [fg, bg, min] of [
+      ...PAIRS.map(([f, b]) => [f, b, textMin] as const),
+      ...NON_TEXT_PAIRS.map(([f, b]) => [f, b, 3] as const),
+    ]) {
       const f = vars[fg];
       const b = vars[bg];
       if (!f || !b) {

@@ -141,3 +141,14 @@ describe("StatusBadge", () => {
     }
   });
 });
+
+describe("StatusBadge lookup", () => {
+  test("inherited object keys fall back to the neutral tone", () => {
+    for (const s of ["constructor", "toString", "__proto__"]) {
+      const { container, unmount } = render(<StatusBadge status={s} />);
+      expect(container.textContent).toContain(s);
+      expect(container.querySelector("span")?.className).toContain("text-muted");
+      unmount();
+    }
+  });
+});

@@ -52,7 +52,7 @@ describe("Run graph", () => {
     const body = (id: string) => node(id).querySelector("rect:not([data-ring])") as SVGRectElement;
     expect(body("T1").getAttribute("stroke")).toBe("var(--primary)");
     expect(body("T2").getAttribute("stroke")).toBe("var(--accent)");
-    expect(body("T3").getAttribute("stroke")).toBe("var(--border)");
+    expect(body("T3").getAttribute("stroke")).toBe("var(--border-strong)");
     expect(body("T3").getAttribute("stroke-dasharray")).toBeTruthy();
     expect(body("T1").getAttribute("stroke-dasharray")).toBeNull();
     expect(document.querySelectorAll("[data-edge]").length).toBe(2);
@@ -81,6 +81,111 @@ describe("Run graph", () => {
     render(<Run id="r-big" api={fakeApi(bigRun)} />);
     const svg = await screen.findByLabelText("Unit graph");
     expect(svg.closest("[data-radix-scroll-area-viewport]")).toBeTruthy();
+  });
+});
+
+describe("Run node rings", () => {
+  test("focus and selection rings are different styles; the body rect has no dead pulse class", async () => {
+    render(<Run id="r-par" api={fakeApi(parallelRun)} />);
+    await screen.findByLabelText("Unit graph");
+    const g = node("T2");
+    const sel = g.querySelector('rect[data-ring="selected"]');
+    const focus = g.querySelector('rect[data-ring="focus"]');
+    expect(sel).toBeTruthy();
+    expect(focus).toBeTruthy();
+    expect(sel?.getAttribute("stroke-dasharray")).toBeNull();
+    expect(focus?.getAttribute("stroke-dasharray")).toBeTruthy();
+    expect(focus?.getAttribute("width")).not.toBe(sel?.getAttribute("width"));
+    const body = g.querySelector("rect:not([data-ring])");
+    expect(body?.getAttribute("class") ?? "").not.toContain("heph-pulse");
+  });
+});
+
+const withGates = (unit: string, attempts: [number, string, string][]): Dashboard => ({
+  ...stalledRun,
+  attempts: attempts.map(([n, status, verdict]) => ({
+    unit_id: unit,
+    attempt: n,
+    status,
+    gates: [{ gate: "lint", verdict, reason: `R${n}`, evidence: [] }],
+  })),
+});
+
+describe("Run poll updates", () => {
+  const changing = (frames: Dashboard[]): Api => {
+    let i = 0;
+    return {
+      call: (async () => frames[Math.min(i++, frames.length - 1)]) as Api["call"],
+    };
+  };
+  const wait = (ms: number) =>
+    act(async () => {
+      await new Promise((r) => setTimeout(r, ms));
+    });
+  const live = (d: Dashboard): Dashboard => ({ ...d, run: { ...d.run, status: "running" } });
+
+  test("the selection resets when the selected unit leaves the plan and the poll", async () => {
+    const gone: Dashboard = {
+      ...live(parallelRun),
+      plan: { units: parallelRun.plan.units.filter((u) => u.id !== "T2") },
+      units: parallelRun.units.filter((u) => u.unit_id !== "T2"),
+      attempts: [],
+    };
+    render(<Run id="r-par" api={changing([live(parallelRun), gone, live(parallelRun)])} />);
+    await screen.findByLabelText("Unit graph");
+    fireEvent.click(node("T2"));
+    expect(screen.getByRole("region", { name: "Unit T2" })).toBeTruthy();
+    await wait(2100);
+    expect(screen.queryByRole("region", { name: "Unit T2" })).toBeNull();
+    // it was reset, not just hidden: bringing T2 back must not reselect it
+    await wait(2100);
+    expect(screen.queryByRole("region", { name: "Unit T2" })).toBeNull();
+    expect(screen.getByText(/select a unit/i)).toBeTruthy();
+  });
+
+  test("the panel follows a newer attempt unless the user picked a tab", async () => {
+    const one = live(withGates("T2", [[1, "failed", "fail"]]));
+    const two = live(
+      withGates("T2", [
+        [1, "failed", "fail"],
+        [2, "running", "pass"],
+      ]),
+    );
+    const three = live(
+      withGates("T2", [
+        [1, "failed", "fail"],
+        [2, "failed", "fail"],
+        [3, "running", "pass"],
+      ]),
+    );
+    render(<Run id="r-stall" api={changing([one, two, three])} />);
+    await screen.findByLabelText("Unit graph");
+    fireEvent.click(node("T2"));
+    const sel = () =>
+      screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")
+        ?.textContent;
+    expect(sel()).toBe("Attempt 1");
+    await wait(2100);
+    expect(sel()).toBe("Attempt 2");
+    // an explicit choice is kept when attempt 3 arrives
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Attempt 1" }), { button: 0 });
+    expect(sel()).toBe("Attempt 1");
+    await wait(2100);
+    expect(screen.getAllByRole("tab").length).toBe(3);
+    expect(sel()).toBe("Attempt 1");
+  });
+});
+
+describe("Run gate verdicts", () => {
+  test("a skip verdict is neutral with its text, not the red failure icon", async () => {
+    render(<Run id="r-stall" api={fakeApi(withGates("T2", [[1, "accepted", "skip"]]))} />);
+    await screen.findByLabelText("Unit graph");
+    fireEvent.click(node("T2"));
+    const gate = document.querySelector('[data-gate="lint"]') as HTMLElement;
+    const verdict = within(gate).getByText("skip");
+    expect(verdict.className).not.toContain("text-danger");
+    expect(verdict.className).not.toContain("text-primary");
+    expect(gate.textContent).not.toContain("✕");
   });
 });
 

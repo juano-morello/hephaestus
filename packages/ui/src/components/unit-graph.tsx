@@ -22,14 +22,15 @@ const LOOKS: Record<string, Look> = {
   },
   pending: {
     glyph: "○",
-    stroke: "var(--border)",
+    stroke: "var(--border-strong)",
     fill: "var(--bg)",
     dash: "5 3",
     text: "var(--muted)",
   },
 };
 const FALLBACK: Look = { ...LOOKS.pending, glyph: "·" } as Look;
-export const lookOf = (status: string): Look => LOOKS[status] ?? FALLBACK;
+export const lookOf = (status: string): Look =>
+  Object.hasOwn(LOOKS, status) ? (LOOKS[status] as Look) : FALLBACK;
 
 const QUERY = "(prefers-reduced-motion: reduce)";
 
@@ -113,6 +114,7 @@ export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }:
           const look = lookOf(status);
           const isSel = selected === n.id;
           const title = titles[n.id];
+          const pulsing = status === "running" && !reduce;
           const pick = () => onSelect(n.id);
           return (
             // biome-ignore lint/a11y/useSemanticElements: SVG nodes cannot be <button>s
@@ -125,7 +127,7 @@ export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }:
               data-node={n.id}
               data-status={status}
               data-selected={isSel}
-              className="cursor-pointer outline-none [&:focus-visible>rect[data-ring]]:opacity-100"
+              className="cursor-pointer outline-none"
               transform={`translate(${n.x} ${n.y})`}
               onClick={pick}
               onKeyDown={(e) => {
@@ -136,8 +138,22 @@ export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }:
               }}
             >
               <title>{title ? `${n.id}: ${title}` : n.id}</title>
+              {/* keyboard focus: dashed, wider offset; selection: solid and tight */}
               <rect
-                data-ring
+                data-ring="focus"
+                x={-8}
+                y={-8}
+                width={NODE_W + 16}
+                height={NODE_H + 16}
+                rx={14}
+                fill="none"
+                stroke="var(--text)"
+                strokeWidth={2}
+                strokeDasharray="6 4"
+                opacity={0}
+              />
+              <rect
+                data-ring="selected"
                 x={-4}
                 y={-4}
                 width={NODE_W + 8}
@@ -149,8 +165,7 @@ export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }:
                 opacity={isSel ? 1 : 0}
               />
               <motion.rect
-                data-pulse={status === "running" && !reduce ? "on" : "off"}
-                className={status === "running" ? "heph-pulse" : undefined}
+                data-pulse={pulsing ? "on" : "off"}
                 width={NODE_W}
                 height={NODE_H}
                 rx={8}
@@ -158,10 +173,8 @@ export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }:
                 stroke={look.stroke}
                 strokeDasharray={look.dash}
                 strokeWidth={2}
-                animate={
-                  status === "running" && !reduce ? { strokeWidth: [2, 4, 2] } : { strokeWidth: 2 }
-                }
-                transition={{ duration: 1.6, repeat: status === "running" ? Infinity : 0 }}
+                animate={pulsing ? { strokeWidth: [2, 4, 2] } : { strokeWidth: 2 }}
+                transition={{ duration: 1.6, repeat: pulsing ? Infinity : 0 }}
               />
               <text x={12} y={23} fontSize={13} fontWeight={600} fill="var(--text)">
                 {clip(n.id, 20)}
