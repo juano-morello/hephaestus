@@ -46,7 +46,19 @@ export type Io = {
   deps?: Deps;
   /** Test injection: how this node reaches another. */
   connect?: (node: string) => Transport;
+  /** Test injection for `heph ui`: whether stdout is a terminal (default: the process's). */
+  tty?: boolean;
+  /** Test injection for `heph ui`: the OS (default: the process's). */
+  platform?: string;
+  /** Test injection for `heph ui`: starts the browser opener (default: a detached spawn). */
+  open?: (argv: string[]) => void;
 };
+
+/** The command that opens a URL in the user's browser on this OS. */
+export const opener = (platform: string, url: string) => [
+  platform === "darwin" ? "open" : "xdg-open",
+  url,
+];
 
 type Flags = {
   json: boolean;
@@ -577,8 +589,8 @@ const COMMANDS: Record<string, Command<unknown>> = {
     run: async (ctx) => {
       const home = homeOf(ctx);
       const ui = readUiFile(home);
-      // ui.json outlives the daemon, so a live daemon and an answering listener are both needed.
-      // Any HTTP response counts: the listener answers 404 on "/" when it has no bundle.
+      // ui.json outlives the daemon, so a live daemon and the dashboard itself answering are both
+      // needed: the page must be 200 and ours, not just any listener (or a 404 with no bundle).
       const live =
         ui !== undefined &&
         (await daemonAt(home)) !== undefined &&
@@ -586,19 +598,18 @@ const COMMANDS: Record<string, Command<unknown>> = {
           signal: AbortSignal.timeout(1000),
           redirect: "manual",
         }).then(
-          () => true,
+          async (r) => r.status === 200 && (await r.text()).includes('<div id="root">'),
           () => false,
         ));
       if (!ui || !live)
         throw new Error("the dashboard is not running: no daemon is serving it (run heph doctor)");
       const url = `http://127.0.0.1:${ui.port}/#t=${ui.token}`;
       let opened = false;
-      if (!ctx.flags.noOpen && process.stdout.isTTY) {
+      if (!ctx.flags.noOpen && (ctx.tty ?? process.stdout.isTTY)) {
         try {
-          Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", url], {
-            stdout: "ignore",
-            stderr: "ignore",
-          });
+          const argv = opener(ctx.platform ?? process.platform, url);
+          if (ctx.open) ctx.open(argv);
+          else Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" }).unref();
           opened = true;
         } catch {}
       }

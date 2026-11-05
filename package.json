@@ -16,7 +16,7 @@
     "heph": "bun run packages/cli/src/main.ts",
     "build:heph": "bun run build:ui && bun build --compile packages/cli/src/main.ts --outfile dist/heph --external omp-legacy-pi-modules --define HEPH_BUILD=\"\\\"$(git describe --always --dirty)\\\"\"",
     "install:heph": "bun packages/cli/scripts/install.ts",
-    "build:heph:linux": "bun build --compile --target=bun-linux-x64 packages/cli/src/main.ts --outfile dist/linux-x64/heph --external omp-legacy-pi-modules --define HEPH_BUILD=\"\\\"$(git describe --always --dirty)\\\"\" && bun packages/cli/scripts/fetch-natives.ts linux-x64 dist/linux-x64",
+    "build:heph:linux": "bun run build:ui && bun build --compile --target=bun-linux-x64 packages/cli/src/main.ts --outfile dist/linux-x64/heph --external omp-legacy-pi-modules --define HEPH_BUILD=\"\\\"$(git describe --always --dirty)\\\"\" && bun packages/cli/scripts/fetch-natives.ts linux-x64 dist/linux-x64",
     "build:ui": "bun packages/ui/scripts/build.ts"
   },
   "devDependencies": {
