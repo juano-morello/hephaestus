@@ -13,7 +13,8 @@ const returned = (unit: string, attempt: number, ...rs: R[]) =>
     attempt,
     data: { verdict: "red", ...reasons(...rs) },
   }) as unknown as LedgerEvent;
-const ev = (type: string, unit_id?: string) => ({ type, unit_id, data: {} }) as unknown as LedgerEvent;
+const ev = (type: string, unit_id?: string) =>
+  ({ type, unit_id, data: {} }) as unknown as LedgerEvent;
 const fail = { gate: "tests", reason: "1 failed", evidence: ["a_test.go:12"] };
 
 describe("stallSignature", () => {
@@ -41,10 +42,7 @@ describe("isStalled", () => {
   test("one return, different evidence, or another unit's returns do not", () => {
     expect(isStalled([returned("T1", 1, fail)], "T1")).toBeUndefined();
     expect(
-      isStalled(
-        [returned("T1", 1, fail), returned("T1", 2, { ...fail, evidence: ["x"] })],
-        "T1",
-      ),
+      isStalled([returned("T1", 1, fail), returned("T1", 2, { ...fail, evidence: ["x"] })], "T1"),
     ).toBeUndefined();
     expect(isStalled([returned("T2", 1, fail), returned("T2", 2, fail)], "T1")).toBeUndefined();
   });

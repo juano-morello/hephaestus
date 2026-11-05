@@ -122,6 +122,20 @@ const contains = (name: string, path: string, text: string): UnitGate => ({
   },
 });
 
+/** Fails every time, but differently each time (the evidence carries the call number). */
+const failsDifferently = (name: string): UnitGate => {
+  let n = 0;
+  return {
+    name,
+    run: (): GateResult => ({
+      gate: name,
+      verdict: "fail",
+      reason: "still red",
+      evidence: [`call ${++n}`],
+    }),
+  };
+};
+
 const onlyFor = (unit: string, gate: UnitGate): UnitGate => ({
   name: gate.name,
   run: (ctx) =>
@@ -297,7 +311,7 @@ describe("runPlan", () => {
     const { worker, calls } = fakeWorker({
       T1: [{ files: implFile("a") }, { files: implFile("b") }, { files: implFile("c") }],
     });
-    const result = await go(worker, [contains("impl", "inventory/stack.go", "capped")], p);
+    const result = await go(worker, [failsDifferently("impl")], p);
 
     expect(result).toMatchObject({ status: "paused", reason: "T1: red after 3 attempts" });
     expect(calls.map((c) => c.input.brief.task.id)).toEqual(["T1", "T1", "T1"]);
@@ -309,6 +323,40 @@ describe("runPlan", () => {
     ]);
     const last = ledger.read({ types: ["unit.escalated", "run.paused"] }).map((s) => s.event.data);
     expect(last).toEqual([{ reason: "red after 3 attempts" }, { reason: "user" }]);
+    ledger.close();
+  });
+
+  test("the same failure twice: unit stalled and run paused after two attempts, not three", async () => {
+    const p = plan([
+      task("T1", { scope: ["inventory/stack.go"], produces: ["fn:A"] }),
+      task("T3", { scope: ["inventory/other.go"], consumes: ["fn:A"] }),
+    ]);
+    const { go, ledger } = await setup();
+    const { worker, calls } = fakeWorker({
+      T1: [{ files: implFile("a") }, { files: implFile("b") }, { files: implFile("c") }],
+    });
+    const result = await go(worker, [contains("impl", "inventory/stack.go", "capped")], p);
+
+    expect(result).toMatchObject({
+      status: "paused",
+      reason: "T1: stalled: impl failed the same way on a1 and a2",
+    });
+    expect(calls.map((c) => c.input.brief.task.id)).toEqual(["T1", "T1"]);
+    expect(ledger.run("R1")?.status).toBe("paused");
+    expect(ledger.units("R1").map((u) => [u.unit_id, u.status, u.attempts])).toEqual([
+      ["T1", "escalated", 2],
+      ["T3", "pending", 0],
+    ]);
+    const last = ledger.read({ types: ["unit.stalled", "run.paused"] }).map((s) => s.event.data);
+    expect(last).toEqual([
+      {
+        signature: expect.any(String),
+        attempts: [1, 2],
+        failing: [{ gate: "impl", reason: "inventory/stack.go lacks capped" }],
+      },
+      { reason: "user" },
+    ]);
+    expect(ledger.read({ types: ["unit.escalated"] })).toEqual([]);
     ledger.close();
   });
 
@@ -593,7 +641,10 @@ describe("runPlan with the built-in gates", () => {
       config: shellConfig,
     });
 
-    expect(result).toMatchObject({ status: "paused", reason: "T1: red after 3 attempts" });
+    expect(result).toMatchObject({
+      status: "paused",
+      reason: "T1: stalled: tests failed the same way on a1 and a2",
+    });
     expect(calls[1]?.input.brief.feedback?.reasons).toEqual([
       {
         gate: "tests",
