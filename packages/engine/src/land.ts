@@ -612,6 +612,23 @@ export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
     abort(opts.ledger, base, `pull request closed without merging: ${closed.url}`, staged.refs);
     return { status: "closed" };
   }
+  // A stacked PR merged by hand while based on its parent's branch, or before the parent landed,
+  // did not land on the target as staged. It can't be undone, so it is recorded, never finished.
+  const parent = ancestorsOf(opts.ledger, opts.runId, opts.stackOn)[0];
+  if (parent) {
+    for (const s of states.filter((x) => x.state === "merged")) {
+      const why =
+        s.base !== undefined && s.base !== c.target(s.r)
+          ? `merged into ${s.base}, not ${c.target(s.r)}`
+          : parent.status !== "finished"
+            ? `merged before ${parent.runId} landed`
+            : undefined;
+      if (!why) continue;
+      const reason = `half-landed: ${s.r}: pull request ${why} (${s.url})`;
+      abort(opts.ledger, base, reason, staged.refs);
+      return { status: "half_landed", reason };
+    }
+  }
   const open = states.filter((s) => s.state === "open").map((s) => s.url);
   if (open.length) return { status: "open", open };
 

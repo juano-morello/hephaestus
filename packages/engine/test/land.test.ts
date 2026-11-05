@@ -1297,6 +1297,34 @@ describe("landing a stacked run", () => {
       f.ledger.close();
     });
 
+    for (const parentLanded of [false, true]) {
+      test(`merge status of a child merged into its parent's branch is half-landed, never finished (parent ${parentLanded ? "landed" : "staged"})`, async () => {
+        const f = await stagedStack({ B: "b.sh" });
+        if (parentLanded) expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
+        // The merge button on GitHub, with B's PR still based on heph/A.
+        f.fake.states.set(f.urls.B as string, { state: "merged", mergeCommit: "9".repeat(40) });
+        const reason = `half-landed: server: pull request merged into heph/A, not main (${f.urls.B})`;
+        expect(await checkChangeset(f.opts("B"))).toEqual({ status: "half_landed", reason });
+        expect(f.ledger.run("B")?.status).toBe("paused");
+        expect(f.ledger.read({ run_id: "B", types: ["run.finished"] })).toHaveLength(0);
+        expect(f.ledger.read({ run_id: "B", types: ["merge.aborted"] })[0]?.event.data).toEqual({
+          reason,
+        });
+        expect(f.ledger.run("A")?.status).toBe(parentLanded ? "finished" : "staged");
+        f.ledger.close();
+      });
+    }
+
+    test("merge status of a child merged on the target before its parent landed is half-landed", async () => {
+      const f = await stagedStack({ B: "b.sh" });
+      f.fake.bases.set(f.urls.B as string, "main");
+      f.fake.states.set(f.urls.B as string, { state: "merged", mergeCommit: "9".repeat(40) });
+      const reason = `half-landed: server: pull request merged before A landed (${f.urls.B})`;
+      expect(await checkChangeset(f.opts("B"))).toEqual({ status: "half_landed", reason });
+      expect(f.ledger.run("B")?.status).toBe("paused");
+      f.ledger.close();
+    });
+
     test("a child whose PR is still based on the landed parent's branch is not merged", async () => {
       const f = await stagedStack({ B: "b.sh" });
       expect(await mergeChangeset(f.opts("A"))).toEqual({ status: "merged" });
