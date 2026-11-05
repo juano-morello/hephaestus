@@ -94,7 +94,7 @@ export const nextFor = (outcome: Outcome, runId: string, cursor: string | undefi
     case "finished":
       return "tell the user the run finished";
     case "failed":
-      return "tell the user it failed; heph_explain shows why";
+      return "explain to the user and ask; do not retry";
   }
 };
 
@@ -105,7 +105,7 @@ export const watchText = (w: WatchStepResult): string =>
     `next: ${nextFor(w.outcome, w.run_id, w.cursor)}`,
   ].join("\n")}\n`;
 
-export type RunState = "awaiting_plan_approval" | "started" | "already_running";
+export type RunState = "awaiting_plan_approval" | "started" | "already_running" | "not_runnable";
 
 export const runText = (r: {
   run_id: string;
@@ -113,12 +113,21 @@ export const runText = (r: {
   status: string;
   lines: string[];
   cursor?: string;
+  outcome?: Outcome;
 }): string => {
   if (r.state === "awaiting_plan_approval")
     return `run ${r.run_id} is not running: its plan is not approved\nnext: ask the user to run \`heph approve plan ${r.run_id}\` themselves — never approve it yourself\n`;
+  const head =
+    r.state === "not_runnable"
+      ? `run ${r.run_id} was not started: it is ${r.status}`
+      : `run ${r.run_id}: ${r.state === "started" ? "started" : "already running"} (${r.status})`;
+  const stopped = r.outcome && r.outcome !== "running";
   return `${[
-    `run ${r.run_id}: ${r.state === "started" ? "started" : "already running"} (${r.status})`,
+    head,
     ...r.lines,
-    `next: follow it with heph_watch${r.cursor ? ` (since ${r.cursor})` : ""}`,
+    ...(stopped && r.state !== "not_runnable" ? [`it has already stopped: ${r.outcome}`] : []),
+    stopped
+      ? `next: ${nextFor(r.outcome as Outcome, r.run_id, r.cursor)}`
+      : `next: follow it with heph_watch${r.cursor ? ` (since ${r.cursor})` : ""}`,
   ].join("\n")}\n`;
 };

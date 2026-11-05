@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ALLOWED_METHODS, NoDaemonError } from "../../src/mcp/guard.ts";
+import { createMcpServer } from "../../src/mcp/server.ts";
 import { connectTestClient, fakeDaemon } from "./harness.ts";
 
 describe("heph mcp server", () => {
@@ -387,6 +390,7 @@ describe("heph_run", () => {
       status: "running",
       lines: ["u1/a1 attempt started"],
       cursor: "e2",
+      outcome: "running",
     });
     expect(clock.elapsed()).toBe(0);
     expect(textOf(r)).toContain("u1/a1 attempt started");
@@ -411,7 +415,7 @@ describe("heph_run", () => {
 
   test("a daemon refusal is an error with its message", async () => {
     const { client: d } = fakeDaemon({
-      status: () => statusOf("escalated"),
+      status: () => statusOf("paused"),
       run: () => {
         throw new Error("the planner escalated r1; see heph explain r1");
       },
@@ -420,6 +424,77 @@ describe("heph_run", () => {
     const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
     expect(r.isError).toBe(true);
     expect(textOf(r)).toBe("the planner escalated r1; see heph explain r1");
+    await client.close();
+  });
+});
+
+describe("heph_run on a run that cannot run", () => {
+  for (const [status, events, outcome, next] of [
+    [
+      "staged",
+      [ev("e1", "merge.staged", "staged for merge")],
+      "staged",
+      "tell the user to review, then run `heph approve merge r1` themselves",
+    ],
+    [
+      "finished",
+      [ev("e1", "run.finished", "finished")],
+      "finished",
+      "tell the user the run finished",
+    ],
+    [
+      "failed",
+      [ev("e1", "run.failed", "failed: gate")],
+      "failed",
+      "explain to the user and ask; do not retry",
+    ],
+    [
+      "escalated",
+      [ev("e1", "run.plan_escalated", "planner escalated")],
+      "planner_escalated",
+      "explain to the user and ask; do not retry",
+    ],
+  ] as const) {
+    test(`${status}: run is never called, state not_runnable`, async () => {
+      const { client: d, calls } = fakeDaemon({
+        status: () => statusOf(status),
+        explain: () => ({ run_id: "r1", events: [...events] }),
+        run: () => ({ run_id: "r1", started: true }),
+      });
+      const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+      const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+      expect(r.isError).toBeFalsy();
+      expect(calls.map((c) => c.method)).not.toContain("run");
+      expect(r.structuredContent).toMatchObject({
+        run_id: "r1",
+        state: "not_runnable",
+        status,
+        cursor: "e1",
+        outcome,
+      });
+      expect(textOf(r)).toContain(`not started: it is ${status}`);
+      expect(textOf(r)).toContain(`next: ${next}`);
+      await client.close();
+    });
+  }
+
+  test("a run that stops right after starting says so", async () => {
+    const events = [ev("e1", "run.plan_ready", "plan ready")];
+    let ran = false;
+    const { client: d } = fakeDaemon({
+      status: () => statusOf(ran ? "failed" : "paused"),
+      run: () => {
+        ran = true;
+        events.push(ev("e2", "run.failed", "failed: no budget"));
+        return { run_id: "r1", started: true, after: "e1" };
+      },
+      explain: () => ({ run_id: "r1", events }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
+    const r = await client.callTool({ name: "heph_run", arguments: { run: "r1" } });
+    expect(r.structuredContent).toMatchObject({ state: "started", outcome: "failed" });
+    expect(textOf(r)).toContain("it has already stopped: failed");
+    expect(textOf(r)).toContain("next: explain to the user and ask; do not retry");
     await client.close();
   });
 });
@@ -506,6 +581,79 @@ describe("heph_watch", () => {
       await client.close();
     });
   }
+
+  test("a daemon that fails 5 times then recovers gives a normal result", async () => {
+    let fails = 5;
+    const clock = fakeClock();
+    const { client: d } = fakeDaemon({
+      status: () => {
+        if (fails-- > 0) throw new Error("daemon restarting");
+        return statusOf("running");
+      },
+      explain: () => ({ run_id: "r1", events: [ev("e1", "run.plan_ready", "plan ready")] }),
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1" } });
+    expect(r.isError).toBeFalsy();
+    expect((r.structuredContent as { lines: string[] }).lines).toEqual([
+      "r1: running",
+      "plan ready",
+    ]);
+    expect(clock.elapsed()).toBe(10_000);
+    await client.close();
+  });
+
+  test("a daemon that keeps failing is an error after the retry window", async () => {
+    const clock = fakeClock();
+    const { client: d } = fakeDaemon({
+      status: () => {
+        throw new Error("unknown run r9");
+      },
+    });
+    const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r9" } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe("unknown run r9");
+    expect(clock.elapsed()).toBe(16_000);
+    await client.close();
+  });
+
+  test("a failing progress send does not fail the watch", async () => {
+    const events = [
+      ev("e1", "run.plan_ready", "plan ready"),
+      ev("e2", "unit.attempt.started", "attempt started", { unit_id: "u1", attempt: 1 }),
+    ];
+    const { client: d } = fakeDaemon({
+      status: () => statusOf("running"),
+      explain: () => ({ run_id: "r1", events }),
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const send = serverSide.send.bind(serverSide);
+    let dropped = 0;
+    serverSide.send = async (m, o) => {
+      if ("method" in m && m.method === "notifications/progress") {
+        dropped++;
+        throw new Error("Not connected");
+      }
+      return send(m, o);
+    };
+    await createMcpServer({ client: d, workspace: () => "/ws", ...fakeClock() }).connect(
+      serverSide,
+    );
+    const client = new Client({ name: "heph-test", version: "0" });
+    await client.connect(clientSide);
+    const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1" } }, undefined, {
+      onprogress: () => {},
+    });
+    expect(dropped).toBe(3);
+    expect(r.isError).toBeFalsy();
+    expect((r.structuredContent as { lines: string[] }).lines).toEqual([
+      "r1: running",
+      "plan ready",
+      "u1/a1 attempt started",
+    ]);
+    await client.close();
+  });
 
   test("description says what to do when no cursor comes back", async () => {
     const { client: d } = fakeDaemon({});

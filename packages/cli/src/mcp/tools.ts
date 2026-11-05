@@ -69,10 +69,11 @@ const OUTCOMES = [
 const RunToolResult = z
   .object({
     run_id: z.string(),
-    state: z.enum(["awaiting_plan_approval", "started", "already_running"]),
+    state: z.enum(["awaiting_plan_approval", "started", "already_running", "not_runnable"]),
     status: z.string(),
     lines: z.array(z.string()),
     cursor: z.string().optional(),
+    outcome: z.enum(OUTCOMES).optional(),
   })
   .strict();
 const WatchToolResult = z
@@ -97,8 +98,13 @@ const RunStarted = z
 /** A long poll waits at most this long, under common host tool-call timeouts. */
 const MAX_WAIT_S = 25;
 const DEFAULT_WAIT_S = 20;
-/** Daemon hiccups retried within one step; a missing run should fail fast, not after a minute. */
-const STEP_RETRIES = 3;
+/**
+ * Daemon errors retried within one step, about 16 s at watchStep's 2 s interval: long enough to
+ * ride out a daemon restart, short enough for host timeouts and for a mistyped run id.
+ */
+const STEP_RETRIES = 8;
+/** Run statuses `run` would only reject after already answering `started` (runtime.ts build). */
+const NOT_RUNNABLE = new Set(["failed", "finished", "staged", "escalated"]);
 
 /** status and explain through the guarded client, checked against the CLI's schemas. */
 function daemonView(ctx: McpCtx): WatchView {
@@ -261,7 +267,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     "heph_run",
     {
       description:
-        "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. Follow the build with heph_watch.",
+        "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. A staged, finished, failed or escalated run is not started (state not_runnable); do what next says. Follow a started build with heph_watch.",
       inputSchema: { run: z.string().describe("The run id, e.g. r1") },
       outputSchema: RunToolResult.shape,
     },
@@ -282,6 +288,39 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         };
         return { content: [{ type: "text", text: runText(r) }], structuredContent: r };
       }
+      const step = (since: string | undefined) =>
+        watchStep(run, view, {
+          since,
+          waitMs: 0,
+          retries: STEP_RETRIES,
+          sleep: ctx.sleep,
+          now: ctx.now,
+        });
+      const answer = (
+        state: "started" | "already_running" | "not_runnable",
+        w: Awaited<ReturnType<typeof watchStep>>,
+      ): ToolResult => {
+        const r = {
+          run_id: run,
+          state,
+          status: w.status,
+          lines: w.lines,
+          cursor: w.cursor,
+          outcome: w.outcome,
+        };
+        return {
+          content: [{ type: "text", text: runText(r) }],
+          structuredContent: withoutUndefined(r),
+        };
+      };
+      if (NOT_RUNNABLE.has(s.run.status)) {
+        // The daemon would answer `started` and only then fail the build: say where it stands.
+        try {
+          return answer("not_runnable", await step(undefined));
+        } catch (e) {
+          return failure(errorText(e));
+        }
+      }
       let started: z.infer<typeof RunStarted>;
       try {
         const raw = await ctx.client.call("run", [run, {}], ctx.workspace());
@@ -295,24 +334,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       if (!started.started && !started.running)
         return failure(`the daemon did not start ${run} and it is not running`);
       try {
-        const w = await watchStep(run, view, {
-          since: started.after,
-          waitMs: 0,
-          retries: STEP_RETRIES,
-          sleep: ctx.sleep,
-          now: ctx.now,
-        });
-        const r = {
-          run_id: run,
-          state: started.started ? ("started" as const) : ("already_running" as const),
-          status: w.status,
-          lines: w.lines,
-          cursor: w.cursor,
-        };
-        return {
-          content: [{ type: "text", text: runText(r) }],
-          structuredContent: withoutUndefined(r),
-        };
+        return answer(started.started ? "started" : "already_running", await step(started.after));
       } catch (e) {
         return failure(errorText(e));
       }
@@ -352,11 +374,14 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
             ? {}
             : {
                 onLine: (line: string) => {
+                  // A progress line is best effort: a host that went away must not fail the watch.
                   sent.push(
-                    extra.sendNotification({
-                      method: "notifications/progress",
-                      params: { progressToken: token, progress: ++progress, message: line },
-                    }),
+                    extra
+                      .sendNotification({
+                        method: "notifications/progress",
+                        params: { progressToken: token, progress: ++progress, message: line },
+                      })
+                      .catch(() => {}),
                   );
                 },
               }),
@@ -367,7 +392,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           structuredContent: withoutUndefined(w),
         };
       } catch (e) {
-        await Promise.allSettled(sent);
+        await Promise.all(sent);
         return failure(errorText(e));
       }
     },
