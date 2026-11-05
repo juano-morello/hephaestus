@@ -24,6 +24,7 @@ import { landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
+import { schedule, type UnitResult } from "./scheduler.ts";
 import { isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
@@ -439,8 +440,7 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
     accepted.set(id, (await git.diff(h.accepted.before, h.accepted.after)).files);
   }
 
-  for (const id of order.order) {
-    if (accepted.has(id)) continue;
+  const start = async (id: string): Promise<UnitResult> => {
     const t = byId.get(id) as Task;
     const projectPath = opts.workspace.projects[t.project]?.path ?? ".";
     // Test locking (SPEC section 8): files from accepted test tasks that precede this one.
@@ -452,28 +452,36 @@ async function build(opts: RunPlanOptions): Promise<RunOutcome> {
       .sort();
 
     const stop = cancelled(ledger, runId);
-    if (stop) return { status: "cancelled", runBranch: branch, heads: await heads(), reason: stop };
-    if (opts.signal?.aborted) return stopped();
+    if (stop) return { status: "cancelled", reason: stop };
+    if (opts.signal?.aborted) {
+      const reason = stopReason(opts.signal);
+      return { status: "paused", reason, detail: reason };
+    }
     const h = history.get(id) ?? { next: 1, used: 0 };
-    const result = await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
-    if (result.status === "cancelled") {
-      return {
-        status: "cancelled",
-        runBranch: branch,
-        heads: await heads(),
-        reason: result.reason,
-      };
-    }
-    if (result.status === "paused") {
-      return {
-        status: "paused",
-        runBranch: branch,
-        heads: await heads(),
-        reason: `${id}: ${result.reason}`,
-      };
-    }
-    accepted.set(id, result.files);
+    return runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
+  };
+
+  // parallel > 1 is not safe yet: units still advance the run branch directly (joined in Task 5).
+  const out = await schedule({
+    plan: opts.plan,
+    workspace: opts.workspace,
+    parallel: opts.config.parallel ?? 1,
+    accepted,
+    scopeOf: (id) => humanInput(ctx, byId.get(id) as Task).scope,
+    start,
+    stopped: () => opts.signal?.aborted === true,
+  });
+  if (out.kind === "cancelled")
+    return { status: "cancelled", runBranch: branch, heads: await heads(), reason: out.reason };
+  if (out.kind === "paused") {
+    // The one run.paused for this pause, whichever units stopped (SPEC section 4.2).
+    const retry = out.retryAfter ? { retry_after: out.retryAfter } : {};
+    ledger.append({ ...engine, type: "run.paused", data: { reason: out.reason, ...retry } });
+    return { status: "paused", runBranch: branch, heads: await heads(), reason: out.detail };
   }
+  // Drained by a stop before every unit ran: a cancel still wins over the stop.
+  const stop = accepted.size < byId.size ? cancelled(ledger, runId) : undefined;
+  if (stop) return { status: "cancelled", runBranch: branch, heads: await heads(), reason: stop };
 
   if (opts.signal?.aborted) return stopped();
   // The whole changeset must pass the workspace integration gate before it can land.
@@ -561,11 +569,6 @@ export async function integrationGate(
   });
 }
 
-type UnitResult =
-  | { status: "accepted"; files: string[] }
-  | { status: "paused"; reason: string }
-  | { status: "cancelled"; reason: string };
-
 async function runUnit(
   ctx: Ctx,
   t: Task,
@@ -609,8 +612,7 @@ async function runUnit(
     const engine = { ...at, actor: "engine" as const };
     if (ctx.signal?.aborted) {
       const reason = stopReason(ctx.signal);
-      ledger.append({ ...engine, type: "run.paused", data: { reason } });
-      return { status: "paused", reason };
+      return { status: "paused", reason, detail: `${t.id}: ${reason}` };
     }
     const { constraints, budgetTokens, scope } = humanInput(ctx, t);
     const task = scope.length === t.scope.length ? t : { ...t, scope };
@@ -655,13 +657,9 @@ async function runUnit(
       const { reason } = result;
       ledger.appendMany([
         { ...engine, ...prompt, type: "unit.attempt.interrupted", data: { reason } },
-        {
-          ...engine,
-          type: "run.paused",
-          data: { reason, ...(result.retryAfter ? { retry_after: result.retryAfter } : {}) },
-        },
       ]);
-      return { status: "paused", reason };
+      const retry = result.retryAfter ? { retryAfter: result.retryAfter } : {};
+      return { status: "paused", reason, detail: `${t.id}: ${reason}`, ...retry };
     }
 
     const { sha, diff, outcome } = result;
@@ -688,12 +686,8 @@ async function runUnit(
 
     if (outcome === "blocked") {
       const reason = `blocked: ${result.blocked}`;
-      ledger.appendMany([
-        ...finished,
-        { ...engine, type: "unit.escalated", data: { reason } },
-        { ...engine, type: "run.paused", data: { reason: "user" } },
-      ]);
-      return { status: "paused", reason };
+      ledger.appendMany([...finished, { ...engine, type: "unit.escalated", data: { reason } }]);
+      return { status: "paused", reason: "user", detail: `${t.id}: ${reason}` };
     }
 
     if (outcome === "green") {
@@ -728,14 +722,21 @@ async function runUnit(
       scope: task.scope,
       instruction: RETURN_INSTRUCTION,
     };
-    ledger.appendMany([...finished, { ...engine, type: "unit.returned", data: feedback }]);
+    const returned: EventDraft = { ...engine, type: "unit.returned", data: feedback };
 
     // The same failure twice in a row won't change with more attempts: ask the user now.
-    const stall = isStalled(sinceLatestPlan(ledger, ctx.runId), t.id);
+    // Checked against the ledger plus this return, so the stall is written with the verdict
+    // (like an escalation); build() writes the one run.paused after the drain.
+    const stall = isStalled(
+      [...sinceLatestPlan(ledger, ctx.runId), returned as unknown as LedgerEvent],
+      t.id,
+    );
     if (stall) {
       const [a, b] = stall.attempts;
       const reason = `stalled: ${feedback.reasons[0]?.gate} failed the same way on a${a} and a${b}`;
       ledger.appendMany([
+        ...finished,
+        returned,
         {
           ...engine,
           type: "unit.stalled",
@@ -745,10 +746,10 @@ async function runUnit(
             failing: feedback.reasons.map(({ gate, reason }) => ({ gate, reason })),
           },
         },
-        { ...engine, type: "run.paused", data: { reason: "user" } },
       ]);
-      return { status: "paused", reason };
+      return { status: "paused", reason: "user", detail: `${t.id}: ${reason}` };
     }
+    ledger.appendMany([...finished, returned]);
   }
 
   // Attempts are numbered across escalations; each escalation gives a fresh maxAttempts.
@@ -758,9 +759,6 @@ async function runUnit(
       ? `red after ${config.maxAttempts} more attempts (${all} in all)`
       : `red after ${config.maxAttempts} attempts`;
   const engine = { ...unit, actor: "engine" as const };
-  ledger.appendMany([
-    { ...engine, type: "unit.escalated", data: { reason } },
-    { ...engine, type: "run.paused", data: { reason: "user" } },
-  ]);
-  return { status: "paused", reason };
+  ledger.appendMany([{ ...engine, type: "unit.escalated", data: { reason } }]);
+  return { status: "paused", reason: "user", detail: `${t.id}: ${reason}` };
 }

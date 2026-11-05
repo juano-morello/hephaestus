@@ -176,6 +176,30 @@ async function setup() {
   return { repoDir, ledger, worktreesDir, go, types, git: createGit(repoDir) };
 }
 
+/** What the sequential build loop wrote for the chain test, before the scheduler replaced it. */
+const attempt = (...after: string[]) => ["context.pack_built", "unit.attempt.started", ...after];
+const CHAIN_SEQUENCE: string[] = [
+  "run.created",
+  "run.plan_ready",
+  "effect.intended",
+  "effect.done",
+  "node.started",
+  // T1: green at once.
+  ...attempt("gate.result", "unit.attempt.finished"),
+  "effect.intended",
+  "effect.done",
+  "unit.accepted",
+  // T2: red, then green.
+  ...attempt("gate.result", "unit.attempt.finished", "unit.returned"),
+  ...attempt("gate.result", "unit.attempt.finished"),
+  "effect.intended",
+  "effect.done",
+  "unit.accepted",
+  // T3: blocked.
+  ...attempt("unit.attempt.finished", "unit.escalated"),
+  "run.paused",
+];
+
 const testFile = { "inventory/stack_test.go": "package inventory // TestCap\n" };
 const implFile = (v: string) => ({ "inventory/stack.go": `package inventory // ${v}\n` });
 
@@ -406,6 +430,42 @@ describe("runPlan", () => {
       attempts: 0,
     });
     expect(ledger.read({ types: ["run.paused"] })[0]?.event.data).toEqual({ reason: "rate_limit" });
+    ledger.close();
+  });
+
+  test("a chain at parallel 1 writes the same event sequence as the sequential loop; one run.paused per pause", async () => {
+    const p = plan([
+      task("T3", { scope: ["inventory/other.go"], consumes: ["fn:A"] }),
+      task("T2", { scope: ["inventory/stack.go"], consumes: ["test:Cap"], produces: ["fn:A"] }),
+      task("T1", { kind: "test", scope: ["inventory/*_test.go"], produces: ["test:Cap"] }),
+    ]);
+    const { go, ledger, types } = await setup();
+    const blocked = {
+      output: {
+        schema: 1,
+        summary: "",
+        claims: [],
+        touched: [],
+        blocked: { reason: "unclear" },
+      },
+    };
+    const { worker, calls } = fakeWorker({
+      T1: [{ files: testFile }],
+      T2: [{ files: implFile("a") }, { files: implFile("capped") }],
+      T3: [blocked],
+    });
+    const result = await go(
+      worker,
+      [onlyFor("T2", contains("impl", "inventory/stack.go", "capped"))],
+      p,
+    );
+
+    expect(result).toMatchObject({ status: "paused", reason: "T3: blocked: unclear" });
+    expect(calls.map((c) => c.input.brief.task.id)).toEqual(["T1", "T2", "T2", "T3"]);
+    expect(types()).toEqual(CHAIN_SEQUENCE);
+    expect(ledger.read({ types: ["run.paused"] }).map((s) => s.event.data)).toEqual([
+      { reason: "user" },
+    ]);
     ledger.close();
   });
 
