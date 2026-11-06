@@ -31,3 +31,12 @@ test("planner prompt carries the self-consistency rules", async () => {
   expect(text).toContain("Criteria about existing tooling need a check");
   expect(text).toContain("regression-check task");
 });
+
+test("planner prompt tells the planner to declare new files in creates", async () => {
+  const text = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
+  expect(text).toContain("creates?: string[]");
+  expect(text).toContain("scope paths that do not exist and are not in `creates` are rejected");
+  // The worked example declares its one new file.
+  const json = /## Example[\s\S]*?```json\n([\s\S]*?)\n```/.exec(text)?.[1] as string;
+  expect(JSON.parse(json).tasks[3].creates).toEqual(["internal/ability/cooldown.go"]);
+});

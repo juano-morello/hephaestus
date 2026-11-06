@@ -369,6 +369,7 @@ Task = {
   complexity: "trivial" | "standard" | "complex",
   complexity_reason: string,
   scope: string[],              // path globs relative to project
+  creates?: string[],           // files this task adds: literal paths inside scope
   covers: string[],             // Criterion ids
   produces?: string[],          // "proto:LootMsg", "fn:StackItems", "test:StackCap"
   consumes?: string[],
@@ -389,7 +390,7 @@ Plan gates (pure code):
 - every test-checked criterion an `implement` task covers is covered by a `test` task in the same project that precedes it: the test task produces a `test:<Name>` artifact the implement task consumes (directly or through a chain). An implement task with empty `covers`, or covering only gate-checked criteria, fails
 - every task passes its project's tests, so in execution order (topological, plan order on ties) every criterion a test task checks is covered by the first non-test task in that project after it, or earlier. A criterion tested early but done by a later task (a docs entry, say) fails every task in between (decided 2026-11-04, after a LegendsAO run dead-ended on it)
 - parallel tasks (no path between them) in the same repo have non-overlapping scopes, compared repo-relative so projects with nested roots are covered; with the repo's file list, globs are compared on the files they match
-- scopes point at directories that exist (needs the file list); new files in existing directories are listed for review
+- scopes point at paths that exist (needs the file list): a literal scope path that does not exist must be in the task's `creates` (which must be literal, inside scope, and not already existing), otherwise the gate fails with the closest existing names; globs may match nothing only in an existing directory or in a test task
 - `migration` forces lane `irreversible`
 - complexity sanity, bumps up, never down: lane `wide` or `irreversible` is at least `standard`; consuming another project's artifact is at least `standard`; more than 5 scope globs is `complex`
 - size limits (too big means replan), configurable under `limits`: at most 12 tasks, at most 8 scope globs per task, no empty scope, never `**` or `**/*` alone

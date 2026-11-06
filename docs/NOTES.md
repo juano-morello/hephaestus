@@ -433,10 +433,17 @@ Fixed since the first cut and no longer listed: shared watch classification, ins
 ## Deferred (urges noted, not built)
 
 - JSON Schema generation from the zod schemas for editor autocomplete (section 3).
-- Reading the real repos to build repo maps instead of hand-written ones (section 9 per-stack adapters). The real-repo maps are still hand-trimmed; a generated full file list would remove the guessed-path problem (stress test finding 6).
-- A plan gate that matches scope globs against the worktree file list (no guessed existing files, no test globs that lock unrelated existing tests). Needs worktree access, so it is engine work.
 - An execution gate that runs locked tests before the implement task and requires them to be red.
 - A `heph plan` CLI surface around the same evaluation.
+
+## Planner paths (2026-11-06)
+
+Design: `docs/superpowers/specs/2026-11-06-planner-paths-design.md`. Closes stress test finding 6 (guessed paths).
+
+- **`creates` on tasks.** Optional literal paths a task adds. `scope_paths` now fails a literal scope path that does not exist and is not in `creates`, with the closest existing names in the same directory (`closestNames`: names sharing the stem first, then edit distance); a `creates` path that already exists or is outside scope fails; a leading `./` fails. Test tasks lose their blanket exemption for literal paths (globs in a new directory still pass for them). Plans without `creates` stay schema-valid; their new files now fail the gate and go back through the one correction.
+- **Collapsed repo map** (`packages/workers/src/repo-map.ts`). A project over 200 files renders as a tree within the budget: directories the Brief mentions (path, last path segment of 3+ characters, or a file name unique in the project) or that the last failure's evidence names are listed in full; the rest are `dir/ (N files)`; leftover budget opens more levels, shallowest first. Small projects render as before. The CLI planner loop passes the Brief text and `pathsInEvidence(feedback)`.
+- **Not done:** rejecting over-wide test globs that lock unrelated existing tests (finding 5; heuristic, not seen in real runs), a planner file-listing tool, and the live before/after measurement (`plan-proto` on the stress fixtures, plan task 4).
+- Planner-gated test fixtures now declare `creates` (`cli/test/fixtures/deps.ts`, `lifecycle.test.ts`, `dashboard.test.ts`).
 
 ## Planner correction edge (2026-11-05)
 

@@ -31,6 +31,7 @@ Task = {
   complexity: "trivial" | "standard" | "complex",
   complexity_reason: string,
   scope: string[],              // path globs relative to the project root
+  creates?: string[],           // every file this task adds: literal paths, inside scope
   covers: string[],             // Criterion ids from the Brief
   produces?: string[],          // artifacts this task creates
   consumes?: string[],          // artifacts this task needs
@@ -113,6 +114,9 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    `**` or `**/*` alone. Fewer, well-bounded tasks beat many tiny ones.
 9. **Narrow scope.** Globs are relative to the project root (the paths in the repo map), as
    narrow as the work allows. Prefer exact files; use globs for new files or test files.
+   List every file you expect to add in `creates` (literal paths, no globs):
+   scope paths that do not exist and are not in `creates` are rejected, so name a file the
+   repo map shows or declare a new one.
    Generated directories appear only in codegen task scopes.
 10. **Respect the Brief.** `decisions` are settled: do not reopen them or plan alternatives.
     Never plan work listed in `out_of_scope`. Every task obeys `constraints`.
@@ -203,7 +207,7 @@ the proto change passes buf (AC4, `check: { gate: "buf" }`). Workspace has proje
       "spec": "Using a fake clock and net.FakeSession: casting twice within cooldown_ms rejects the second cast (AC1); casting after cooldown_ms succeeds (AC2); a successful cast sends one CooldownStarted to the caster (AC3). Tests must fail before implementation." },
     { "id": "T4", "title": "Implement cooldowns", "kind": "implement", "project": "server",
       "lane": "contained", "complexity": "standard", "complexity_reason": "per-ability timer state plus one send",
-      "scope": ["internal/ability/cast.go", "internal/ability/cooldown.go"], "covers": ["AC1", "AC2", "AC3"],
+      "scope": ["internal/ability/cast.go", "internal/ability/cooldown.go"], "creates": ["internal/ability/cooldown.go"], "covers": ["AC1", "AC2", "AC3"],
       "consumes": ["test:Cooldown"], "produces": ["fn:StartCooldown"],
       "spec": "Track last cast per ability in Caster; reject casts within cooldown_ms; on success call Session.Send(MSG_COOLDOWN_STARTED, ...). Make all tests in internal/ability/*_test.go pass without modifying them." }
   ],
