@@ -2,14 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Brief, GateResult, Plan, Task, Workspace } from "@hephaestus/core";
-import { briefHash } from "@hephaestus/core";
+import { briefHash, RUNGS } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
 import { openSandbox, runOk, type Sandbox } from "@hephaestus/sandbox";
 import { builtinGates } from "../src/builtin-gates.ts";
-import type { EngineConfig } from "../src/config.ts";
-import { attemptBranch, type RunPlanOptions, runBranch, runPlan } from "../src/engine.ts";
+import { type EngineConfig, resolveRoute, rungFor } from "../src/config.ts";
+import { attemptBranch, buildRun, type RunPlanOptions, runBranch, runPlan } from "../src/engine.ts";
 import type { UnitGate, UnitGateContext } from "../src/gates.ts";
-import { createGit } from "../src/git.ts";
+import { createGit, type Git } from "../src/git.ts";
+import { routeSignals } from "../src/route.ts";
 import type { SpawnInput, SpawnOutput, Worker } from "../src/worker.ts";
 import { initRepo, tempDir, writeFiles } from "./helpers.ts";
 
@@ -226,9 +227,11 @@ describe("runPlan", () => {
     expect(t2?.input.brief.context.locked).toEqual([
       { path: "inventory/stack_test.go", content: testFile["inventory/stack_test.go"] },
     ]);
+    // One small file and one criterion: the router starts T2 at trivial, which has no route of
+    // its own here and falls back to `default`.
     expect(t2?.input).toMatchObject({
       role: "implementer",
-      model: "claude/sonnet",
+      model: "claude/haiku",
       tools: config.tools,
     });
     expect(calls[0]?.input).toMatchObject({
@@ -638,6 +641,195 @@ describe("runPlan", () => {
       "plan brief_hash does not match the brief",
     );
     ledger.close();
+  });
+});
+
+describe("rungFor", () => {
+  test("each red climbs one rung, capped at top, or at complex without a top route", () => {
+    expect(rungFor("trivial", 0, true)).toBe("trivial");
+    expect(rungFor("trivial", 2, true)).toBe("complex");
+    expect(rungFor("complex", 1, true)).toBe("top");
+    expect(rungFor("complex", 1, false)).toBe("complex");
+    expect(rungFor("standard", 5, true)).toBe("top");
+  });
+});
+
+describe("resolveRoute", () => {
+  test("top falls back to the complex route when the role has none", () => {
+    const c: EngineConfig = {
+      ...config,
+      routing: { implementer: { complex: { model: "m/c" }, default: { model: "m/d" } } },
+    };
+    expect(resolveRoute(c, "implementer", "top")).toEqual({ model: "m/c" });
+    expect(resolveRoute(c, "implementer", "trivial")).toEqual({ model: "m/d" });
+  });
+
+  test("a role with only default resolves for every rung", () => {
+    const c: EngineConfig = { ...config, routing: { documenter: { default: { model: "m/d" } } } };
+    for (const rung of RUNGS) expect(resolveRoute(c, "documenter", rung)).toEqual({ model: "m/d" });
+    expect(() => resolveRoute(c, "implementer", "top")).toThrow("no route for role implementer");
+  });
+});
+
+describe("the escalation ladder", () => {
+  const ladder: EngineConfig = {
+    ...config,
+    routing: {
+      test_author: { default: { model: "claude/sonnet" } },
+      implementer: {
+        trivial: { model: "m/trivial" },
+        standard: { model: "m/standard" },
+        complex: { model: "m/complex" },
+        top: { model: "m/top" },
+      },
+    },
+  };
+  const solo = (complexity: Task["complexity"] = "standard") =>
+    plan([task("T1", { scope: ["inventory/stack.go"], complexity })]);
+  /** Red (each time differently, so it never stalls) for the first `reds` calls, then green. */
+  const redFor = (reds: number): UnitGate => {
+    let n = 0;
+    return {
+      name: "impl",
+      run: (): GateResult =>
+        ++n <= reds
+          ? { gate: "impl", verdict: "fail", reason: "red", evidence: [`call ${n}`] }
+          : { gate: "impl", verdict: "pass", reason: "ok", evidence: [] },
+    };
+  };
+  const started = (ledger: ReturnType<typeof openLedger>) =>
+    ledger
+      .read({ types: ["unit.attempt.started"] })
+      .map((s) => s.event.data as { tier: string; model: string; routed?: unknown });
+  const steps = (n: number) => Array.from({ length: n }, (_, i) => ({ files: implFile(`v${i}`) }));
+
+  test("red twice then green: the attempts climb one rung each; routed only on the first", async () => {
+    for (const complexity of ["trivial", "complex"] as const) {
+      const { go, ledger } = await setup();
+      const { worker } = fakeWorker({ T1: steps(3) });
+      const result = await go(worker, [redFor(2)], solo(complexity), { config: ladder });
+      expect(result.status).toBe("built");
+
+      const s = started(ledger);
+      const first = s[0]?.routed as { tier: Task["complexity"]; planner_tier: string };
+      expect(first).toMatchObject({ planner_tier: complexity, score: expect.any(Number) });
+      const at = RUNGS.indexOf(first.tier);
+      const rungs = [0, 1, 2].map((i) => RUNGS[Math.min(at + i, 3)] as string);
+      expect(s.map((e) => e.tier)).toEqual(rungs);
+      expect(s.map((e) => e.model)).toEqual(rungs.map((r) => `m/${r}`));
+      expect(s.slice(1).map((e) => e.routed)).toEqual([undefined, undefined]);
+      ledger.close();
+    }
+  });
+
+  test("the router may start below the planner's rating", async () => {
+    const { go, ledger } = await setup();
+    const { worker } = fakeWorker({ T1: steps(1) });
+    await go(worker, [], solo("standard"), { config: ladder });
+    expect(started(ledger)[0]).toMatchObject({
+      tier: "trivial",
+      model: "m/trivial",
+      routed: { tier: "trivial", planner_tier: "standard" },
+    });
+    ledger.close();
+  });
+
+  test("an errored attempt does not climb; a red one does", async () => {
+    const { go, ledger } = await setup();
+    const { worker } = fakeWorker({
+      T1: [{ output: { done: true } }, { files: implFile("a") }, { files: implFile("b") }],
+    });
+    const result = await go(worker, [redFor(1)], solo(), { config: ladder });
+    expect(result.status).toBe("built");
+    expect(ledger.attempts("R1", "T1").map((a) => a.outcome)).toEqual(["error", "red", "green"]);
+    expect(started(ledger).map((e) => e.tier)).toEqual(["trivial", "trivial", "standard"]);
+    ledger.close();
+  });
+
+  test("a blocked attempt does not change the next attempt's rung", async () => {
+    const { go, ledger, repoDir, worktreesDir } = await setup();
+    const blocked = {
+      output: { schema: 1, summary: "", claims: [], touched: [], blocked: { reason: "unclear" } },
+    };
+    const first = await go(fakeWorker({ T1: [blocked] }).worker, [], solo(), { config: ladder });
+    expect(first).toMatchObject({ status: "paused", reason: "T1: blocked: unclear" });
+
+    const again = await buildRun({
+      ledger,
+      workspace,
+      workspaceRoot: repoDir,
+      runId: "R1",
+      changesetId: "C1",
+      worker: fakeWorker({ T1: steps(1) }).worker,
+      gates: [],
+      config: ladder,
+      worktreesDir,
+    });
+    expect(again.status).toBe("built");
+    const s = started(ledger);
+    expect(s.map((e) => e.tier)).toEqual(["trivial", "trivial"]);
+    expect(s.map((e) => Boolean(e.routed))).toEqual([true, false]);
+    ledger.close();
+  });
+});
+
+describe("routeSignals", () => {
+  test("more than 20 matched files: no line counts read, lines = files * 100", async () => {
+    const files = Object.fromEntries(
+      Array.from({ length: 25 }, (_, i) => [`server/gen/f${i}.txt`, "x\n"]),
+    );
+    const repoDir = await initRepo(dir(), { ...files, "server/other.go": "package x\n" });
+    const real = createGit(repoDir);
+    let reads = 0;
+    const git: Git = {
+      ...real,
+      fileLines: (ref, path) => {
+        reads++;
+        return real.fileLines(ref, path);
+      },
+    };
+    const t = task("T1", { scope: ["gen/*.txt"] });
+    const signals = await routeSignals({
+      git,
+      ref: "main",
+      projectPath: "server",
+      task: t,
+      plan: plan([t]),
+    });
+    expect(reads).toBeLessThanOrEqual(20);
+    expect(signals).toEqual({
+      files: 25,
+      lines: 2500,
+      criteria: 1,
+      crossProject: false,
+      planner: "standard",
+    });
+  });
+
+  test("up to 20 matched files: lines are counted; a foreign producer is cross-project", async () => {
+    const repoDir = await initRepo(dir(), {
+      "server/a.go": "1\n2\n3\n",
+      "server/b.go": "1\n",
+      "server/c.txt": "1\n2\n",
+      "proto/p.txt": "p\n",
+    });
+    // Only the plan says which project produces what: P0's project needs no workspace entry.
+    const p0 = task("P0", { project: "proto", scope: ["p.txt"], produces: ["proto:X"] });
+    const t = task("T1", { scope: ["*.go"], consumes: ["proto:X"], complexity: "complex" });
+    const signals = await routeSignals({
+      git: createGit(repoDir),
+      ref: "main",
+      projectPath: "server",
+      task: t,
+      plan: plan([p0, t]),
+    });
+    expect(signals).toEqual({
+      files: 2,
+      lines: 4,
+      criteria: 1,
+      crossProject: true,
+      planner: "complex",
+    });
   });
 });
 

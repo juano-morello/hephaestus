@@ -178,10 +178,11 @@ describe("transport failures", () => {
   });
 
   test("the attempt's timeouts reach the worker, by tier", async () => {
+    // No matched files and one criterion: the router starts the task at trivial.
     const { calls } = await run([ok()], {
       attemptTimeoutMs: 1000,
       idleTimeoutMs: 500,
-      attemptTimeoutByTier: { standard: 5000 },
+      attemptTimeoutByTier: { trivial: 5000 },
     });
     expect(calls[0]).toMatchObject({ timeoutMs: 5000, idleTimeoutMs: 500 });
     const other = await run([ok()], {

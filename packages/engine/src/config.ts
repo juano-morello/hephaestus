@@ -1,11 +1,20 @@
 import { createHash } from "node:crypto";
-import type { Complexity, ContextPack, TaskKind } from "@hephaestus/core";
+import {
+  type Complexity,
+  type ContextPack,
+  RUNGS,
+  type Rung,
+  type TaskKind,
+} from "@hephaestus/core";
 
 export type Route = { model: string; effort?: string };
 
 export type EngineConfig = {
-  /** role -> tier -> model and effort (SPEC section 10); `default` covers missing tiers. */
-  routing: Record<string, Partial<Record<Complexity | "default", Route>>>;
+  /**
+   * role -> rung -> model and effort (SPEC section 10); `default` covers missing tiers. `top` is
+   * the ladder's optional last rung; `fallback` an optional route on another provider.
+   */
+  routing: Record<string, Partial<Record<Rung | "default" | "fallback", Route>>>;
   maxAttempts: number;
   budgetTokens: number;
   tools: string[];
@@ -32,10 +41,23 @@ export const ROLE_BY_KIND: Record<TaskKind, string> = {
   docs: "documenter",
 };
 
-export function resolveRoute(config: EngineConfig, role: string, tier: Complexity): Route {
-  const route = config.routing[role]?.[tier] ?? config.routing[role]?.default;
-  if (!route) throw new Error(`no route for role ${role} at tier ${tier}`);
+/** The route for a rung: `top` falls back to the role's `complex` route, any tier to `default`. */
+export function resolveRoute(config: EngineConfig, role: string, rung: Rung): Route {
+  const routes = config.routing[role];
+  if (rung === "top" && routes?.top) return routes.top;
+  const tier: Complexity = rung === "top" ? "complex" : rung;
+  const route = routes?.[tier] ?? routes?.default;
+  if (!route) throw new Error(`no route for role ${role} at tier ${rung}`);
   return route;
+}
+
+/**
+ * The ladder (routing design 2): the start tier plus one rung per red attempt, capped at `top`,
+ * or at `complex` for a role without a `top` route.
+ */
+export function rungFor(start: Complexity, reds: number, hasTop: boolean): Rung {
+  const cap = RUNGS.indexOf(hasTop ? "top" : "complex");
+  return RUNGS[Math.min(RUNGS.indexOf(start) + reds, cap)] as Rung;
 }
 
 /** "claude/sonnet" -> "claude". */

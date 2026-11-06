@@ -64,6 +64,8 @@ export type Git = {
   isAncestor(a: string, b: string): Promise<boolean>;
   /** Every file at a ref, repo-relative. */
   lsTree(ref: string): Promise<string[]>;
+  /** The newline count of a file at a ref (repo-relative path). */
+  fileLines(ref: string, path: string): Promise<number>;
   /**
    * The parent of the oldest commit on `branch` carrying the trailer `Heph-Run: <runId>`: where
    * the run's work was last based, even after a rebase. undefined when no commit carries it.
@@ -189,6 +191,8 @@ export function createGit(repoDir: string): Git {
       return r.code === 0;
     },
     lsTree: async (ref) => lines(await git(["ls-tree", "-r", "--name-only", ref])),
+    fileLines: async (ref, path) =>
+      (await git(["cat-file", "blob", `${ref}:${path}`])).split("\n").length - 1,
     async forkPoint(branch, runId) {
       const escaped = runId.replace(/[.[\]\\*+?(){}|^$]/g, "\\$&");
       const oldest = lines(

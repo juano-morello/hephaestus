@@ -383,6 +383,46 @@ describe("resuming a build", () => {
     reopened.close();
   });
 
+  test("the rung survives a crash: a resumed unit climbs as an uninterrupted one does", async () => {
+    /** S2 is red (differently each time) twice, then green. */
+    const twiceRed = (): UnitGate => {
+      let n = 0;
+      return {
+        name: "red",
+        run: ({ task }) =>
+          task.id === "S2" && ++n <= 2
+            ? { gate: "red", verdict: "fail", reason: "red", evidence: [`call ${n}`] }
+            : { gate: "red", verdict: "pass", reason: "ok", evidence: [] },
+      };
+    };
+    const s2 = (ledger: Ledger) =>
+      of(ledger, "unit.attempt.started")
+        .filter((e) => e.unit_id === "S2")
+        .map((e) => e.data as { tier: string; routed?: { tier: string } });
+
+    const straight = await setup([twiceRed()]);
+    expect((await buildRun(straight.rest)).status).toBe("built");
+    const uninterrupted = s2(straight.ledger).map((e) => e.tier);
+    expect(uninterrupted).toHaveLength(3);
+    straight.ledger.close();
+
+    const { ledger, rest, node } = await setup([twiceRed()]);
+    const killed = crashing(ledger, (ds) =>
+      ds.some((d) => d.type === "unit.attempt.started" && d.unit_id === "S2" && d.attempt === 3),
+    );
+    await expect(buildRun({ ...rest, ledger: killed })).rejects.toBeInstanceOf(Crash);
+    expect(s2(ledger)).toHaveLength(2);
+    ledger.close();
+
+    const reopened = openLedger(node, { nodeId: "devserver" });
+    expect((await buildRun({ ...rest, ledger: reopened })).status).toBe("built");
+    const after = s2(reopened);
+    expect(after.map((e) => e.tier)).toEqual(uninterrupted);
+    expect(after.filter((e) => e.routed)).toHaveLength(1);
+    expect(after[0]?.routed?.tier).toBe(uninterrupted[0]);
+    reopened.close();
+  });
+
   test("a build after a plan revision starts fresh from the targets", async () => {
     const { ledger, rest, options, git } = await setup();
     const first = scripted((i) => (i.brief.task.id === "S2" ? "rate_limited" : "ok"));

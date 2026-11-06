@@ -196,6 +196,13 @@ describe("git", () => {
     expect(await git.lsTree("main~1")).toEqual(["a.go", "docs/readme.md"]);
   });
 
+  test("fileLines counts the newlines of a file at a ref", async () => {
+    const { git, repo } = await setup();
+    await commitFile(repo, "three.txt", "a\nb\nc\n", "three");
+    expect(await git.fileLines("main", "three.txt")).toBe(3);
+    expect(await git.fileLines("main", "a.go")).toBe(1);
+  });
+
   test("isAncestor_true_false", async () => {
     const { git, repo } = await setup();
     const base = await git.revParse("main");

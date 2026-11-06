@@ -3,8 +3,6 @@ import {
   type Brief,
   briefHash,
   type Complexity,
-  complexitySanity,
-  DEFAULT_LIMITS,
   deriveEdges,
   type GateResult,
   type Plan,
@@ -16,7 +14,14 @@ import {
 } from "@hephaestus/core";
 import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
-import { configHash, type EngineConfig, providerOf, ROLE_BY_KIND, resolveRoute } from "./config.ts";
+import {
+  configHash,
+  type EngineConfig,
+  providerOf,
+  ROLE_BY_KIND,
+  resolveRoute,
+  rungFor,
+} from "./config.ts";
 import { type Chaos, clearWorktrees, effect, type Reality, reconcile, Stopped } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Git } from "./git.ts";
@@ -25,6 +30,7 @@ import { type JoinLock, joinLocks } from "./join.ts";
 import { type LandOptions, landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
+import { type Routed, routeUnit } from "./route.ts";
 import { localRunner, type Runner, stopReason } from "./runner.ts";
 import {
   isPauseReason,
@@ -311,13 +317,17 @@ type UnitHistory = {
   used: number;
   feedback?: Return;
   accepted?: { attempt: number; before: string; after: string };
+  /** The router's start tier: `routed.tier` of the unit's first attempt since the plan. */
+  startTier?: Complexity;
+  /** Red attempts since the plan, escalations included: each one is a rung up the ladder. */
+  reds: number;
 };
 
 /** Per unit of the latest plan: where its attempts stand, from the ledger alone. */
 function unitHistory(ledger: Ledger, runId: string): Map<string, UnitHistory> {
   const out = new Map<string, UnitHistory>();
   const get = (id: string) => {
-    const h = out.get(id) ?? { next: 1, used: 0 };
+    const h = out.get(id) ?? { next: 1, used: 0, reds: 0 };
     out.set(id, h);
     return h;
   };
@@ -328,8 +338,11 @@ function unitHistory(ledger: Ledger, runId: string): Map<string, UnitHistory> {
   for (const e of sinceLatestPlan(ledger, runId)) {
     if (!e.unit_id) continue;
     const h = get(e.unit_id);
-    if (e.type === "unit.attempt.finished") h.used++;
-    else if (e.type === "unit.escalated" || e.type === "unit.stalled") h.used = 0;
+    if (e.type === "unit.attempt.started") h.startTier ??= e.data.routed?.tier;
+    else if (e.type === "unit.attempt.finished") {
+      h.used++;
+      if (e.data.outcome === "red") h.reds++;
+    } else if (e.type === "unit.escalated" || e.type === "unit.stalled") h.used = 0;
     else if (e.type === "unit.returned") h.feedback = e.data;
     else if (e.type === "effect.intended" && e.data.effect === "run_branch_advance") {
       if (e.data.before && e.data.after)
@@ -480,15 +493,6 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
   const branch = runBranch(runId);
   const engine = { ...base, actor: "engine" as const };
 
-  const tiers = new Map<string, Complexity>(opts.plan.tasks.map((t) => [t.id, t.complexity]));
-  const sanity = complexitySanity(opts.plan, {
-    brief: opts.brief,
-    workspace: opts.workspace,
-    limits: DEFAULT_LIMITS,
-    projectGates: {},
-  });
-  for (const b of sanity.bumps) tiers.set(b.task, b.to);
-
   // SPEC section 13: a stopped process leaves worktrees and maybe effects it never confirmed.
   const statusBefore = ledger.run(runId)?.status;
   await clearWorktrees(
@@ -585,9 +589,9 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
       const reason = stopReason(opts.signal);
       return { status: "paused", reason, detail: reason };
     }
-    const h = history.get(id) ?? { next: 1, used: 0 };
+    const h = history.get(id) ?? { next: 1, used: 0, reds: 0 };
     try {
-      return await runUnit(ctx, t, tiers.get(id) as Complexity, projectPath, locked, h);
+      return await runUnit(ctx, t, projectPath, locked, h);
     } catch (e) {
       // Set before the scheduler sees it: from here on, units still in flight write nothing.
       if (e instanceof Stopped) killed = true;
@@ -747,7 +751,6 @@ export async function integrationGate(
 async function runUnit(
   ctx: Ctx,
   t: Task,
-  tier: Complexity,
   projectPath: string,
   locked: string[],
   history: UnitHistory,
@@ -757,14 +760,16 @@ async function runUnit(
   const git = createGit(ctx.dirOf(repo));
   const branch = runBranch(ctx.runId);
   const role = ROLE_BY_KIND[t.kind];
-  const route = resolveRoute(config, role, tier);
-  const info = {
-    role,
-    tier,
-    model: route.model,
-    provider: providerOf(route.model),
-    ...(route.effort ? { effort: route.effort } : {}),
-  };
+  // The start tier is routed once per plan and read back from the ledger after that; the rung
+  // is the start tier plus one per red attempt (routing design 2), never stored.
+  let routed: Routed | undefined;
+  let start = history.startTier;
+  if (start === undefined) {
+    routed = await routeUnit({ git, ref: branch, projectPath, task: t, plan: ctx.plan });
+    start = routed.tier;
+  }
+  const hasTop = Boolean(config.routing[role]?.top);
+  let reds = history.reds;
   const unit = {
     run_id: ctx.runId,
     changeset_id: ctx.changesetId,
@@ -792,12 +797,21 @@ async function runUnit(
     const { constraints, budgetTokens, scope } = humanInput(ctx, t);
     const task = scope.length === t.scope.length ? t : { ...t, scope };
     const tip = await git.revParse(branch);
+    const rung = rungFor(start, reds, hasTop);
+    const route = resolveRoute(config, role, rung);
+    const info = {
+      role,
+      tier: rung,
+      model: route.model,
+      provider: providerOf(route.model),
+      ...(route.effort ? { effort: route.effort } : {}),
+    };
     const result = await ctx.runner.runAttempt(
       {
         runId: ctx.runId,
         task,
         attempt: n,
-        tier,
+        tier: rung,
         role,
         model: route.model,
         effort: route.effort,
@@ -815,15 +829,22 @@ async function runUnit(
         signal: ctx.signal,
       },
       {
-        started: (s) =>
+        started: (s) => {
           ledger.appendMany([
             {
               ...engine,
               type: "context.pack_built",
               data: { size_tokens: s.sizeTokens, truncated: s.truncated, expansions: 0 },
             },
-            { ...engine, type: "unit.attempt.started", data: info },
-          ]),
+            // Only the unit's first attempt since the plan records the router's decision.
+            {
+              ...engine,
+              type: "unit.attempt.started",
+              data: { ...info, ...(routed && { routed }) },
+            },
+          ]);
+          routed = undefined;
+        },
       },
     );
     const prompt = result.promptHash ? { prompt_hash: result.promptHash } : {};
@@ -858,6 +879,8 @@ async function runUnit(
     ];
     let failures = result.gates.filter((g) => g.verdict === "fail");
     let finished = verdictOf(result.gates, outcome);
+    /** The outcome `finished` records: only a red one climbs the ladder, never an error. */
+    let recorded = outcome;
 
     if (outcome === "blocked") {
       const reason = `blocked: ${result.blocked}`;
@@ -939,6 +962,7 @@ async function runUnit(
       const gates = [...result.gates, ...joined.gates];
       failures = gates.filter((g) => g.verdict === "fail");
       finished = verdictOf(gates, "red");
+      recorded = "red";
     }
 
     feedback = {
@@ -984,6 +1008,7 @@ async function runUnit(
       return { status: "paused", reason: "user", detail: `${t.id}: ${reason}` };
     }
     ledger.appendMany([...finished, returned]);
+    if (recorded === "red") reds++;
   }
 
   // Attempts are numbered across escalations; each escalation gives a fresh maxAttempts.
