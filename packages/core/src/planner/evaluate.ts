@@ -27,9 +27,45 @@ const schemaFailure = (error: z.ZodError): Evaluation => ({
 /** Accepts bare JSON, a fenced block, or JSON surrounded by stray prose. */
 export function extractJson(text: string): unknown {
   const trimmed = text.trim();
-  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(trimmed)?.[1];
-  const candidate = fenced ?? trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1);
-  return JSON.parse(candidate);
+  if (!trimmed) throw new Error("the answer is empty");
+  // A closed fence, else an unclosed one (the answer was cut after the opening fence).
+  const fenced =
+    /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(trimmed)?.[1] ??
+    /^```(?:json)?\s*\n([\s\S]*)$/.exec(trimmed)?.[1];
+  const body = fenced ?? trimmed;
+  const start = body.indexOf("{");
+  if (start < 0) throw new Error(`no JSON object in the answer (${trimmed.length} chars)`);
+  const end = body.lastIndexOf("}");
+  const candidate = end > start ? body.slice(start, end + 1) : "";
+  try {
+    return JSON.parse(candidate);
+  } catch (e) {
+    if (isOpenObject(body.slice(start))) {
+      throw new Error(
+        `the answer is truncated: it ends inside the JSON object (${trimmed.length} chars)`,
+      );
+    }
+    throw e;
+  }
+}
+
+/** True when the text's braces and strings never close, so it was cut off. */
+function isOpenObject(s: string): boolean {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return false;
+    }
+  }
+  return depth > 0 || inString;
 }
 
 /** Removes object keys whose value is null, at any depth; nulls inside arrays stay. */

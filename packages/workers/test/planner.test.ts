@@ -89,6 +89,32 @@ describe("runPlanner", () => {
     expect(bad.evaluation).toMatchObject({ valid: false, failures: ["json_parse"] });
   });
 
+  test("an empty or errored answer is a transport failure, not a bad plan", async () => {
+    const run = (last: unknown) =>
+      runPlanner({
+        ...input(""),
+        createSession: async () => {
+          const s = (await fake("").createSession({})).session;
+          return { session: { ...s, getLastAssistantMessage: () => last as never } };
+        },
+      });
+    const aborted = await run({ stopReason: "aborted", errorMessage: "Request was aborted" });
+    expect(aborted.transport).toContain("Request was aborted");
+    expect(aborted.evaluation).toMatchObject({ valid: false, failures: ["transport"] });
+    expect(aborted.output).toBe("");
+    const empty = await run({ stopReason: "stop", content: [] });
+    expect(empty.transport).toContain("no text");
+    const none = await run(undefined);
+    expect(none.transport).toBeDefined();
+    const cut = await run({
+      stopReason: "length",
+      content: [{ type: "text", text: '{"schema":1,"ta' }],
+    });
+    expect(cut.transport).toContain("length");
+    expect(cut.evaluation.failures).toEqual(["transport"]);
+    expect(cut.output).toBe('{"schema":1,"ta');
+  });
+
   test("the file list reaches the plan gates", async () => {
     const r = await runPlanner(
       input(

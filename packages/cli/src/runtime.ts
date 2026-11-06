@@ -63,6 +63,8 @@ export type Deps = {
 
 /** The first answer plus one correction with the gate evidence (SPEC section 2). */
 const PLANNER_ATTEMPTS = 2;
+/** Empty/aborted/cut-off model calls retried fresh before they count as an attempt. */
+const PLANNER_TRANSPORT_RETRIES = 2;
 /** How long a rate-limited run waits when the provider gave no retry_after. */
 const DEFAULT_RETRY_MS = 60_000;
 const BUILTIN_GATES = builtinGates().map((g) => g.name);
@@ -408,7 +410,10 @@ export function openRuntime(opts: {
     ledger.append({ ...base, actor: "engine", type: "node.started", graph_node: "plan", data: {} });
     let feedback: GateResult[] | undefined;
     let previousOutput: string | undefined;
-    for (let attempt = 1; attempt <= PLANNER_ATTEMPTS; attempt++) {
+    let tries = 0;
+    let transports = 0;
+    let lastTransport: string | undefined;
+    for (let attempt = 1; tries < PLANNER_ATTEMPTS; attempt++) {
       const r = await planner({
         brief,
         workspace,
@@ -427,6 +432,11 @@ export function openRuntime(opts: {
           type: "plan.answer",
           graph_node: "plan",
           data: { attempt, outcome, failures },
+          // The raw answer and transcript, so a bad answer can be diagnosed afterwards.
+          blobs: {
+            log: ledger.blobs.put(r.output),
+            ...(r.transcript ? { transcript: ledger.blobs.put(r.transcript) } : {}),
+          },
         });
       const done = (outcome: string) =>
         ledger.append({
@@ -481,10 +491,20 @@ export function openRuntime(opts: {
             }) as EventDraft,
         ),
       );
+      if (r.transport) {
+        // The model call failed (empty, aborted, cut off): nothing to correct, so ask again
+        // fresh with the same prompt. Bounded, so a dead provider still ends the run.
+        lastTransport = r.transport;
+        if (++transports > PLANNER_TRANSPORT_RETRIES) tries++;
+        continue;
+      }
+      tries++;
       feedback = failed;
       previousOutput = r.output;
     }
-    const reason = `the planner produced no valid plan in ${PLANNER_ATTEMPTS} attempts`;
+    const reason = lastTransport
+      ? `the planner produced no valid plan in ${PLANNER_ATTEMPTS} attempts (${lastTransport})`
+      : `the planner produced no valid plan in ${PLANNER_ATTEMPTS} attempts`;
     ledger.appendMany([
       {
         ...base,

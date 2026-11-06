@@ -14,6 +14,18 @@ const valid = plan([
   task("T2", { covers: ["AC1"], scope: ["a.go"], consumes: ["test:A"] }),
 ]);
 
+describe("extractJson errors", () => {
+  test("say what is wrong instead of Unexpected EOF", () => {
+    expect(() => extractJson("")).toThrow(/empty/);
+    expect(() => extractJson("I would rather not.")).toThrow(/no JSON object/);
+    expect(() => extractJson('{"schema":1,"tasks":[{"id":"T1"')).toThrow(/truncated/);
+    expect(() => extractJson('```json\n{"schema":1,"tasks":[\n')).toThrow(/truncated/);
+  });
+  test("a fenced block with no closing fence still parses when complete", () => {
+    expect(extractJson('```json\n{"a":1}\n')).toEqual({ a: 1 });
+  });
+});
+
 describe("extractJson", () => {
   test("reads bare, fenced and prose-wrapped JSON", () => {
     expect(extractJson('{"a":1}')).toEqual({ a: 1 });
