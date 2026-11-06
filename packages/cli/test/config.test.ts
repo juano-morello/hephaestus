@@ -144,6 +144,53 @@ describe("loadConfig", () => {
     expect(sources["routing.implementer.complex.effort"]).toBeUndefined();
   });
 
+  test("a role whose tiers a layer overrides loses the built-in top", async () => {
+    const file = join(home, "config.yaml");
+    await put(
+      file,
+      "routing:\n  implementer:\n    trivial: { model: openai/a }\n    standard: { model: openai/b }\n    complex: { model: openai/c }\n",
+    );
+    const loaded = await loadConfig({ workspaceDir: ws, home });
+    expect(loaded.config.routing.implementer?.top).toBeUndefined();
+    expect(loaded.config.routing.implementer?.complex).toEqual({ model: "openai/c" });
+    expect(Object.keys(loaded.sources).some((k) => k.startsWith("routing.implementer.top"))).toBe(
+      false,
+    );
+    expect(explainConfig(loaded).some((l) => l.startsWith("routing.implementer.top"))).toBe(false);
+    // Other roles keep theirs.
+    expect(loaded.config.routing.test_author?.top).toEqual({
+      model: "claude/claude-opus-5-5",
+      effort: "high",
+    });
+  });
+
+  test("overriding one tier of a role is enough to drop its built-in top", async () => {
+    const file = join(home, "config.yaml");
+    await put(file, "routing:\n  implementer:\n    complex: { model: openai/c }\n");
+    const { config } = await loadConfig({ workspaceDir: ws, home });
+    expect(config.routing.implementer?.top).toBeUndefined();
+  });
+
+  test("a top set by a layer stays, whatever else it overrides", async () => {
+    const file = join(home, "config.yaml");
+    await put(
+      file,
+      "routing:\n  implementer:\n    complex: { model: openai/c }\n    top: { model: openai/top }\n",
+    );
+    const { config, sources } = await loadConfig({ workspaceDir: ws, home });
+    expect(config.routing.implementer?.top).toEqual({ model: "openai/top" });
+    expect(sources["routing.implementer.top.model"]).toBe(file);
+  });
+
+  test("with no routing in any layer the built-in top is there", async () => {
+    const { config, sources } = await loadConfig({ workspaceDir: ws, home });
+    expect(config.routing.implementer?.top).toEqual({
+      model: "claude/claude-opus-5-5",
+      effort: "high",
+    });
+    expect(sources["routing.implementer.top.model"]).toBe("default");
+  });
+
   test("a later layer's top route replaces the earlier one whole", async () => {
     const file = join(home, "config.yaml");
     await put(file, "routing:\n  implementer:\n    top: { model: claude/other }\n");

@@ -237,6 +237,7 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
     apply(merged, expand(opts.overrides), "flag", sources);
   }
 
+  dropDefaultTops(merged, sources);
   const parsed = ResolvedConfig.safeParse(merged);
   if (!parsed.success) {
     throw new ConfigError(
@@ -249,6 +250,32 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
     );
   }
   return { config: parsed.data, sources };
+}
+
+const TIER_ROUTES = ["trivial", "standard", "complex", "default"];
+
+/**
+ * The built-in `top` of a role holds only while all of the role's tier routes are built-in too:
+ * a layer that routes the role's tiers elsewhere (another provider, say) and sets no `top` gets
+ * no opus rung it never asked for, so its ladder stops at `complex`. A `top` a layer set stays.
+ */
+function dropDefaultTops(merged: Obj, sources: Sources) {
+  if (!isObj(merged.routing)) return;
+  const from = (prefix: string) =>
+    Object.entries(sources)
+      .filter(([k]) => k.startsWith(prefix))
+      .map(([, s]) => s);
+  for (const [role, routes] of Object.entries(merged.routing)) {
+    if (!isObj(routes) || routes.top === undefined) continue;
+    const topIsDefault = from(`routing.${role}.top.`).every((s) => s === "default");
+    const tiersOverridden = TIER_ROUTES.some((t) =>
+      from(`routing.${role}.${t}.`).some((s) => s !== "default"),
+    );
+    if (topIsDefault && tiersOverridden) {
+      delete routes.top;
+      forget(sources, ["routing", role, "top"]);
+    }
+  }
 }
 
 /** The source of a key, or of the nearest leaf under or above it. */
