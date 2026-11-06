@@ -94,7 +94,8 @@ describe("runPlanner", () => {
       input(
         JSON.stringify({
           schema: 1,
-          tasks: [{ ...task, scope: ["nowhere/*_test.go"] }],
+          // Test tasks may create new directories, so the guess has to come from an implement task.
+          tasks: [{ ...task, kind: "implement", scope: ["nowhere/*.go"] }],
           risks: [],
         }),
         {

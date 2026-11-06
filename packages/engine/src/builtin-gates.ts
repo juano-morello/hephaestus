@@ -1,6 +1,6 @@
 import { type GateResult, globsOverlap } from "@hephaestus/core";
 import type { UnitGate, UnitGateContext } from "./gates.ts";
-import { normalizePath, projectRelative } from "./paths.ts";
+import { normalizePath, prefixOf, projectRelative } from "./paths.ts";
 
 /** A gate that answers from the diff alone, without running anything. */
 export type DiffGate = Omit<UnitGate, "run"> & { run(ctx: UnitGateContext): GateResult };
@@ -27,6 +27,19 @@ const changed = (ctx: UnitGateContext) =>
     return rel === undefined ? { path: f, inside: false } : { path: rel, inside: true };
   });
 
+/** Why a file is out of scope and what would allow it: the task's scope and a glob that covers it. */
+function outOfScope(ctx: UnitGateContext, path: string): string {
+  const prefix = prefixOf(ctx.projectPath);
+  const scope = ctx.task.scope.length ? ctx.task.scope.join(", ") : "(empty)";
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+  // A scope written from the repo root ("client/src/**") never matches project-relative paths.
+  const fromRoot = prefix ? ctx.task.scope.filter((g) => globsOverlap(g, `${prefix}${path}`)) : [];
+  const hint = fromRoot.length
+    ? `scope entries ${fromRoot.map((g) => `"${g}"`).join(", ")} would allow it only as repo-relative paths; scopes are project-relative, drop the "${prefix}" prefix`
+    : `add "${path}" or "${dir}*" to the task scope to allow it`;
+  return `out of scope: ${path} (task scope: ${scope}; ${hint})`;
+}
+
 /** Every changed file is inside the project and matches the task's scope (SPEC section 11). */
 export const diffScopeGate: DiffGate = {
   name: "diff_scope",
@@ -36,7 +49,7 @@ export const diffScopeGate: DiffGate = {
     const evidence = changed(ctx).flatMap(({ path, inside }) => {
       if (!inside) return [`outside project: ${path}`];
       if (locked.has(path)) return [];
-      return ctx.task.scope.some((g) => globsOverlap(g, path)) ? [] : [`out of scope: ${path}`];
+      return ctx.task.scope.some((g) => globsOverlap(g, path)) ? [] : [outOfScope(ctx, path)];
     });
     return result(
       "diff_scope",
@@ -69,13 +82,17 @@ export const touchedVsDiffGate: DiffGate = {
   name: "touched_vs_diff",
   run(ctx) {
     const diff = changed(ctx).map((c) => c.path);
-    // Workers are told project-relative, but some give the project's files from the repo root.
-    const prefix = ctx.projectPath === "." ? "" : `${normalizePath(ctx.projectPath)}/`;
-    const touched = ctx.worker.touched.map(normalizePath).map((t) => {
-      if (!prefix || diff.includes(t) || !t.startsWith(prefix)) return t;
-      const rel = t.slice(prefix.length);
-      return diff.includes(rel) ? rel : t;
-    });
+    // Every spelling a worker may use for a changed file -> the form reported in evidence. Workers
+    // are told project-relative but also give repo-relative paths, or prefix the project's name.
+    const prefix = prefixOf(ctx.projectPath);
+    const alias = new Map<string, string>();
+    for (const [i, f] of ctx.diff.files.entries()) {
+      const shown = diff[i] as string;
+      const names = [shown, normalizePath(f), `${ctx.project}/${shown}`];
+      if (prefix && shown === f) names.push(`${prefix}${shown}`); // outside the project
+      for (const n of names) if (!alias.has(n)) alias.set(n, shown);
+    }
+    const touched = ctx.worker.touched.map(normalizePath).map((t) => alias.get(t) ?? t);
     const evidence = [
       ...diff.filter((f) => !touched.includes(f)).map((f) => `changed but not in touched: ${f}`),
       ...touched.filter((f) => !diff.includes(f)).map((f) => `in touched but unchanged: ${f}`),

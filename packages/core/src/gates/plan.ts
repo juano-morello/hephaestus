@@ -263,9 +263,10 @@ export function parallelScopesDisjoint(plan: Plan, ctx: GateContext): GateResult
 }
 
 /**
- * Scopes against the project's real files (needs `ctx.files`): a literal path that doesn't exist
- * is a new file, fine if its directory exists; a path or glob in a directory that doesn't exist
- * is almost always a guess. New files are listed in the evidence either way.
+ * Scopes against the project's real files (needs `ctx.files`). A path or glob matching nothing is
+ * new work: fine when its directory exists, when the task is a test task, or when its top-level
+ * directory exists (a new subdirectory). Otherwise it is almost always a guess (a typo). Paths
+ * leaving the project always fail. New files are listed in the evidence either way.
  */
 export function scopePaths(plan: Plan, ctx: GateContext): GateResult {
   if (!ctx.files)
@@ -277,16 +278,26 @@ export function scopePaths(plan: Plan, ctx: GateContext): GateResult {
     const dirExists = (dir: string) => dir === "" || files.some((f) => f.startsWith(dir));
     for (const g of t.scope) {
       if (matches(g, files).length) continue;
-      const wild = g.search(WILDCARD);
-      if (wild < 0) {
-        const dir = g.includes("/") ? g.slice(0, g.lastIndexOf("/") + 1) : "";
-        if (dirExists(dir)) notes.push(`${t.id}: new file ${g}`);
-        else failures.push(`${t.id}: ${g} is in a directory that does not exist (${dir})`);
+      if (g.startsWith("/") || g.split("/").includes("..")) {
+        failures.push(`${t.id}: ${g} leaves the project; scopes are project-relative`);
         continue;
       }
-      const dir = g.slice(0, g.lastIndexOf("/", wild) + 1);
-      if (!dirExists(dir))
+      const wild = g.search(WILDCARD);
+      const dir =
+        wild < 0
+          ? g.includes("/")
+            ? g.slice(0, g.lastIndexOf("/") + 1)
+            : ""
+          : g.slice(0, g.lastIndexOf("/", wild) + 1);
+      // Test tasks create their files and fixtures; others may add subdirectories to a real one.
+      const top = g.includes("/") ? `${g.slice(0, g.indexOf("/"))}/` : "";
+      const mayCreate = t.kind === "test" || dirExists(dir) || (top !== "" && dirExists(top));
+      if (wild < 0) {
+        if (mayCreate) notes.push(`${t.id}: new file ${g}`);
+        else failures.push(`${t.id}: ${g} is in a directory that does not exist (${dir})`);
+      } else if (!mayCreate) {
         failures.push(`${t.id}: ${g} matches no files and ${dir} does not exist`);
+      }
     }
   }
   return failures.length

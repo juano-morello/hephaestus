@@ -500,6 +500,35 @@ describe("scope_paths", () => {
     });
   });
 
+  test("a glob under an existing top-level directory may create new subdirectories", () => {
+    const f = { client: ["godot/project.godot", "godot/scripts/a.gd"], server: files.server };
+    const p = plan([
+      task("T1", {
+        project: "client",
+        scope: ["godot/tests/**/*auth*.gd", "godot/tests/auth_test.gd"],
+      }),
+    ]);
+    expect(scopePaths(p, ctx({ files: f }))).toMatchObject({
+      verdict: "pass",
+      evidence: ["T1: new file godot/tests/auth_test.gd"],
+    });
+  });
+
+  test("a test task may create files and globs in new directories", () => {
+    const p = plan([
+      task("T1", {
+        kind: "test",
+        scope: ["internal/loadbot/testdata/*.ini", "internal/loadbot/x_test.go"],
+      }),
+    ]);
+    expect(scopePaths(p, ctx({ files }))).toMatchObject({ verdict: "pass" });
+  });
+
+  test("even a test task cannot escape the project", () => {
+    const p = plan([task("T1", { kind: "test", scope: ["../outside/*.go", "/etc/*.conf"] })]);
+    expect(scopePaths(p, ctx({ files })).verdict).toBe("fail");
+  });
+
   test("paths and globs in directories that do not exist fail", () => {
     const p = plan([task("T1", { scope: ["internal/game/boot.go", "net/**/*.go"] })]);
     expect(scopePaths(p, ctx({ files }))).toMatchObject({
