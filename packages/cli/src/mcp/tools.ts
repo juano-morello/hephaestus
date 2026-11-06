@@ -168,7 +168,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     "heph_status",
     {
       description:
-        "List heph runs, or show one run: its units, attempts, model usage and pull requests.",
+        "List heph runs, or show one run: its units, attempts, model usage and pull requests. The list marks every run that waits on the user with `needs you:` and the command to go on, so one call answers whether anything is blocked.",
       inputSchema: {
         run: z.string().min(1).optional().describe("A run id; omit to list every run"),
       },

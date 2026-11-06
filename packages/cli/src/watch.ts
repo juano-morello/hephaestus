@@ -141,13 +141,56 @@ export function classifyRun(
   return { outcome: "running", notes: [] };
 }
 
+/** The unit that stopped the build, and why: its latest escalation or stall, in words. */
+const stuckLine = (events: WatchEvent[]): { unit?: string; line: string } | undefined => {
+  const e = events.findLast((x) => x.type === "unit.escalated" || x.type === "unit.stalled");
+  return e ? { ...(e.unit_id ? { unit: e.unit_id } : {}), line: watchLine(e) } : undefined;
+};
+
+/**
+ * What a run waits on the user for, with the exact command to go on; undefined while it needs
+ * nothing (building, finished, failed). The one line `heph status` shows per run, and the last line
+ * `heph watch` prints at a stop.
+ */
+export function attentionLine(
+  id: string,
+  s: Awaited<ReturnType<WatchView["status"]>>,
+  events: WatchEvent[],
+): string | undefined {
+  const c = classifyRun(id, s, events);
+  switch (c.outcome) {
+    case "awaiting_plan_approval":
+      return `plan ready, approve it: heph approve plan ${id}`;
+    case "planner_escalated":
+      return `the planner escalated: heph explain ${id}`;
+    case "waiting_for_you": {
+      const stuck = stuckLine(events);
+      const why = stuck ? `${stuck.line}; ` : "";
+      return `${why}decide how to go on: heph explain ${id}${stuck?.unit ? ` ${stuck.unit}` : ""}`;
+    }
+    case "staged":
+      return `staged, review it, then: heph approve merge ${id}`;
+    case "waiting_for_parent":
+    case "blocked_by_parent":
+      return c.notes[0];
+    default:
+      return undefined;
+  }
+}
+
 /** heph watch's closing lines for a stop, with the CLI command to run next. */
-const stopLines = (id: string, status: string, c: Classified): string[] => {
+const stopLines = (
+  id: string,
+  status: string,
+  c: Classified,
+  s: Awaited<ReturnType<WatchView["status"]>>,
+  events: WatchEvent[],
+): string[] => {
   switch (c.outcome) {
     case "planner_escalated":
       return [`${id}: the planner escalated; heph explain ${id}`];
     case "waiting_for_you":
-      return [`${id}: waiting for you; heph explain ${id}`];
+      return [`${id}: waiting for you: ${attentionLine(id, s, events)}`];
     case "waiting_for_parent":
     case "blocked_by_parent":
       return [`${id}: staged`, ...c.notes];
@@ -229,7 +272,7 @@ export async function watchRun(
         if (!told) say(`waiting for your approval: heph approve plan ${id}`);
         told = true;
       } else if (c.outcome !== "running") {
-        for (const l of stopLines(id, status, c)) say(l);
+        for (const l of stopLines(id, status, c, s, events)) say(l);
         return { run_id: id, status, ...(c.reason ? { reason: c.reason } : {}) };
       }
     } catch (e) {

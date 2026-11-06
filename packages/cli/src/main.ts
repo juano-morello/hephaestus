@@ -249,7 +249,7 @@ type StatusOne = {
 type StatusView =
   | StatusOne
   | {
-      runs: { run_id: string; status: string; updated_at: string }[];
+      runs: { run_id: string; status: string; updated_at: string; needs_you?: string }[];
       /** Peer health, as the daemon last saw it. */
       nodes?: Record<string, { ok: boolean; since?: string; error?: string }>;
     };
@@ -260,7 +260,7 @@ export const statusText = (s: StatusView) => {
     const down = Object.entries(s.nodes ?? {})
       .filter(([, n]) => !n.ok)
       .map(([id, n]) => `node ${id} unreachable since ${n.since}: ${n.error} (heph doctor)`);
-    return `${[s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}`).join("\n") || "no runs", ...down].join("\n")}\n`;
+    return `${[s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}${r.needs_you ? `\n  needs you: ${r.needs_you}` : ""}`).join("\n") || "no runs", ...down].join("\n")}\n`;
   }
   return [
     `run ${s.run.run_id}: ${s.run.status}${s.plan_approved ? "" : " (plan not approved)"}`,

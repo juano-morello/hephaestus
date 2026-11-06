@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { inFlightLines, mergeText, statusText } from "../src/main.ts";
 import { describe as explainLine } from "../src/runtime.ts";
-import { classifyRun, isMilestone, type WatchEvent, watchRun } from "../src/watch.ts";
+import {
+  attentionLine,
+  classifyRun,
+  isMilestone,
+  type WatchEvent,
+  watchRun,
+} from "../src/watch.ts";
 
 const ev = (id: string, type: string, summary: string, unit_id?: string, attempt?: number) =>
   ({
@@ -71,9 +77,38 @@ describe("heph watch", () => {
       "r1: paused",
       "T2 stalled: tests failed the same way on a1 and a2",
       "run paused: waiting for you",
-      "r1: waiting for you; heph explain r1",
+      "r1: waiting for you: T2 stalled: tests failed the same way on a1 and a2; decide how to go on: heph explain r1 T2",
     ]);
     expect(r).toEqual({ run_id: "r1", status: "paused", reason: "waiting for you" });
+  });
+
+  test("attentionLine names what a run waits on and the command to go on", () => {
+    const st = (status: string, approved = true) => ({ run: { status }, plan_approved: approved });
+    expect(attentionLine("r1", st("planned", false), [])).toBe(
+      "plan ready, approve it: heph approve plan r1",
+    );
+    expect(attentionLine("r1", st("staged"), [])).toBe(
+      "staged, review it, then: heph approve merge r1",
+    );
+    const stalled = ev("2", "unit.stalled", "stalled: tests failed the same way", "T2", 2);
+    const paused = ev("3", "run.paused", "run paused: waiting for you");
+    expect(attentionLine("r1", st("paused"), [stalled, paused])).toBe(
+      "T2/a2 stalled: tests failed the same way; decide how to go on: heph explain r1 T2",
+    );
+    // A run that is building, or done, waits on nothing.
+    expect(attentionLine("r1", st("running"), [])).toBeUndefined();
+    expect(attentionLine("r1", st("finished"), [])).toBeUndefined();
+  });
+
+  test("the run list marks runs that need the user", () => {
+    const text = statusText({
+      runs: [
+        { run_id: "r1", status: "paused", updated_at: "t", needs_you: "decide: heph explain r1" },
+        { run_id: "r2", status: "running", updated_at: "t" },
+      ],
+    });
+    expect(text).toContain("r1  paused  t\n  needs you: decide: heph explain r1");
+    expect(text).not.toContain("r2  running  t\n  needs you");
   });
 
   test("explain says which gate failed the same way", () => {
@@ -198,7 +233,7 @@ describe("heph watch", () => {
       { status: "running", events: [] },
       { status: "paused", events: [p] },
     ]);
-    expect(lines.at(-1)).toContain("waiting for you; heph explain r1");
+    expect(lines.at(-1)).toContain("waiting for you: decide how to go on: heph explain r1");
     expect(lines).toContain("run paused: waiting for you");
     expect(r.reason).toBe("waiting for you");
   });

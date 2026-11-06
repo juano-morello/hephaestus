@@ -52,6 +52,7 @@ const workers = () => import("@hephaestus/workers");
 
 import type { LoadedConfig } from "./config.ts";
 import { lockRun } from "./lock.ts";
+import { attentionLine } from "./watch.ts";
 
 /** Injection points for tests; production uses OMP, the gh CLI and the configured sandboxes. */
 export type Deps = {
@@ -254,6 +255,27 @@ export function openRuntime(opts: {
           }
         : {}),
     };
+  };
+  /** What a run waits on the user for, with the command to go on (see attentionLine); a run that waits on nothing has none. */
+  const attention = (runId: string): string | undefined => {
+    try {
+      const snap = snapshot(runId);
+      if (!["planned", "escalated", "paused", "staged"].includes(snap.run.status)) return undefined;
+      const events = ledger
+        .read({ run_id: runId })
+        .map((r) => r.event)
+        .map((e) => ({
+          id: e.id,
+          ts: e.ts,
+          type: e.type,
+          ...(e.unit_id ? { unit_id: e.unit_id } : {}),
+          ...(e.attempt ? { attempt: e.attempt } : {}),
+          summary: describe(e),
+        }));
+      return attentionLine(runId, snap, events);
+    } catch {
+      return undefined;
+    }
   };
   const human = (
     runId: string,
@@ -646,7 +668,13 @@ export function openRuntime(opts: {
     },
 
     status(runId?: string) {
-      if (!runId) return { runs: ledger.runs() };
+      if (!runId)
+        return {
+          runs: ledger.runs().map((r) => {
+            const needs = attention(r.run_id);
+            return needs ? { ...r, needs_you: needs } : r;
+          }),
+        };
       const staged = ledger.read({ run_id: runId, types: ["merge.staged"] }).at(-1)?.event.data as
         | { prs?: Record<string, string> }
         | undefined;
