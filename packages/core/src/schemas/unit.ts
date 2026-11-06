@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { Rung } from "../router.ts";
 import { Criterion } from "./brief.ts";
-import { Complexity, Task } from "./plan.ts";
+import { Task } from "./plan.ts";
 import { Return } from "./return.ts";
 
 /** Worker -> engine (SPEC section 8). The diff is the truth; `touched` is checked against it. */
@@ -71,7 +72,7 @@ export const UnitBrief = z
     /** Settled in the Brief; the worker must not reopen them. */
     decisions: z.array(z.string()),
     role: z.string().min(1),
-    tier: Complexity,
+    tier: Rung,
     context: ContextPack,
     constraints: z.array(z.string()),
     locked_paths: z.array(z.string()),

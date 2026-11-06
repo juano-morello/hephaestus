@@ -144,6 +144,14 @@ describe("loadConfig", () => {
     expect(sources["routing.implementer.complex.effort"]).toBeUndefined();
   });
 
+  test("a later layer's top route replaces the earlier one whole", async () => {
+    const file = join(home, "config.yaml");
+    await put(file, "routing:\n  implementer:\n    top: { model: claude/other }\n");
+    const { config, sources } = await loadConfig({ workspaceDir: ws, home });
+    expect(config.routing.implementer?.top).toEqual({ model: "claude/other" });
+    expect(sources["routing.implementer.top.effort"]).toBeUndefined();
+  });
+
   test("the workspace layer supplies repos, projects and targets", async () => {
     const file = join(ws, ".heph", "workspace.yaml");
     await put(file, WORKSPACE);

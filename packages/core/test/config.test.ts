@@ -5,6 +5,7 @@ import {
   Limits,
   RepoConfigLayer,
   ResolvedConfig,
+  RoleRoutes,
   WorkspaceConfig,
 } from "../src/schemas/config.ts";
 import { workspace } from "./helpers.ts";
@@ -44,6 +45,25 @@ describe("defaultConfig", () => {
       parallel: 3,
     });
     expect(d.sandbox).toEqual({ mode: "native", runtime: "docker", image: "alpine:3.20" });
+  });
+});
+
+describe("top and fallback routes", () => {
+  const opus = { model: "claude/claude-opus-5-5", effort: "high" };
+  test("RoleRoutes accepts top and fallback and still rejects unknown keys", () => {
+    const route = { model: "claude/claude-sonnet-5-5" };
+    expect(
+      RoleRoutes.safeParse({ complex: route, top: route, fallback: { model: "x/y" } }).success,
+    ).toBe(true);
+    expect(RoleRoutes.safeParse({ complex: route, bogus: route }).success).toBe(false);
+  });
+  test("defaults give implementer and test_author an opus top and no fallback", () => {
+    const r = defaultConfig({ nodeId: "n" }).routing;
+    expect(r.implementer?.top).toEqual(opus);
+    expect(r.test_author?.top).toEqual(opus);
+    expect(r.documenter?.top).toBeUndefined();
+    expect(r.planner?.top).toBeUndefined();
+    for (const role of Object.values(r)) expect(role.fallback).toBeUndefined();
   });
 });
 

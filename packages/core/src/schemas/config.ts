@@ -15,6 +15,10 @@ export const RoleRoutes = z
     standard: Route.optional(),
     complex: Route.optional(),
     default: Route.optional(),
+    /** Last rung of the escalation ladder; a role without one is capped at complex. */
+    top: Route.optional(),
+    /** Provider used when the routed model is rate-limited or unavailable. */
+    fallback: Route.optional(),
   })
   .strict();
 export type RoleRoutes = z.infer<typeof RoleRoutes>;
@@ -188,6 +192,7 @@ export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
     trivial: { model: "claude/claude-haiku-5-5" },
     standard: { model: "claude/claude-sonnet-5-5", effort: "medium" },
     complex: { model: "claude/claude-sonnet-5-5", effort: "high" },
+    top: { model: "claude/claude-opus-5-5", effort: "high" },
   });
   return {
     node: { id: opts.nodeId },
