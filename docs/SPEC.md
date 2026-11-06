@@ -635,12 +635,12 @@ A build is fresh when there is no `node.started` (build) since the latest `run.p
 
 `heph handoff <run> <node>`:
 
-1. Owner stops leasing, waits for or interrupts in-flight units (configurable)
+1. Owner stops leasing, waits for or interrupts in-flight units (configurable: `heph handoff --wait [seconds]`)
 2. Pushes all unit branches
 3. Emits `run.handed_off`, syncs events and blobs
 4. New owner reconciles and resumes
 
-As built in v0: the owner interrupts the attempt in flight (it is marked interrupted with reason `handoff` and does not count; waiting is not built yet), pushes the run branches (`push` effects), writes `run.handed_off`, syncs, and asks the new owner to take the run. The new owner makes or finds its checkout, fetches the run branches, and resumes without redoing accepted units (`run.resumed`, reason `handoff`). Handoff is unchanged by fan-out: it interrupts every in-flight attempt (reason `handoff`). A handoff stopped at any step is finished by running it again on the old owner. A handoff is refused when a touched repo has no remote, and when the new owner's check of its checkout fails (section 7); either way the build goes on where it is. A `heph run` following the build keeps following it at the new owner until it ends there.
+As built in v0: the owner interrupts the attempt in flight (it is marked interrupted with reason `handoff` and does not count; with `--wait [seconds]` attempts in flight first get that long to finish while nothing new starts, a bare `--wait` meaning one attempt's time limit), pushes the run branches (`push` effects), writes `run.handed_off`, syncs, and asks the new owner to take the run. The new owner makes or finds its checkout, fetches the run branches, and resumes without redoing accepted units (`run.resumed`, reason `handoff`). Handoff is unchanged by fan-out: it interrupts every in-flight attempt (reason `handoff`). A handoff stopped at any step is finished by running it again on the old owner. A handoff is refused when a touched repo has no remote, and when the new owner's check of its checkout fails (section 7); either way the build goes on where it is. A `heph run` following the build keeps following it at the new owner until it ends there.
 
 `heph adopt <run>`: forced takeover when the old owner is unreachable. Recorded loudly; the only path that could produce two writers. In v0 it is refused while the owner answers `hello`, unless `--force`.
 
@@ -734,7 +734,7 @@ heph explain <run> [<unit>]
 heph hint <run> <unit> ["<text>"] [--scope <path>]... [--budget N]
 heph approve plan|merge <run>
 heph cancel <run>
-heph handoff <run> <node>
+heph handoff <run> <node> [--wait [seconds]]
 heph adopt <run> [--force]
 heph sync
 heph daemon

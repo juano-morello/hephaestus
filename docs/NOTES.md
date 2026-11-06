@@ -232,7 +232,7 @@ How it works and what I interpreted:
 4. **Approval is tied to a plan version:** `approve plan` names the `run.plan_ready` event id; a revision makes a new one, so `run` refuses until it is approved again.
 5. **Landing is two steps:** `landChangeset` stages (rebase and re-gate if a target moved, push and open PRs where there is a remote, staging refs otherwise); `mergeChangeset` merges PRs and fast-forwards local repos. `heph run` stages right after a clean build; `heph approve merge` merges. `autoMerge` (library option) does both.
 6. **Hints and budgets:** `heph hint <run> <unit> "<text>" [--budget N]` writes `human.input`; the engine adds every hint for that unit or for the whole run to the next attempt's constraints, and the latest budget override for the unit to its context pack.
-7. **Cancel** writes `run.failed` ("cancelled by user"); a running build checks before each unit and each attempt and stops. An attempt already in flight finishes (still true after 2.7; see below).
+7. **Cancel** writes `run.failed` ("cancelled by user"); a running build checks before each unit and each attempt and stops. An attempt already in flight finishes when no daemon drives the run (see "Handoff wait (2026-11-06)": under a daemon, cancel aborts it).
 8. **Gates available to a project** for gate-checked criteria are the built-ins (`tests`, `typecheck`, `lint`, `diff_scope`, `locked_paths`, `touched_vs_diff`) plus its configured `gates`.
 9. **Repo map** for the planner is the tracked file list per project (`repoMapFromFiles`), trimmed to 200 lines, until per-stack adapters exist.
 10. **Progress output:** `heph run` prints one line per ledger event to stderr through the ledger's `onAppend` hook; `--json` keeps stdout to the envelope.
@@ -266,7 +266,7 @@ How it works and what I interpreted:
 
 **Found after the live smoke, fixed:** the SIGKILL left T2 attempt 1's sandbox container running (`sleep infinity`, `--rm` only applies once it stops), mounting a worktree the resume had already removed. A killed process never runs `dispose()`. Containers now carry `heph.run` and `heph.node` labels, and every place that clears a run's leftover worktrees (build, landing) also removes its containers (`removeContainers`, through the engine's `reapSandboxes` option). Native mode has the same gap without a fix yet: a command runs in its own process group so its timeout can kill all of it, and a SIGKILL of heph leaves that group running until it ends on its own; there is no record to find it by.
 
-Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs 2.8), handoff and adopt, interrupting a worker already in flight on `heph cancel` (it still finishes its attempt), scheduler rerouting a rate-limited role.
+Not built: chaos over golden tasks with a daemon (SPEC section 13 Testing; needs 2.8), handoff and adopt (both built since), interrupting a worker already in flight on `heph cancel` (built under a daemon since 2.8; still not without one, see "Handoff wait (2026-11-06)"), scheduler rerouting a rate-limited role.
 
 ## Node model (v0 step 2.8)
 
@@ -334,7 +334,7 @@ How it works and what I interpreted:
   - **`heph approve merge` prints its result as JSON** (`merge of L1: {"status":"merged"}`) in human output. Cosmetic, from 2.6.
 - **Cleanup:** both daemons stopped, `~/heph-test` on denver and the Mac's test home removed, no heph containers on either machine. You deleted the repo `juano-morello/heph-land-test`.
 
-Not built: waiting for in-flight attempts on handoff, leases and remote runners, a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
+Not built: leases and remote runners (waiting for in-flight attempts on handoff was built later, see "Handoff wait (2026-11-06)"), a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
 
 ## Ready to use: install, doctor, the skill, and the first real repo (2026-11-04)
 
@@ -435,6 +435,17 @@ Fixed since the first cut and no longer listed: shared watch classification, ins
 - JSON Schema generation from the zod schemas for editor autocomplete (section 3).
 - An execution gate that runs locked tests before the implement task and requires them to be red.
 - A `heph plan` CLI surface around the same evaluation.
+
+## Handoff wait (2026-11-06)
+
+Design: `docs/superpowers/specs/2026-11-06-handoff-wait-design.md`. Closes the "waits for or interrupts in-flight units (configurable)" half of SPEC section 13 that v0 left unbuilt.
+
+- **`heph handoff <run> <node> [--wait [seconds]]`.** With no flag a handoff interrupts the attempt in flight at once, as before. `--wait 300` lets attempts in flight finish for up to 300 s; a bare `--wait` waits up to `limits.attempt_timeout_ms` (20 minutes by default). Whatever is still running when the time is up is interrupted (reason `handoff`, not counted). The command blocks while it waits; `heph watch` shows progress. The wait starts only after the new owner has made its checkout, so a refused handoff never waits.
+- **`--wait` parsing** (`packages/cli/src/wait-flag.ts`): `util.parseArgs` cannot take an optional value, so `--wait` is read first. `--wait` last or before another flag is "attempt"; `--wait N` and `--wait=N` are seconds (at least 1); `--wait=` with a non-number or 0 is an error; a word after `--wait` (for example `--wait R1 denver`) is an error that says to put the flag after the run and node, because the word may be the run id.
+- **The drain.** `RunPlanOptions.drain` (engine) is a second signal next to `signal`: no unit starts and no unit starts another attempt, but workers are not aborted. A red attempt records its Return and stops with a `handoff` pause (the new owner continues from that Return); a green one still joins and is accepted. `stopSignal(opts)` picks the signal that stopped the build, and the pause reason is read from it. The daemon host gives each build job a drain controller; `stopJob(runId, reason, waitMs)` raises drain, waits up to `waitMs` for the job, then aborts as before. A handoff forwarded to the owning node carries the options (`wait` in the third argument of the `handoff` call).
+- **Cancel, as it actually is.** Under a daemon `heph cancel` already interrupts the attempt in flight (`stopJob(runId, "user")` before `run.failed`); the earlier "still finishes its attempt" notes predate the daemon and the abort signal. A regression test pins it (`cancelling a run under a daemon`). Without a daemon, `heph cancel` only writes `run.failed`: a foreground `heph run` in another process notices at its next unit or attempt, and `heph run` has no Ctrl-C handler.
+- **Not built:** cancel across processes without a daemon and Ctrl-C handling in `heph run`; aborting gate commands on cancel (not verified whether a gate in flight stops); a config key for a default wait; a `heph_handoff` MCP tool (none exists).
+- **Tests:** the host tests for `--wait` assert what holds in any environment (the attempt in flight finishes uninterrupted and mbp starts no second one; a short wait interrupts it and denver starts T2 again). Whether the new owner's gates then pass depends on the sandbox the tests run in: in the agent sandbox native-sandbox gates cannot run, as for the existing handoff tests.
 
 ## Planner paths (2026-11-06)
 

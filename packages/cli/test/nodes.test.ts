@@ -484,3 +484,65 @@ describe("handing a run off with --wait", () => {
     ).toBe(true);
   }, 60_000);
 });
+
+describe("cancelling a run under a daemon", () => {
+  test("interrupts the attempt in flight instead of letting it run to its end", async () => {
+    await heph(["init", "--force"]);
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh }\n",
+    );
+    let reached: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      reached = r;
+    });
+    let sawAbort = false;
+    const scripted = deps.worker as Worker;
+    const worker: Worker = {
+      async spawn(input) {
+        if (input.brief.task.id !== "T2") return scripted.spawn(input);
+        reached();
+        // Holds until told to stop, as OMP does; a cancel that only wrote run.failed would hang here.
+        while (!input.signal?.aborted) await Bun.sleep(5);
+        sawAbort = true;
+        return {
+          output: undefined,
+          transcript: "",
+          usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+          exit: "interrupted",
+        };
+      },
+    };
+    const mbp = openHost({
+      home: homeA,
+      config: await loadHomeConfig(homeA),
+      deps: { ...deps, worker, prs },
+      daemon: true,
+      connect: () => localTransport(denver.peerMethods()),
+    });
+    try {
+      await mbp.api.call("newRun", [Bun.YAML.parse(BRIEF), { runId: "R6", on: "local" }], ws);
+      await mbp.api.call("approvePlan", ["R6"], ws);
+      await mbp.api.call("run", ["R6", {}], ws);
+      await held;
+      await mbp.api.call("cancel", ["R6"], ws);
+      expect(sawAbort).toBe(true);
+      const events = mbp.ledger
+        .read({ run_id: "R6" })
+        .map((s) => s.event as { type: string; unit_id?: string; data: Record<string, unknown> });
+      expect(
+        events.filter((e) => e.type === "unit.attempt.interrupted" && e.unit_id === "T2"),
+      ).toMatchObject([{ data: { reason: "user" } }]);
+      expect(events.some((e) => e.type === "unit.attempt.finished" && e.unit_id === "T2")).toBe(
+        false,
+      );
+      expect(events.at(-1)).toMatchObject({
+        type: "run.failed",
+        data: { reason: "cancelled by user" },
+      });
+      expect(mbp.ledger.run("R6")?.status).toBe("failed");
+    } finally {
+      await mbp.close();
+    }
+  }, 60_000);
+});
