@@ -537,6 +537,13 @@ As built, the defaults name exact model ids (`claude/claude-opus-5-5`, `claude/c
 - Interrupted or rate-limited attempts never escalate.
 - Fallback providers used only on rate limit or provider failure, logged as such.
 
+As built (2026-11-06, `docs/superpowers/specs/2026-11-06-routing-design.md`):
+
+- Ladder: `trivial -> standard -> complex -> top`. A role may set an optional `top` route (defaults: `implementer` and `test_author`, `claude/claude-opus-5-5`, effort `high`); a role without `top` is capped at `complex`. `resolveRoute(config, role, rung)` falls back to `default`.
+- Start tier: `routeTier` (`packages/core/src/router.ts`), a pure function over the files the task's scope matches and their lines, criteria covered, lane, kind, cross-project input and the planner's rating (one vote, so the result may be below it). It reads files from the run-branch tip when the unit starts, after its predecessors are accepted, and persists the decision as `routed` on the unit's first attempt, so a resume reuses it. Floors: lane `wide` or `irreversible`, and consuming another project's artifact, are at least `standard`; more than 5 scope globs is `complex`.
+- Rung: derived from the ledger, never stored. The start tier plus the number of recorded `unit.attempt.finished` outcomes of `red` since the latest plan, capped at the top rung. `blocked`, `error`, interrupted and rate-limited attempts add no rung. Escalation and stall reset only the attempt budget, not the rung; a hint keeps the higher rung.
+- Not changed from above: `blocked` goes to replan and a stall pauses the run at once.
+
 Learned routing from ledger and eval data is v2.
 
 ---
@@ -801,7 +808,7 @@ Deferred to v1.5. Planned: out-of-band confirmation (TTY or one-time code via ph
 - Providers via OMP using Claude and ChatGPT subscriptions.
 - Risk acknowledged: subscription access from third-party tools can break or be restricted; the worker interface and API-key fallback exist for this. Review provider terms periodically.
 - Rate limits are a scheduling input: track remaining budget per provider, throttle parallelism, route low-stakes nodes to the less-loaded provider, pause cleanly instead of failing.
-- As built: a rate limit pauses the run cleanly (`run.paused` with `retry_after`), and a build resuming from that pause throttles parallelism: it starts at `max(1, floor(limits.parallel / 2))` units at once and allows one more after each accepted unit, up to `limits.parallel`. The value comes from the ledger alone (the latest `run.resumed` that is not a crash resume, and the units accepted since), so a crash mid-ramp resumes at the same value; no event records it. Not built: tracking remaining budget per provider, and routing or rerouting by provider load.
+- As built: a rate limit pauses the run cleanly (`run.paused` with `retry_after`), and a build resuming from that pause throttles parallelism: it starts at `max(1, floor(limits.parallel / 2))` units at once and allows one more after each accepted unit, up to `limits.parallel`. The value comes from the ledger alone (the latest `run.resumed` that is not a crash resume, and the units accepted since), so a crash mid-ramp resumes at the same value; no event records it. Fallback (as built): a role may set one optional `fallback` route on another provider. A rate-limited attempt marks its provider cooling until `retry_after` (60 000 ms when the worker gives none) in an in-memory map that lives for one build; a crash loses it, which is harmless. A unit whose ladder route is on a cooling provider uses the role's fallback when that is on a different provider that is not cooling, and the attempt records `fallback_for`. Within one `runUnit` call a unit never goes back to a provider that rate-limited it during that call (a local set), so two providers cannot ping-pong. The run pauses with `rate_limit` only when no usable fallback exists. With no fallback configured behavior is unchanged. Not built: tracking remaining budget per provider, routing by provider load, and fallback on provider outages or auth errors (the worker reports only `timeout`, `idle` and `error` with free text; it needs failure classes).
 
 ---
 

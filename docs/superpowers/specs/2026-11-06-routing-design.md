@@ -23,7 +23,7 @@ Checked in the code on 2026-11-06:
 
 `RouteSignals`, all known before the attempt:
 
-- files matched by the task's scope in its project, and their total lines (read from the unit's worktree at build start);
+- files matched by the task's scope in its project, and their total lines (read from the run-branch tip when the unit starts, after its predecessors are accepted, not at build start; the decision is persisted in `routed` on the unit's first attempt, so a resume reuses it);
 - number of criteria the task covers;
 - the task's lane and kind;
 - whether it consumes an artifact produced in another project;

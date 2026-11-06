@@ -445,6 +445,27 @@ Design: `docs/superpowers/specs/2026-11-06-planner-paths-design.md`. Closes stre
 - **Not done:** rejecting over-wide test globs that lock unrelated existing tests (finding 5; heuristic, not seen in real runs), a planner file-listing tool, and the live before/after measurement (`plan-proto` on the stress fixtures, plan task 4).
 - Planner-gated test fixtures now declare `creates` (`cli/test/fixtures/deps.ts`, `lifecycle.test.ts`, `dashboard.test.ts`).
 
+## Routing (2026-11-06)
+
+Design: `docs/superpowers/specs/2026-11-06-routing-design.md`. SPEC §10 and §17 carry the as-built behavior.
+
+- **Start tier.** `routeTier` scores a task: +1 per matched file, +1 per 100 lines, +2 per criterion, +3 for a lane other than `contained`, +3 for cross-project input, planner vote (trivial 0, standard 1, complex 3), -2 for kind `docs`; floored at 0. `trivial` needs score 4 or less and the qualifier (lane `contained`, 2 or fewer files, 150 or fewer lines, 1 or fewer criteria, no cross-project input); score 14 or more is `complex`; otherwise `standard`; more than 5 scope globs floors at `complex`. All of these are first guesses, constants in code, not config.
+- **Signals timing.** Files and lines are read from the run-branch tip when the unit starts (after predecessors are accepted), not at build start. The decision is stored in `routed` on the unit's first attempt, so resume reuses it.
+- **Rung.** Derived from the ledger (`unitHistory`): start tier plus `red` outcomes of recorded `unit.attempt.finished` events, not `unit.returned`. `error`, `blocked`, interrupted and rate-limited attempts add nothing. Escalation and stall reset only the attempt budget, not the rung.
+- **Fallback.** Optional per-role `fallback`; cooldown map is per build and in memory (60 000 ms default). Within one `runUnit` call a unit never returns to a provider that rate-limited it during that call (a local set). With no fallback configured nothing changes.
+- **Mixed versions.** `AttemptInfo` is strict and gained `tier: top`, `routed` and `fallback_for`, so nodes on different versions cannot share a ledger (same as `stack_on`).
+- **Tests changed.** Small tasks now start at `trivial`: the engine happy path expects T2 on `claude/haiku`, and the transport timeout override is keyed `trivial`. `heph config explain` lists `top` and `fallback` (regression test in `cli/test/config.test.ts`; it passed by construction).
+- **Measure after a few real runs.** Compare `routed.tier` with the final rung per unit; that tunes the thresholds and seeds learned routing (v2).
+- **Known follow-ups (deferred minors from the reviews).**
+  - A submodule gitlink in a unit's scope makes `Git.fileLines` throw, and `routeUnit` with it; filter `lsTree` to blobs or catch.
+  - `resolveRoute` per attempt can throw mid-run for a role lacking a higher rung and `default`.
+  - The escalation message miscounts the attempt number after an in-loop fallback (uses `used`; should use the last attempt number).
+  - A pause after both providers rate-limit carries only the fallback's `retry_after`.
+  - No test crashes between a unit's first `started` (with `routed`) and its finish.
+  - The crossProject floor test does not exercise its floor code.
+  - Provider-outage and auth-error fallback needs worker failure classes.
+  - Remaining-budget tracking is not built.
+
 ## Planner correction edge (2026-11-05)
 
 The loop already fed failed gates back (up to 3 answers), but the planner never saw the answer it was correcting, and nothing recorded which attempt produced what. Built:

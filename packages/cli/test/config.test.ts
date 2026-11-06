@@ -329,6 +329,19 @@ describe("heph config explain", () => {
     expect(out.join("")).toContain("limits.attempts_per_unit = 3  (default)");
   });
 
+  test("lists routing top and fallback with their source layer", async () => {
+    const file = join(home, "config.yaml");
+    await put(
+      file,
+      "routing:\n  implementer:\n    default: { model: claude/claude-sonnet-5-5 }\n    top: { model: claude/claude-opus-5-5 }\n    fallback: { model: openai/gpt-5 }\n",
+    );
+    const { out, ctx } = io();
+    expect(await run(["config", "explain"], ctx)).toBe(0);
+    const text = out.join("");
+    expect(text).toContain(`routing.implementer.top.model = claude/claude-opus-5-5  (${file})`);
+    expect(text).toContain(`routing.implementer.fallback.model = openai/gpt-5  (${file})`);
+  });
+
   test("--json wraps config and sources in the envelope", async () => {
     const { out, ctx } = io();
     expect(await run(["config", "explain", "--json"], ctx)).toBe(0);

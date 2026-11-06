@@ -22,11 +22,11 @@ Out of scope for now (decided 2026-11-06): leases and heartbeats for cross-node 
 | Dashboard (§16) | First slice only: read-only runs list and run page (`heph ui`). |
 | Stall detection (§6, §10) | Built. |
 | Parallel fan-out and stacking (§19 step 3) | Built. `limits.parallel` defaults to 3, with a rate-limit ramp. |
+| Routing: start-tier router, escalation ladder, fallback provider (§10, §17) | Built 2026-11-06, except remaining-budget tracking and provider-outage fallback. |
 
 ## Unclear (?) — verify first
 
 - `heph eval` and §14 metrics: `packages/core/src/eval` exists; a 2026-11-03 note lists `eval` as not built in the CLI.
-- Routing tiers and escalation (§10): a trivial task routed to haiku; no note on tier escalation.
 - §18 kill criteria (4 weeks after v0 runs): no evidence it was evaluated.
 
 ## Decided not to build (revisit on need)
@@ -37,9 +37,9 @@ Out of scope for now (decided 2026-11-06): leases and heartbeats for cross-node 
 
 Each gets its own spec, plan and build.
 
-- **A. Planner quality.** Plan gate matching scope globs against the worktree file list; execution gate requiring locked tests to be red before the implement task; repo maps generated from real repos; `heph plan` CLI surface; `Criterion.projects`; narrowing the Return's scope to failing files.
+- **A. Planner quality.** Built 2026-11-06 (see NOTES "Planner paths"); original scope: Plan gate matching scope globs against the worktree file list; execution gate requiring locked tests to be red before the implement task; repo maps generated from real repos; `heph plan` CLI surface; `Criterion.projects`; narrowing the Return's scope to failing files.
 - **B. Authoring surface.** Workflows, presets, `--dry-run`, custom gates from `.heph/gates/`, JSON Schema generation from the zod schemas, extra gates (coverage delta, requirement-to-check mapping, Godot project-imports-headless).
-- **C. Routing and limits.** Verify §10 tier escalation; per-provider budget tracking; rerouting a rate-limited role (§17).
+- **C. Routing and limits.** Built 2026-11-06 (NOTES "Routing"): start-tier router, escalation ladder with `top`, fallback provider with cooldown. Not built: remaining-budget tracking per provider, and fallback on provider outages (needs worker failure classes).
 - **D. Run control.** Interrupt an in-flight worker on `heph cancel`; handoff that waits for in-flight attempts.
 - **E. Dashboard and widgets.** Hint and cancel buttons, plan review, diff summary, ledger charts, SSE, remote-node views, fix the stale-port token leak, then MCP Apps widgets with HTTP transport (needs its own auth design; host support for MCP Apps is an open question).
 - **F. Eval and learning.** Verify `heph eval` and the kill criteria; retro and constraint store; learned routing; extra worker backends.
