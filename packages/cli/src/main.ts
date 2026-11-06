@@ -31,6 +31,7 @@ import { explainText } from "./output.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
 import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
+import { parseWaitFlag, type Wait } from "./wait-flag.ts";
 import { watchRun } from "./watch.ts";
 
 /** Output schema version of every `--json` envelope (SPEC section 16). */
@@ -76,6 +77,8 @@ type Flags = {
   stackOn?: string;
   tests: boolean;
   noOpen: boolean;
+  /** heph handoff --wait: seconds, or "attempt" for one attempt's time limit. */
+  wait?: Wait;
 };
 type Ctx = Io & { flags: Flags; args: string[] };
 
@@ -126,8 +129,8 @@ function remote(api: Api, follow: (line: string) => void) {
       c<{
         peers: { node: string; ok: boolean; pulled?: number; pushed?: number; error?: string }[];
       }>("sync"),
-    handoff: (id: string, node: string) =>
-      c<{ run_id: string; to: string; pushed: string[]; dir: string }>("handoff", id, node),
+    handoff: (id: string, node: string, o: { wait?: Wait } = {}) =>
+      c<{ run_id: string; to: string; pushed: string[]; dir: string }>("handoff", id, node, o),
     adopt: (id: string, force: boolean) =>
       c<{ run_id: string; from: string; fetched: string[] }>("adopt", id, { force }),
     /**
@@ -639,11 +642,15 @@ const COMMANDS: Record<string, Command<unknown>> = {
   }),
   handoff: command({
     run: (ctx) =>
-      withRuntime(ctx, (rt) => rt.handoff(need(ctx.args, 0, "run id"), need(ctx.args, 1, "node"))),
+      withRuntime(ctx, (rt) =>
+        rt.handoff(need(ctx.args, 0, "run id"), need(ctx.args, 1, "node"), {
+          ...(ctx.flags.wait !== undefined ? { wait: ctx.flags.wait } : {}),
+        }),
+      ),
     render: (h) => `handed ${h.run_id} to ${h.to}; it continues there (${h.dir})\n`,
     usage: [
-      "handoff <run> <node>",
-      "Move a run to another node; a build in progress continues there",
+      "handoff <run> <node> [--wait [seconds]]",
+      "Move a run to another node; a build in progress continues there. --wait lets attempts in flight finish first (up to the seconds, or one attempt's limit); the command blocks meanwhile, heph watch shows progress",
     ],
   }),
   adopt: command({
@@ -769,8 +776,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
   let json = argv.includes("--json");
   let name = argv.filter((a) => !a.startsWith("-")).join(" ");
   try {
+    // util.parseArgs can't take a flag whose value is optional, so --wait is read first.
+    const waited = parseWaitFlag(argv);
     const { values, positionals } = parseArgs({
-      args: argv,
+      args: waited.argv,
       allowPositionals: true,
       options: {
         json: { type: "boolean", default: false },
@@ -813,6 +822,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       now: values.now ?? false,
       tests: values.tests ?? false,
       noOpen: values["no-open"] ?? false,
+      ...(waited.wait !== undefined ? { wait: waited.wait } : {}),
       ...(values.home ? { home: values.home } : {}),
       ...(values.on ? { on: values.on } : {}),
       ...(values["stack-on"] ? { stackOn: values["stack-on"] } : {}),
