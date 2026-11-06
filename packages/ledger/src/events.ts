@@ -148,7 +148,18 @@ export const EVENT_TYPES = {
       .object({
         signature: z.string().min(1),
         attempts: z.tuple([z.number().int().positive(), z.number().int().positive()]),
-        failing: z.array(z.object({ gate: z.string(), reason: z.string() }).strict()).min(1),
+        failing: z
+          .array(
+            z
+              .object({
+                gate: z.string(),
+                reason: z.string(),
+                /** The evidence that repeated, trimmed to the failing lines. */
+                evidence: z.string().optional(),
+              })
+              .strict(),
+          )
+          .min(1),
       })
       .strict(),
     UNIT,

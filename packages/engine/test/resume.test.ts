@@ -328,12 +328,41 @@ describe("resuming a build", () => {
     const out = await buildRun({ ...rest, ledger: reopened, worker: next.worker });
     expect(out).toMatchObject({
       status: "paused",
-      reason: "S2: stalled: red failed the same way on a1 and a2",
+      reason: "S2: stalled: red failed the same way on a1 and a2 (repeated: same)",
     });
     expect(next.ids()).toEqual([]);
     expect(of(reopened, "run.paused").map((e) => e.data)).toEqual([{ reason: "user" }]);
     expect(of(reopened, "unit.stalled").map((e) => e.unit_id)).toEqual(["S2"]);
     reopened.close();
+  });
+
+  test("failures that differ only in timing stall early, with the evidence; the next worker sees the diff stat", async () => {
+    let n = 0;
+    const gate: UnitGate = {
+      name: "tests",
+      run: ({ task }) =>
+        task.id === "S2"
+          ? {
+              gate: "tests",
+              verdict: "fail",
+              reason: "tests must pass here",
+              evidence: ["exit 1", `ok pkg ${++n}.5s`, "--- FAIL: TestLoot"],
+            }
+          : { gate: "tests", verdict: "pass", reason: "ok", evidence: [] },
+    };
+    const { ledger, rest } = await setup([gate]);
+    const first = scripted();
+    const out = await buildRun({ ...rest, worker: first.worker });
+    expect(out).toMatchObject({ status: "paused" });
+    expect(of(ledger, "unit.attempt.started").filter((e) => e.unit_id === "S2")).toHaveLength(2);
+    const stalled = of(ledger, "unit.stalled")[0];
+    expect(stalled?.data).toMatchObject({ failing: [{ gate: "tests" }] });
+    expect(JSON.stringify(stalled?.data)).toContain("FAIL: TestLoot");
+    expect(String((out as { reason?: string }).reason)).toContain("FAIL: TestLoot");
+    // a2's worker was told what a1 changed.
+    const a2 = first.inputs.filter((i) => i.brief.task.id === "S2")[1];
+    expect(a2?.brief.feedback?.diff_stat).toMatch(/file.* changed/);
+    ledger.close();
   });
 
   test("a crash after a rate-limited attempt but before run.paused pauses for the rate limit", async () => {

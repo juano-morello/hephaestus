@@ -35,7 +35,7 @@ import {
   type UnitResult,
 } from "./scheduler.ts";
 import { ancestorsOf, baseRef, restackChildren, stackRefs, unresolvedStack } from "./stack.ts";
-import { isStalled } from "./stall.ts";
+import { diffStat, isStalled, stallReason, stuckEvidence } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
@@ -389,10 +389,6 @@ function resume(
   ]);
 }
 
-function stallReason(gate: string | undefined, [a, b]: [number, number]): string {
-  return `stalled: ${gate} failed the same way on a${a} and a${b}`;
-}
-
 /**
  * A pause a crash lost: a unit stopped the build (escalated, stalled, or interrupted by a rate limit or a
  * stop) but the process died before build() wrote run.paused. Only for a run still `running`.
@@ -411,7 +407,7 @@ function lostPause(
   for (const e of tail) {
     const reason =
       e.type === "unit.stalled"
-        ? stallReason(e.data.failing[0]?.gate, e.data.attempts)
+        ? stallReason(e.data.failing[0]?.gate, e.data.attempts, e.data.failing[0]?.evidence)
         : ((e.data as { reason?: string }).reason ?? "");
     const pause: { reason: PauseReason; detail: string } | undefined =
       e.type === "unit.escalated" || e.type === "unit.stalled"
@@ -949,6 +945,7 @@ async function runUnit(
       reasons: failures.map((f) => ({ gate: f.gate, reason: f.reason, evidence: f.evidence })),
       scope: task.scope,
       instruction: RETURN_INSTRUCTION,
+      diff_stat: diffStat(diff.text),
     };
     const returned: EventDraft = { ...engine, type: "unit.returned", data: feedback };
 
@@ -960,7 +957,9 @@ async function runUnit(
       t.id,
     );
     if (stall) {
-      const reason = stallReason(feedback.reasons[0]?.gate, stall.attempts);
+      const top = feedback.reasons[0];
+      const evidence = top ? stuckEvidence(top.evidence) : "";
+      const reason = stallReason(top?.gate, stall.attempts, evidence);
       ledger.appendMany([
         ...finished,
         returned,
@@ -970,7 +969,11 @@ async function runUnit(
           data: {
             signature: stall.signature,
             attempts: stall.attempts,
-            failing: feedback.reasons.map(({ gate, reason }) => ({ gate, reason })),
+            failing: feedback.reasons.map(({ gate, reason }, i) => ({
+              gate,
+              reason,
+              ...(i === 0 && evidence ? { evidence } : {}),
+            })),
           },
         },
       ]);
