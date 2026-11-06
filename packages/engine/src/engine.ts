@@ -35,7 +35,7 @@ import {
   type UnitResult,
 } from "./scheduler.ts";
 import { ancestorsOf, baseRef, restackChildren, stackRefs, unresolvedStack } from "./stack.ts";
-import { isStalled } from "./stall.ts";
+import { failureDetail, isStalled } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
@@ -389,8 +389,12 @@ function resume(
   ]);
 }
 
-function stallReason(gate: string | undefined, [a, b]: [number, number]): string {
-  return `stalled: ${gate} failed the same way on a${a} and a${b}`;
+function stallReason(
+  failure: Return["reasons"][number] | undefined,
+  [a, b]: [number, number],
+): string {
+  const why = failure && failureDetail(failure);
+  return `stalled: ${failure?.gate} failed the same way on a${a} and a${b}${why ? `: ${why}` : ""}`;
 }
 
 /**
@@ -411,7 +415,7 @@ function lostPause(
   for (const e of tail) {
     const reason =
       e.type === "unit.stalled"
-        ? stallReason(e.data.failing[0]?.gate, e.data.attempts)
+        ? stallReason(e.data.failing[0] && { evidence: [], ...e.data.failing[0] }, e.data.attempts)
         : ((e.data as { reason?: string }).reason ?? "");
     const pause: { reason: PauseReason; detail: string } | undefined =
       e.type === "unit.escalated" || e.type === "unit.stalled"
@@ -467,6 +471,10 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
         worktreesDir: opts.worktreesDir,
         tools: opts.config.tools,
         gateTimeoutMs: opts.config.gateTimeoutMs,
+        attemptTimeoutMs: opts.config.attemptTimeoutMs,
+        attemptTimeoutByTier: opts.config.attemptTimeoutByTier,
+        idleTimeoutMs: opts.config.idleTimeoutMs,
+        transportRetries: opts.config.transportRetries,
       }),
     base,
     dirOf,
@@ -960,7 +968,7 @@ async function runUnit(
       t.id,
     );
     if (stall) {
-      const reason = stallReason(feedback.reasons[0]?.gate, stall.attempts);
+      const reason = stallReason(feedback.reasons[0], stall.attempts);
       ledger.appendMany([
         ...finished,
         returned,

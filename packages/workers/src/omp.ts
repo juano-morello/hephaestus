@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SpawnInput, SpawnOutput, Worker } from "@hephaestus/engine";
+import type { SpawnInput, SpawnOutput, Worker, WorkerFailure } from "@hephaestus/engine";
 import { openSandbox, type SandboxSpec } from "@hephaestus/sandbox";
 import {
   type CreateAgentSessionOptions,
@@ -71,7 +71,10 @@ const PARAMS: Record<ToolName, unknown> = {
 
 type Handlers = ReturnType<typeof createToolHandlers>["handlers"];
 
-function toCustomTools(handlers: Handlers): CustomTool[] {
+/** What the tools are doing, so the idle watchdog can tell a long test run from a hung model call. */
+export type ToolActivity = { inFlight: number; lastTool?: string; lastToolAt: number };
+
+function toCustomTools(handlers: Handlers, activity: ToolActivity): CustomTool[] {
   return TOOL_NAMES.map(
     (name) =>
       ({
@@ -81,12 +84,17 @@ function toCustomTools(handlers: Handlers): CustomTool[] {
         parameters: PARAMS[name],
         loadMode: "essential",
         async execute(_id: string, params: unknown) {
+          activity.inFlight++;
+          activity.lastTool = name;
           try {
             const text = await (handlers[name] as (p: unknown) => Promise<string>)(params);
             return { content: [{ type: "text", text }] };
           } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
             return { content: [{ type: "text", text: `error: ${message}` }], isError: true };
+          } finally {
+            activity.inFlight--;
+            activity.lastToolAt = Date.now();
           }
         },
       }) as unknown as CustomTool,
@@ -149,11 +157,29 @@ export function exitFrom(e: {
   return "ok";
 }
 
+const DEFAULT_TIMEOUT_MS = 20 * 60_000;
+const DEFAULT_IDLE_MS = 10 * 60_000;
+const DEFAULT_ABORT_GRACE_MS = 30_000;
+
+/** 90_000 -> "1m30s"; short spans keep milliseconds. */
+export function formatSpan(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  if (m === 0) return `${sec}s`;
+  return sec === 0 ? `${m}m` : `${m}m${sec}s`;
+}
+
 export type OmpWorkerOptions = {
   /** Where this attempt's tools run. */
   sandbox: (input: SpawnInput) => SandboxSpec;
   /** Wall-clock limit per attempt; the session is aborted after it. Default 20 minutes. */
   timeoutMs?: number;
+  /** Abort when the model and the tools have been silent this long. Default 10 minutes. */
+  idleTimeoutMs?: number;
+  /** After an abort, how long to wait for the session to wind down before giving up on it. */
+  abortGraceMs?: number;
   modelPattern?: (model: string) => string;
   /** Injection point for tests; defaults to OMP's createAgentSession. */
   createSession?: (opts: CreateAgentSessionOptions) => Promise<{ session: OmpSession }>;
@@ -184,6 +210,7 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
       const sb = await openSandbox(opts.sandbox(input));
       let session: OmpSession | undefined;
       try {
+        const activity: ToolActivity = { inFlight: 0, lastToolAt: 0 };
         const { handlers, result } = createToolHandlers(sb, {
           lockedPaths: input.brief.locked_paths,
         });
@@ -198,37 +225,105 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
             modelPattern: (opts.modelPattern ?? defaultModelPattern)(input.model),
             thinking: thinkingFor(input.effort),
             systemPrompt,
-            tools: toCustomTools(handlers),
+            tools: toCustomTools(handlers, activity),
           }),
         ));
         const s = session;
+        const limit = input.timeoutMs ?? opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        const idleLimit = input.idleTimeoutMs ?? opts.idleTimeoutMs ?? DEFAULT_IDLE_MS;
+        const grace = opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
+        const begun = Date.now();
 
-        let timedOut = false;
-        const timer = setTimeout(
+        // Where the attempt stood, for the failure message: which tool ran last, whether the
+        // last model turn ended asking for a tool (then the next model call hung).
+        const snapshot = () => {
+          const last = s.getLastAssistantMessage();
+          const quiet = Date.now() - Math.max(lastProgress, activity.lastToolAt, begun);
+          return (
+            `${s.messages.length} messages, last tool: ${activity.lastTool ?? "none"}, ` +
+            `last stop reason: ${last?.stopReason ?? "none"}, quiet for ${formatSpan(quiet)}`
+          );
+        };
+        let failure: WorkerFailure | undefined;
+        let release: () => void = () => {};
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const timers: ReturnType<typeof setTimeout>[] = [];
+        // Aborts the session, and stops waiting for it after `grace` if it ignores the abort.
+        const stop = (f: WorkerFailure) => {
+          if (failure) return;
+          failure = f;
+          void Promise.resolve(s.abort({ reason: `hephaestus: ${f.kind}` })).catch(() => {});
+          timers.push(setTimeout(release, grace));
+        };
+
+        let lastProgress = begun;
+        let lastCount = s.messages.length;
+        const watchdog = setInterval(
           () => {
-            timedOut = true;
-            void s.abort({ reason: "hephaestus: attempt timeout" });
+            const count = s.messages.length;
+            if (count !== lastCount || activity.inFlight > 0) {
+              lastCount = count;
+              lastProgress = Date.now();
+              return;
+            }
+            const quiet = Date.now() - Math.max(lastProgress, activity.lastToolAt);
+            if (quiet >= idleLimit) {
+              stop({
+                kind: "idle",
+                detail: `no model or tool activity for ${formatSpan(quiet)} (${snapshot()})`,
+              });
+            }
           },
-          opts.timeoutMs ?? 20 * 60_000,
+          Math.max(10, Math.min(idleLimit / 4, 5000)),
+        );
+        timers.push(
+          setTimeout(
+            () =>
+              stop({
+                kind: "timeout",
+                detail: `attempt limit of ${formatSpan(limit)} reached (${snapshot()})`,
+              }),
+            limit,
+          ),
         );
         // A handoff or cancel aborts the attempt; it then counts as interrupted, not failed.
         let interrupted = false;
         const onAbort = () => {
           interrupted = true;
-          void s.abort({ reason: "hephaestus: attempt stopped" });
+          void Promise.resolve(s.abort({ reason: "hephaestus: attempt stopped" })).catch(() => {});
         };
         if (input.signal?.aborted) onAbort();
         else input.signal?.addEventListener("abort", onAbort, { once: true });
         let threw: unknown;
         try {
-          await s.prompt(renderUnitPrompt(input.brief));
+          const prompting = s.prompt(renderUnitPrompt(input.brief));
+          // A late rejection after we stopped waiting must not become an unhandled one.
+          prompting.catch(() => {});
+          await Promise.race([prompting, released]);
         } catch (e) {
           threw = e;
         } finally {
-          clearTimeout(timer);
+          clearInterval(watchdog);
+          for (const t of timers) clearTimeout(t);
           input.signal?.removeEventListener("abort", onAbort);
         }
 
+        const last = s.getLastAssistantMessage();
+        const exit = exitFrom({ last, threw, timedOut: failure !== undefined, interrupted });
+        const why: WorkerFailure | undefined =
+          exit !== "error"
+            ? undefined
+            : (failure ?? {
+                kind: "error",
+                detail:
+                  threw !== undefined
+                    ? threw instanceof Error
+                      ? threw.message
+                      : String(threw)
+                    : (last?.errorMessage ?? "the session ended with an error"),
+              });
         const tokens = s.getSessionStats().tokens;
         return {
           output: result(),
@@ -239,11 +334,18 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
             cache_read: tokens.cacheRead,
             cache_write: tokens.cacheWrite,
           },
-          exit: exitFrom({ last: s.getLastAssistantMessage(), threw, timedOut, interrupted }),
+          exit,
+          ...(why ? { failure: why } : {}),
           prompt_hash: promptHash,
         };
       } finally {
-        await session?.dispose();
+        // A wedged session must not wedge the build: give disposal the same grace as an abort.
+        if (session) {
+          await Promise.race([
+            Promise.resolve(session.dispose()).catch(() => {}),
+            Bun.sleep(opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS),
+          ]);
+        }
         await sb.dispose();
       }
     },

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   defaultConfig,
   HomeConfigLayer,
+  Limits,
   RepoConfigLayer,
   ResolvedConfig,
   WorkspaceConfig,
@@ -37,9 +38,28 @@ describe("defaultConfig", () => {
       attempts_per_unit: 3,
       budget_tokens: 20000,
       gate_timeout_ms: 600000,
+      attempt_timeout_ms: 1200000,
+      idle_timeout_ms: 600000,
+      transport_retries: 2,
       parallel: 3,
     });
     expect(d.sandbox).toEqual({ mode: "native", runtime: "docker", image: "alpine:3.20" });
+  });
+});
+
+describe("attempt limits", () => {
+  const limits = (extra: object) => ({ ...defaultConfig({ nodeId: "n" }).limits, ...extra });
+  test("a per-tier timeout is optional and must be a positive integer for a known tier", () => {
+    const ok = Limits.safeParse(limits({ attempt_timeout_ms_by_tier: { complex: 2_400_000 } }));
+    expect(ok.success).toBe(true);
+    expect(Limits.safeParse(limits({ attempt_timeout_ms_by_tier: { huge: 1 } })).success).toBe(
+      false,
+    );
+    expect(Limits.safeParse(limits({ attempt_timeout_ms_by_tier: { complex: 0 } })).success).toBe(
+      false,
+    );
+    expect(Limits.safeParse(limits({ transport_retries: 0 })).success).toBe(true);
+    expect(Limits.safeParse(limits({ transport_retries: -1 })).success).toBe(false);
   });
 });
 

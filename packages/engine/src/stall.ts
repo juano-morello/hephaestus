@@ -6,10 +6,24 @@ import { createHash } from "node:crypto";
 import type { Return } from "@hephaestus/core";
 import type { LedgerEvent } from "@hephaestus/ledger";
 
+/**
+ * Evidence lines that start with "detail:" explain a failure for humans (a timing, a count, the
+ * provider's message) and vary run to run; they are left out of the signature, so two hangs
+ * for the same reason count as the same failure.
+ */
+const DETAIL = "detail: ";
+const isDetail = (line: string) => line.startsWith(DETAIL);
+
+/** "reason (detail)" when the gate recorded a detail line, else undefined. */
+export function failureDetail(r: Return["reasons"][number]): string | undefined {
+  const detail = r.evidence.find(isDetail);
+  return detail ? `${r.reason} (${detail.slice(DETAIL.length)})` : undefined;
+}
+
 /** Identifies how an attempt failed: its failing gates, reasons and evidence, order aside. */
 export function stallSignature(r: Pick<Return, "reasons">): string {
   const lines = r.reasons
-    .map((x) => `${x.gate} | ${x.reason} | ${x.evidence.join(" / ")}`)
+    .map((x) => `${x.gate} | ${x.reason} | ${x.evidence.filter((e) => !isDetail(e)).join(" / ")}`)
     .sort()
     .join("\n");
   return createHash("sha256").update(lines).digest("hex").slice(0, 12);

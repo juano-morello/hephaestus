@@ -78,6 +78,9 @@ describe("loadConfig", () => {
       attempts_per_unit: 5,
       budget_tokens: 20000,
       gate_timeout_ms: 600000,
+      attempt_timeout_ms: 1200000,
+      idle_timeout_ms: 600000,
+      transport_retries: 2,
       parallel: 3,
     });
     expect(config.sandbox.runtime).toBe("podman");

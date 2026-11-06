@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LedgerEvent } from "@hephaestus/ledger";
-import { isStalled, stallSignature } from "../src/stall.ts";
+import { failureDetail, isStalled, stallSignature } from "../src/stall.ts";
 
 type R = { gate: string; reason: string; evidence?: string[] };
 const reasons = (...rs: R[]) => ({
@@ -31,6 +31,28 @@ describe("stallSignature", () => {
     expect(stallSignature(reasons({ gate: "tests", reason: "63 of 64 passed" }))).not.toBe(
       stallSignature(reasons({ gate: "tests", reason: "62 of 64 passed" })),
     );
+  });
+});
+
+describe("transport failure evidence", () => {
+  const t = (detail: string) => ({
+    gate: "worker_output",
+    reason: "worker transport failure: timeout",
+    evidence: ["kind: timeout", `detail: ${detail}`],
+  });
+  test("detail lines (timings, counts) do not change the signature", () => {
+    expect(stallSignature(reasons(t("hung 20m1s")))).toBe(
+      stallSignature(reasons(t("hung 19m58s"))),
+    );
+  });
+  test("but the kind does", () => {
+    expect(stallSignature(reasons(t("x")))).not.toBe(
+      stallSignature(reasons({ ...t("x"), evidence: ["kind: idle", "detail: x"] })),
+    );
+  });
+  test("failureDetail says why, only when the gate recorded a detail", () => {
+    expect(failureDetail(t("hung 20m"))).toBe("worker transport failure: timeout (hung 20m)");
+    expect(failureDetail({ gate: "tests", reason: "1 failed", evidence: ["a"] })).toBeUndefined();
   });
 });
 

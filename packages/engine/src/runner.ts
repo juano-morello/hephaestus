@@ -15,9 +15,24 @@ import { buildContextPack } from "./context.ts";
 import { Stopped } from "./effects.ts";
 import type { UnitGate } from "./gates.ts";
 import { createGit, type Diff } from "./git.ts";
-import type { SpawnOutput, Worker } from "./worker.ts";
+import type { SpawnOutput, Worker, WorkerFailure } from "./worker.ts";
 
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_TRANSPORT_RETRIES = 2;
+
+const addUsage = (a: Usage, b: Usage): Usage => ({
+  input: a.input + b.input,
+  output: a.output + b.output,
+  cache_read: a.cache_read + b.cache_read,
+  cache_write: a.cache_write + b.cache_write,
+});
+
+/**
+ * A worker that failed and gave nothing back: a hang, a timeout, a dead connection. That is the
+ * transport's fault, not the model's work, so it is re-run without using one of the unit's
+ * attempts. A worker that finished ("ok") without a result is the model's failure and is not.
+ */
+const isTransportFailure = (out: SpawnOutput) => out.exit === "error" && out.output == null;
 
 /** Why a build stopped on purpose: `heph cancel`/a user, or a handoff to another node. */
 export type StopReason = "user" | "handoff";
@@ -126,6 +141,12 @@ export type LocalRunnerOptions = {
   worktreesDir: string;
   tools: string[];
   gateTimeoutMs?: number | undefined;
+  /** Wall-clock limit per worker run, with an override per tier. The worker enforces it. */
+  attemptTimeoutMs?: number | undefined;
+  attemptTimeoutByTier?: Partial<Record<Complexity, number>> | undefined;
+  idleTimeoutMs?: number | undefined;
+  /** Re-runs of a worker that returned nothing, per attempt. Default 2. */
+  transportRetries?: number | undefined;
 };
 
 /** The in-process runner: a worktree per attempt, the worker, a commit, then the unit gates. */
@@ -165,26 +186,43 @@ export function localRunner(o: LocalRunnerOptions): Runner {
         hooks.started({ sizeTokens: built.sizeTokens, truncated: built.truncated });
 
         const started = Date.now();
-        let out: SpawnOutput;
-        try {
-          out = await o.worker.spawn({
-            role: req.role,
-            brief,
-            workdir,
-            tools: o.tools,
-            model: req.model,
-            ...(req.effort ? { effort: req.effort } : {}),
-            ...(req.signal ? { signal: req.signal } : {}),
-          });
-        } catch (e) {
-          if (e instanceof Stopped) throw e;
-          out = {
-            output: undefined,
-            transcript: `worker threw: ${e}`,
-            usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-            exit: "error",
-          };
+        const timeoutMs = o.attemptTimeoutByTier?.[req.tier] ?? o.attemptTimeoutMs;
+        const spawnOnce = async (): Promise<SpawnOutput> => {
+          try {
+            return await o.worker.spawn({
+              role: req.role,
+              brief,
+              workdir,
+              tools: o.tools,
+              model: req.model,
+              ...(req.effort ? { effort: req.effort } : {}),
+              ...(req.signal ? { signal: req.signal } : {}),
+              ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+              ...(o.idleTimeoutMs !== undefined ? { idleTimeoutMs: o.idleTimeoutMs } : {}),
+            });
+          } catch (e) {
+            if (e instanceof Stopped) throw e;
+            return {
+              output: undefined,
+              transcript: `worker threw: ${e}`,
+              usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+              exit: "error",
+              failure: { kind: "error", detail: `worker threw: ${e}` },
+            };
+          }
+        };
+        // Transport retries re-run the worker in the same worktree (its partial edits stay) and
+        // every run is paid for, so usage is summed.
+        const maxRuns = 1 + (o.transportRetries ?? DEFAULT_TRANSPORT_RETRIES);
+        let spawns = 1;
+        let out = await spawnOnce();
+        let spent = out.usage;
+        while (isTransportFailure(out) && spawns < maxRuns && !req.signal?.aborted) {
+          spawns++;
+          out = await spawnOnce();
+          spent = addUsage(spent, out.usage);
         }
+        out = { ...out, usage: spent };
 
         // Interrupted or rate-limited attempts never count and never escalate (SPEC sections 10, 13).
         if (out.exit === "rate_limited" || out.exit === "interrupted") {
@@ -204,7 +242,23 @@ export function localRunner(o: LocalRunnerOptions): Runner {
         const parsed = WorkerResult.safeParse(out.output);
         const gates: GateResult[] = [];
         let outcome: "green" | "red" | "blocked" | "error";
-        if (out.exit === "error" || !parsed.success) {
+        if (isTransportFailure(out)) {
+          outcome = "error";
+          const failure: WorkerFailure = out.failure ?? {
+            kind: "error",
+            detail: "the worker exited with an error and returned no result",
+          };
+          gates.push({
+            gate: "worker_output",
+            verdict: "fail",
+            reason: `worker transport failure: ${failure.kind}`,
+            evidence: [
+              `kind: ${failure.kind}`,
+              `detail: ${failure.detail}`,
+              `${spawns} spawn${spawns === 1 ? "" : "s"}, none returned a result`,
+            ],
+          });
+        } else if (out.exit === "error" || !parsed.success) {
           outcome = "error";
           gates.push({
             gate: "worker_output",
