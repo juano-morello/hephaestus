@@ -5,6 +5,7 @@ import {
   type Criterion,
   type GateResult,
   type Return,
+  type Rung,
   type Task,
   type UnitBrief,
   WorkerResult,
@@ -46,7 +47,7 @@ export type AttemptRequest = {
   runId: string;
   task: Task;
   attempt: number;
-  tier: Complexity;
+  tier: Rung;
   role: string;
   model: string;
   effort?: string | undefined;
@@ -186,7 +187,8 @@ export function localRunner(o: LocalRunnerOptions): Runner {
         hooks.started({ sizeTokens: built.sizeTokens, truncated: built.truncated });
 
         const started = Date.now();
-        const timeoutMs = o.attemptTimeoutByTier?.[req.tier] ?? o.attemptTimeoutMs;
+        const timeoutMs =
+          o.attemptTimeoutByTier?.[req.tier === "top" ? "complex" : req.tier] ?? o.attemptTimeoutMs;
         const spawnOnce = async (): Promise<SpawnOutput> => {
           try {
             return await o.worker.spawn({

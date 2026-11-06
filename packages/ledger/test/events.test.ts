@@ -134,4 +134,22 @@ describe("event schemas", () => {
     const { run_id: _, ...noRun } = stamp(samples["run.finished"]);
     expect(() => parseStoredEvent(noRun)).toThrow("invalid stored event");
   });
+
+  test("attempt events accept the top rung, the routing decision and fallback_for", () => {
+    const base = samples["unit.attempt.started"];
+    const withData = (extra: object) => stamp({ ...base, data: { ...base.data, ...extra } });
+    expect(validateEvent(withData({ tier: "top" }))).toMatchObject({ ok: true });
+    const routed = { tier: "complex", score: 7, planner_tier: "standard", reasons: ["wide diff"] };
+    expect(validateEvent(withData({ routed, fallback_for: "claude/opus" }))).toMatchObject({
+      ok: true,
+    });
+    const done = samples["unit.attempt.finished"];
+    expect(
+      validateEvent(stamp({ ...done, data: { ...done.data, tier: "top", routed } })),
+    ).toMatchObject({ ok: true });
+    expect(validateEvent(withData({ tier: "huge" }))).toMatchObject({ ok: false });
+    expect(validateEvent(withData({ routed: { ...routed, tier: "top" } }))).toMatchObject({
+      ok: false,
+    });
+  });
 });

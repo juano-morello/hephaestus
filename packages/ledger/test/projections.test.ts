@@ -132,6 +132,20 @@ describe("projections", () => {
     ledger.close();
   });
 
+  test("an attempt on the top rung is stored with tier top", () => {
+    const ledger = open(dir());
+    ledger.appendMany([
+      { ...samples["run.created"], ...run("R9") },
+      {
+        ...samples["unit.attempt.started"],
+        ...attempt("R9", "T1", 1),
+        data: { ...samples["unit.attempt.started"].data, tier: "top" },
+      },
+    ]);
+    expect(ledger.attempts("R9", "T1").map((a) => a.tier)).toEqual(["top"]);
+    ledger.close();
+  });
+
   test("gate stats exclude eval runs; usage keeps them, flagged", () => {
     const ledger = open(dir());
     script(ledger);

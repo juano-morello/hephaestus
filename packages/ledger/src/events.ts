@@ -1,4 +1,4 @@
-import { Brief, Complexity, GateResult, Plan, Return } from "@hephaestus/core";
+import { Brief, Complexity, GateResult, Plan, Return, Rung } from "@hephaestus/core";
 import { z } from "zod";
 
 const Id = z.string().min(1);
@@ -42,10 +42,20 @@ type EnvelopeField = "unit_id" | "attempt" | "graph_node";
 
 const AttemptInfo = {
   role: Id,
-  tier: Complexity,
+  tier: Rung,
   model: Id,
   effort: Id.optional(),
   provider: Id,
+  routed: z
+    .object({
+      tier: Complexity,
+      score: z.number(),
+      planner_tier: Complexity,
+      reasons: z.array(z.string()),
+    })
+    .strict()
+    .optional(),
+  fallback_for: Id.optional(),
 };
 
 export const Usage = z
