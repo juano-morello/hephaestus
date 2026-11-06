@@ -27,6 +27,7 @@ import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
+import { explainText } from "./output.ts";
 import { type Deps, describe, type Runtime } from "./runtime.ts";
 import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
@@ -460,8 +461,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
   }),
   explain: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.explain(need(ctx.args, 0, "run id"), ctx.args[1])),
-    render: (x) =>
-      `${x.events.map((e) => `${e.ts.slice(11, 19)} ${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${e.summary}`).join("\n")}\n`,
+    render: explainText,
     usage: ["explain <run> [<unit>]", "What happened in a run, one line per event"],
   }),
   hint: command({

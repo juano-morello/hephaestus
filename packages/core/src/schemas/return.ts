@@ -21,6 +21,8 @@ export const Return = z
     /** Narrowed, usually the failing files. */
     scope: z.array(z.string().min(1)),
     instruction: z.string().min(1),
+    /** What the failed attempt changed (files, +/- lines), so the next one need not rediscover it. */
+    diff_stat: z.string().optional(),
   })
   .strict();
 export type Return = z.infer<typeof Return>;

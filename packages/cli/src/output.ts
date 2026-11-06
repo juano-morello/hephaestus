@@ -172,8 +172,60 @@ export const Explain = z
         })
         .strict(),
     ),
+    /** Why each escalated or stalled unit keeps failing (see engine diagnose). */
+    diagnoses: z
+      .array(
+        z
+          .object({
+            unit_id: z.string(),
+            gate: z.string(),
+            reason: z.string(),
+            repeated: z.int(),
+            evidence: z.array(z.string()),
+            attempts: z.array(
+              z
+                .object({
+                  attempt: z.int(),
+                  outcome: z.string().optional(),
+                  changed: z.string().optional(),
+                })
+                .strict(),
+            ),
+            category: z.string(),
+            suggestion: z.string(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
+
+/** The events one per line, then for each stuck unit what keeps failing and what hint may help. */
+export const explainText = (x: z.infer<typeof Explain>): string => {
+  const events = x.events.map(
+    (e) =>
+      `${e.ts.slice(11, 19)} ${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${e.summary}`,
+  );
+  const why = (x.diagnoses ?? []).flatMap((d) => [
+    "",
+    `${d.unit_id} is stuck on ${d.gate} (failed ${d.repeated} time${d.repeated === 1 ? "" : "s"} in a row): ${d.reason}`,
+    ...(d.evidence.length
+      ? ["  evidence:", ...d.evidence.map((l) => `    ${l.slice(0, 400)}`)]
+      : []),
+    ...(d.attempts.length
+      ? [
+          "  attempts:",
+          ...d.attempts.map(
+            (a) =>
+              `    a${a.attempt}${a.outcome ? ` ${a.outcome}` : ""}${a.changed ? `: ${a.changed}` : ""}`,
+          ),
+        ]
+      : []),
+    `  hint category: ${d.category}`,
+    `  suggested hint: ${d.suggestion}`,
+  ]);
+  return `${[...events, ...why].join("\n")}\n`;
+};
 
 export const Hint = z
   .object({

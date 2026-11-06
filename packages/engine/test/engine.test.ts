@@ -304,6 +304,7 @@ describe("runPlan", () => {
     expect(result.status).toBe("built");
     const second = calls.filter((c) => c.input.brief.task.id === "T2")[1];
     expect(second?.input.brief.feedback).toEqual({
+      diff_stat: "1 file changed, +1 -1: server/inventory/stack.go (+1 -1)",
       schema: 1,
       unit_id: "T2",
       attempt: 1,
@@ -364,7 +365,9 @@ describe("runPlan", () => {
 
     expect(result).toMatchObject({
       status: "paused",
-      reason: "T1: stalled: impl failed the same way on a1 and a2",
+      reason: expect.stringContaining(
+        "T1: stalled: impl failed the same way on a1 and a2 (repeated: ",
+      ),
     });
     expect(calls.map((c) => c.input.brief.task.id)).toEqual(["T1", "T1"]);
     expect(ledger.run("R1")?.status).toBe("paused");
@@ -377,7 +380,13 @@ describe("runPlan", () => {
       {
         signature: expect.any(String),
         attempts: [1, 2],
-        failing: [{ gate: "impl", reason: "inventory/stack.go lacks capped" }],
+        failing: [
+          {
+            gate: "impl",
+            reason: "inventory/stack.go lacks capped",
+            evidence: expect.any(String),
+          },
+        ],
       },
       { reason: "user" },
     ]);

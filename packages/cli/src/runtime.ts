@@ -21,6 +21,7 @@ import {
   checkChangeset,
   configHash,
   createRun,
+  diagnose,
   dropJoinPins,
   type EngineConfig,
   ghPullRequests,
@@ -37,6 +38,7 @@ import {
   restack,
   restackChildren,
   STACKABLE,
+  stallReason,
   unresolvedStack,
   type Worker,
 } from "@hephaestus/engine";
@@ -717,7 +719,24 @@ export function openRuntime(opts: {
           ...(e.attempt ? { attempt: e.attempt } : {}),
           summary: describe(e),
         }));
-      return { run_id: runId, ...(unit ? { unit } : {}), events };
+      // Units that stopped the build (escalated or stalled) and are not accepted since.
+      const stuck = new Map<string, boolean>();
+      for (const e of ledger.read({ run_id: runId, ...(unit ? { unit_id: unit } : {}) })) {
+        const u = e.event.unit_id;
+        if (!u) continue;
+        if (e.event.type === "unit.escalated" || e.event.type === "unit.stalled")
+          stuck.set(u, true);
+        else if (e.event.type === "unit.accepted") stuck.delete(u);
+      }
+      const all = ledger.read({ run_id: runId }).map((s) => s.event) as unknown as LedgerEvent[];
+      const blob = (id: string) => ledger.blobs.getText(id);
+      const diagnoses = [...stuck.keys()].flatMap((u) => diagnose(all, u, blob) ?? []);
+      return {
+        run_id: runId,
+        ...(unit ? { unit } : {}),
+        events,
+        ...(diagnoses.length ? { diagnoses } : {}),
+      };
     },
 
     /**
@@ -899,8 +918,9 @@ export function describe(e: { type: string; data: unknown; attempt?: number | un
       return `returned: ${((d.reasons as { gate: string; reason: string }[]) ?? []).map((r) => `${r.gate}: ${r.reason}`).join("; ")}`;
     case "unit.stalled": {
       const [a, b] = d.attempts as [number, number];
-      const gates = [...new Set((d.failing as { gate: string }[]).map((f) => f.gate))];
-      return `stalled: ${gates.join(", ")} failed the same way on a${a} and a${b}`;
+      const failing = d.failing as { gate: string; evidence?: string }[];
+      const gates = [...new Set(failing.map((f) => f.gate))];
+      return stallReason(gates.join(", "), [a, b], failing[0]?.evidence);
     }
     case "run.plan_ready":
       return `plan ready: ${((d.plan as Plan).tasks ?? []).map((t) => t.id).join(", ")}`;

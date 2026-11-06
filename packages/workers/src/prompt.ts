@@ -52,7 +52,7 @@ export function renderUnitPrompt(brief: UnitBrief): string {
       )
       .join("\n\n");
     sections.push(
-      `## Feedback from attempt ${brief.feedback.attempt}\n\nThe checks failed. Instruction: ${brief.feedback.instruction}.\n\n${reasons}`,
+      `## Feedback from attempt ${brief.feedback.attempt}\n\nThe checks failed. Instruction: ${brief.feedback.instruction}.\n\n${reasons}${brief.feedback.diff_stat ? `\n\nThat attempt changed: ${brief.feedback.diff_stat}. Do not repeat it unchanged; the same result will fail the same way.` : ""}`,
     );
   }
 

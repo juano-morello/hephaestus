@@ -1,6 +1,6 @@
 // Plain-text renderers for MCP tool results, in the CLI's words (see main.ts).
 import type { z } from "zod";
-import type { OUTPUT } from "../output.ts";
+import { type OUTPUT, explainText as renderExplain } from "../output.ts";
 import type { Outcome, WatchStepResult } from "./watch.ts";
 
 type PlanShow = z.infer<(typeof OUTPUT)["plan show"]>;
@@ -50,13 +50,7 @@ export const statusText = (s: Status): string => {
   ].join("\n");
 };
 
-export const explainText = (x: Explain): string =>
-  `${x.events
-    .map(
-      (e) =>
-        `${e.ts.slice(11, 19)} ${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${e.summary}`,
-    )
-    .join("\n")}\n`;
+export const explainText = (x: Explain): string => renderExplain(x);
 
 /** What a planning run (new, plan revise) came to; only a planned run asks for the user's approval. */
 export const planResultText = (r: PlanResult): string =>

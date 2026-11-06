@@ -107,6 +107,37 @@ describe("read-only tools", () => {
     await client.close();
   });
 
+  test("heph_explain shows the repeating gate, evidence, per-attempt changes and a hint category", async () => {
+    const x = {
+      run_id: "r1",
+      events: [{ id: "e1", ts: "2026-01-01T10:20:30Z", type: "t", summary: "did it" }],
+      diagnoses: [
+        {
+          unit_id: "T8",
+          gate: "diff_scope",
+          reason: "changes outside the task scope",
+          repeated: 3,
+          evidence: ["out of scope: README.md"],
+          attempts: [
+            { attempt: 1, outcome: "red", changed: "1 file changed, +1 -0: README.md (+1 -0)" },
+            { attempt: 2, outcome: "red" },
+          ],
+          category: "scope conflict",
+          suggestion: "allow them with heph hint --scope <globs>",
+        },
+      ],
+    };
+    const { client: d } = fakeDaemon({ explain: () => x });
+    const client = await connectTestClient({ client: d, workspace: () => undefined });
+    const text = textOf(await client.callTool({ name: "heph_explain", arguments: { run: "r1" } }));
+    expect(text).toContain("T8 is stuck on diff_scope (failed 3 times in a row)");
+    expect(text).toContain("out of scope: README.md");
+    expect(text).toContain("a1 red: 1 file changed, +1 -0: README.md (+1 -0)");
+    expect(text).toContain("hint category: scope conflict");
+    expect(text).toContain("heph hint --scope");
+    await client.close();
+  });
+
   test("daemon errors become isError with the message", async () => {
     const { client: d } = fakeDaemon({
       status: () => {
