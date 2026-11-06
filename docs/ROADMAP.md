@@ -37,7 +37,7 @@ Out of scope for now (decided 2026-11-06): leases and heartbeats for cross-node 
 
 Each gets its own spec, plan and build.
 
-- **A. Planner quality.** Built 2026-11-06 (see NOTES "Planner paths"); original scope: Plan gate matching scope globs against the worktree file list; execution gate requiring locked tests to be red before the implement task; repo maps generated from real repos; `heph plan` CLI surface; `Criterion.projects`; narrowing the Return's scope to failing files.
+- **A. Planner quality.** Partly built. Built 2026-11-06 (NOTES "Planner paths"): the `creates` gate for guessed paths and the collapsed repo map. Remaining: execution gate requiring locked tests to be red before the implement task; `heph plan` CLI surface; `Criterion.projects`; narrowing the Return's scope to failing files; rejecting over-wide test globs; a planner file-listing tool; the live before/after measurement of the planner-paths change.
 - **B. Authoring surface.** Workflows, presets, `--dry-run`, custom gates from `.heph/gates/`, JSON Schema generation from the zod schemas, extra gates (coverage delta, requirement-to-check mapping, Godot project-imports-headless).
 - **C. Routing and limits.** Built 2026-11-06 (NOTES "Routing"): start-tier router, escalation ladder with `top`, fallback provider with cooldown. Not built: remaining-budget tracking per provider, and fallback on provider outages (needs worker failure classes).
 - **D. Run control.** Interrupt an in-flight worker on `heph cancel`; handoff that waits for in-flight attempts.
@@ -47,4 +47,4 @@ Each gets its own spec, plan and build.
 
 ## Order
 
-A first: it most directly affects run success, and later work builds on a reliable planner. Remaining order to be decided after A.
+A was chosen first because it most directly affects run success, and it is only partly built (see above). C's routing work is built (2026-11-06). The next sub-project is still to be chosen.
