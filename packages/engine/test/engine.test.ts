@@ -713,7 +713,7 @@ describe("runPlan with the built-in gates", () => {
 
     expect(result).toMatchObject({
       status: "paused",
-      reason: "T1: stalled: tests failed the same way on a1 and a2",
+      reason: "T1: stalled: tests failed the same way on a1 and a2 (repeated: exit 0)",
     });
     expect(calls[1]?.input.brief.feedback?.reasons).toEqual([
       {
@@ -743,7 +743,9 @@ describe("runPlan with the built-in gates", () => {
       {
         gate: "diff_scope",
         reason: "changes outside the task scope",
-        evidence: ["out of scope: extra.sh"],
+        evidence: [
+          'out of scope: extra.sh (task scope: impl.sh; add "extra.sh" or "*" to the task scope to allow it)',
+        ],
       },
       {
         gate: "touched_vs_diff",
