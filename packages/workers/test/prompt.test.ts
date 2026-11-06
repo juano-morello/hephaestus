@@ -106,3 +106,20 @@ describe("role prompts", () => {
     await expect(loadRolePrompt("reviewer")).rejects.toThrow("no role prompt for reviewer");
   });
 });
+
+describe("role prompt contradiction rules", () => {
+  test("test_author: dependency-ordered assertions, blast radius, blocked protocol", async () => {
+    const p = await loadRolePrompt("test_author");
+    expect(p).toContain("Never assert on content a later task will add");
+    expect(p).toContain("goldens");
+    expect(p).toContain("exact conflict");
+    expect(p).toContain("concrete proposed resolution");
+  });
+  test("implementer: blast radius, id collisions, blocked protocol", async () => {
+    const p = await loadRolePrompt("implementer");
+    expect(p).toContain("goldens");
+    expect(p).toContain("next free id");
+    expect(p).toContain("exact conflict");
+    expect(p).toContain("concrete proposed resolution");
+  });
+});

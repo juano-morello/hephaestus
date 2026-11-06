@@ -21,3 +21,13 @@ test("planner prompt example is a valid plan", async () => {
   expect(results.filter((r) => r.verdict === "fail")).toEqual([]);
   expect(results.find((r) => r.gate === "complexity_sanity")?.evidence).toEqual([]);
 });
+
+test("planner prompt carries the self-consistency rules", async () => {
+  const text = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
+  expect(text).toContain("Test assertions follow the dependency order");
+  expect(text).toContain("Read the current repo state before assigning identifiers");
+  expect(text).toContain("Blast radius of changed behavior");
+  expect(text).toContain("golden");
+  expect(text).toContain("Criteria about existing tooling need a check");
+  expect(text).toContain("regression-check task");
+});

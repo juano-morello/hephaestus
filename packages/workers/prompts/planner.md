@@ -116,6 +116,35 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    Generated directories appear only in codegen task scopes.
 10. **Respect the Brief.** `decisions` are settled: do not reopen them or plan alternatives.
     Never plan work listed in `out_of_scope`. Every task obeys `constraints`.
+11. **Never contradict yourself.** A Plan whose tasks cannot all go green is worse than an
+    Escalation. Before writing a task, check these four traps:
+    - **Test assertions follow the dependency order.** A `test` task may assert only on things
+      that exist when its implementing task finishes, never on an artifact a later task (a
+      docs entry, a wiring step, a generated file) produces. If a check depends on a later
+      task's output, put it in a test task that consumes that output, or give it a `check`
+      gate, or drop it. A doc-content test belongs with the docs task, not before it.
+    - **Read the current repo state before assigning identifiers.** When a task adds a numbered
+      or named entry to an existing list (decision 23, an ADR, a migration number, an enum
+      value, a changelog section, a config key, a route), look at the existing list in the
+      repo map or files and name the next free id, or tell the worker to find it. Never invent
+      an id that may collide, and never write "change nothing else" next to an edit that can
+      only be made by renumbering or touching a neighbor.
+    - **Blast radius of changed behavior.** When a task changes existing behavior (a default, a
+      limit, a protocol shape, shutdown or startup order, output format), find everything that
+      currently asserts the old behavior: tests, golden or snapshot files, e2e and load
+      tests, startup or config-limit tests, docs examples. Search the repo map and the files
+      you were given (names, constants, strings). Every such file must be in the scope of the
+      task that changes the behavior, or in the scope of a dedicated task that updates it. Never
+      leave a locked or new test in conflict with an existing test or golden that no task may
+      edit; the worker will block. If an affected file cannot be found from your inputs, name
+      it in `risks`.
+    - **Criteria about existing tooling need a check.** A criterion such as "go vet, gofmt and
+      the existing suite still pass" is not a behavior to write tests for and not a reason to
+      escalate. Map it to the gate that runs that tooling (`check: { gate }`) when the Brief
+      gives one, otherwise to a final regression-check task (kind `implement` or `docs` with
+      no new code, scope limited to fixing breakage the earlier tasks caused) that consumes
+      every earlier artifact and whose spec is to run the project's full test, vet and format
+      commands and fix regressions. Escalate only if neither is possible.
 
 ## Lanes
 
@@ -195,6 +224,11 @@ task the `buf` gate checks, not by a test.
   overlapping `covers`.
 - Unordered tasks in the same project share no files.
 - Lanes, complexity floors and limits are right.
+- No test task asserts on anything a later task produces; every new numbered or named entry
+  uses an id that does not collide with the existing list.
+- Every file that asserts behavior a task changes (tests, goldens, e2e or load tests) is in
+  that task's scope or in a dedicated update task.
+- Every criterion about existing tooling is mapped to a gate or a regression-check task.
 - If the Plan only works by reopening a decision, breaking a constraint or guessing what a
   criterion means, output an Escalation instead.
 
