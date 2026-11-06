@@ -11,7 +11,15 @@ import { ghPullRequests, type PrState, type PullRequests } from "../src/prs.ts";
 import { pendingRestack, restack, restackChildren } from "../src/stack.ts";
 import type { Worker } from "../src/worker.ts";
 import { tempDir, writeFiles } from "./helpers.ts";
-import { brief, config, crossRepoPlan, threeRepos, writer, writeScript } from "./workspace.ts";
+import {
+  brief,
+  config,
+  crossRepoFiles,
+  crossRepoPlan,
+  threeRepos,
+  writer,
+  writeScript,
+} from "./workspace.ts";
 
 const dir = tempDir();
 
@@ -201,7 +209,13 @@ describe("landing without remotes", () => {
     const serverMain = await git("server").revParse("main");
 
     const out = await landChangeset(options);
-    expect(out).toMatchObject({ status: "aborted", reason: "rebase conflict in server: impl.sh" });
+    expect(out).toMatchObject({ status: "aborted" });
+    const reason = (out as { reason: string }).reason;
+    // Names the files, says the run is paused (not failed) and how to go on.
+    expect(reason).toContain("rebase conflict in server: impl.sh");
+    expect(reason).toContain("paused");
+    expect(reason).toContain("heph run R1");
+    expect(reason).toContain("heph hint R1");
     expect(await git("proto").revParse("main")).toBe(protoMain);
     expect(await git("server").revParse("main")).toBe(serverMain);
     expect(types(ledger).slice(-2)).toEqual(["merge.aborted", "run.paused"]);
@@ -539,15 +553,132 @@ describe("ghPullRequests readiness and merge", () => {
 });
 
 describe("mergeChangeset locally", () => {
-  test("a target that moved after staging aborts and nothing lands", async () => {
-    const { root, ledger, options, git } = await built();
+  test("a target that moved after staging is rebased onto, re-gated and landed", async () => {
+    const { root, ledger, options, git } = await built({
+      commands: { server: { test: "sh check.sh" } },
+    });
+    await runPlan(options);
+    await landChangeset(options);
+    await commitToMain(join(root, "server"), { "NEWS.md": "late\n" });
+    const gates = ledger.read({ types: ["gate.result"] }).length;
+    expect(await mergeChangeset(options)).toEqual({ status: "merged" });
+    expect((await git("server").diff("main~3", "main")).files).toEqual([
+      "NEWS.md",
+      "check.sh",
+      "impl.sh",
+    ]);
+    // Re-gated after the re-stage, and staged again at the rebased tip.
+    expect(ledger.read({ types: ["gate.result"] }).length).toBeGreaterThan(gates);
+    const staged = ledger.read({ types: ["merge.staged"] });
+    expect(staged).toHaveLength(2);
+    const last = staged[1]?.event.data as { refs: Record<string, string> };
+    expect(last.refs.server).toBe(await git("server").revParse("main"));
+    expect(ledger.run("R1")?.status).toBe("finished");
+    ledger.close();
+  });
+
+  test("a red re-gate after the target moved aborts and lands nothing", async () => {
+    const { root, ledger, options, git } = await built({ integration: "test ! -f server/BREAK\n" });
     await runPlan(options);
     await landChangeset(options);
     const protoMain = await git("proto").revParse("main");
-    await commitToMain(join(root, "server"), { "NEWS.md": "late\n" });
+    await commitToMain(join(root, "server"), { BREAK: "x" });
     const r = await mergeChangeset(options);
     expect(r).toMatchObject({ status: "aborted" });
+    expect((r as { reason: string }).reason).toContain("re-gate after rebase failed: integration");
     expect(await git("proto").revParse("main")).toBe(protoMain);
+    ledger.close();
+  });
+
+  test("a real conflict on re-stage pauses the run with the files and a way forward", async () => {
+    const { root, ledger, options, git } = await built();
+    await runPlan(options);
+    await landChangeset(options);
+    await commitToMain(join(root, "server"), { "impl.sh": "echo upstream\n" });
+    const serverMain = await git("server").revParse("main");
+    const protoMain = await git("proto").revParse("main");
+    const branch = await git("server").revParse("heph/R1");
+    const r = await mergeChangeset(options);
+    expect(r).toMatchObject({ status: "aborted" });
+    const reason = (r as { reason: string }).reason;
+    expect(reason).toContain("rebase conflict in server: impl.sh");
+    expect(reason).toContain("heph run R1");
+    expect(await git("server").revParse("main")).toBe(serverMain);
+    expect(await git("proto").revParse("main")).toBe(protoMain);
+    expect(await git("server").revParse("heph/R1")).toBe(branch);
+    expect(ledger.run("R1")?.status).toBe("paused");
+    // Resumable: once the upstream conflict is gone, landing again stages and merges.
+    await runOk(["git", "reset", "-q", "--hard", "HEAD~1"], { cwd: join(root, "server") });
+    expect((await landChangeset(options)).status).toBe("staged");
+    expect((await mergeChangeset(options)).status).toBe("merged");
+    ledger.close();
+  });
+
+  test("re-staging is bounded when the target keeps moving", async () => {
+    const { root, ledger, options, git } = await built();
+    await runPlan(options);
+    await landChangeset(options);
+    await commitToMain(join(root, "server"), { "NEWS.md": "late\n" });
+    let n = 0;
+    const r = await mergeChangeset({
+      ...options,
+      chaos: async (p) => {
+        if (p.startsWith("after:rebase:server"))
+          await commitToMain(join(root, "server"), { [`N${n++}.md`]: "x\n" });
+      },
+    });
+    expect(r).toMatchObject({ status: "aborted" });
+    expect((r as { reason: string }).reason).toContain("kept moving");
+    expect(n).toBeGreaterThan(1);
+    expect(n).toBeLessThanOrEqual(4);
+    expect(ledger.run("R1")?.status).toBe("paused");
+    expect(await git("server").revParse("main")).not.toBe(await git("server").revParse("heph/R1"));
+    ledger.close();
+  });
+
+  test("two runs landing at once on one repo serialize: both land", async () => {
+    const { ledger, options, git } = await built();
+    const two = (f: string) => f.replace(".", "2.");
+    const options2: RunPlanOptions = {
+      ...options,
+      runId: "R2",
+      changesetId: "C2",
+      plan: {
+        ...options.plan,
+        tasks: options.plan.tasks.map((t) => ({ ...t, scope: t.scope.map(two) })),
+      },
+      worker: {
+        async spawn(input) {
+          const files = Object.fromEntries(
+            Object.entries(
+              (crossRepoFiles as Record<string, Record<string, string>>)[
+                input.brief.task.id as string
+              ] ?? {},
+            ).map(([f, c]) => [two(f), c]),
+          );
+          writeFiles(input.workdir, files);
+          return {
+            output: { schema: 1, summary: "", claims: [], touched: Object.keys(files) },
+            transcript: "",
+            usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+            exit: "ok",
+          };
+        },
+      },
+      worktreesDir: join(dir(), "worktrees2"),
+    };
+    expect((await runPlan(options)).status).toBe("built");
+    expect((await runPlan(options2)).status).toBe("built");
+    const land = async (o: RunPlanOptions) => {
+      expect((await landChangeset(o)).status).toBe("staged");
+      return mergeChangeset(o);
+    };
+    const results = await Promise.all([land(options), land(options2)]);
+    expect(results).toEqual([{ status: "merged" }, { status: "merged" }]);
+    const files = await git("server").lsTree("main");
+    expect(files).toEqual(expect.arrayContaining(["impl.sh", "impl2.sh"]));
+    expect(ledger.run("R1")?.status).toBe("finished");
+    expect(ledger.run("R2")?.status).toBe("finished");
     ledger.close();
   });
 });
@@ -965,7 +1096,10 @@ describe("landing a stacked run", () => {
     const bBuilt = await f.git.revParse("heph/B");
 
     const out = await landChangeset(f.opts("B"));
-    expect(out).toMatchObject({ status: "aborted", reason: "rebase conflict in server: b.sh" });
+    expect(out).toMatchObject({
+      status: "aborted",
+      reason: expect.stringContaining("rebase conflict in server: b.sh"),
+    });
     expect(types(f.ledger).slice(-2)).toEqual(["merge.aborted", "run.paused"]);
     expect(f.ledger.run("B")?.status).toBe("paused");
     expect(await f.git.revParse("heph/B")).toBe(bBuilt);
@@ -1188,7 +1322,10 @@ describe("landing a stacked run", () => {
       f.fake.failSetBase.add(f.urls.C as string);
 
       const out = await restackChildren({ ledger: f.ledger, parentId: "A", options: f.optionsFor });
-      expect(out.B).toMatchObject({ status: "aborted", reason: "rebase conflict in server: b.sh" });
+      expect(out.B).toMatchObject({
+        status: "aborted",
+        reason: expect.stringContaining("rebase conflict in server: b.sh"),
+      });
       expect(out.C).toMatchObject({
         status: "aborted",
         reason: "restack failed: base branch protected",

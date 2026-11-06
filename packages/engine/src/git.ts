@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { run, runOk } from "@hephaestus/sandbox";
 
 /** Engine commits carry their own identity, so they never depend on the repo's git config. */
@@ -9,6 +10,8 @@ export type Git = {
   revParse(ref: string): Promise<string>;
   /** The commit a ref points at, or undefined when it doesn't exist. */
   refSha(ref: string): Promise<string | undefined>;
+  /** The absolute, real path of the repo's shared git dir (one per repo, whatever the worktree). */
+  commonDir(): Promise<string>;
   /** Forgets worktrees whose directories are gone. */
   prune(): Promise<void>;
   /** Creates the branch at `at`, or resets it there. */
@@ -81,6 +84,10 @@ export function createGit(repoDir: string): Git {
         cwd: repoDir,
       });
       return r.code === 0 ? r.stdout.trim() : undefined;
+    },
+    async commonDir() {
+      const out = (await git(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+      return realpathSync(out);
     },
     prune: async () => void (await git(["worktree", "prune"])),
     branchForce: async (branch, at) => void (await git(["branch", "-f", branch, at])),
