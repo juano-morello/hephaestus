@@ -42,6 +42,16 @@ export type StopReason = "user" | "handoff";
 export const stopReason = (signal: AbortSignal | undefined): StopReason =>
   signal?.reason === "handoff" ? "handoff" : "user";
 
+/**
+ * The signal that stopped a build, if one did: `signal` (which also aborts workers) first, else
+ * `drain` (which only stops new work). `stopReason` of it is why the build paused.
+ */
+export const stopSignal = (o: {
+  signal?: AbortSignal | undefined;
+  drain?: AbortSignal | undefined;
+}): AbortSignal | undefined =>
+  o.signal?.aborted ? o.signal : o.drain?.aborted ? o.drain : undefined;
+
 /** Everything one attempt needs, decided by the coordinator (SPEC section 7). */
 export type AttemptRequest = {
   runId: string;

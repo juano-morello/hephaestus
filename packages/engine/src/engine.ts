@@ -35,7 +35,7 @@ import { type LandOptions, landChangeset, mergeChangeset } from "./land.ts";
 import { projectRelative } from "./paths.ts";
 import type { PullRequests } from "./prs.ts";
 import { type Routed, routeUnit } from "./route.ts";
-import { localRunner, type Runner, stopReason } from "./runner.ts";
+import { localRunner, type Runner, stopReason, stopSignal } from "./runner.ts";
 import {
   isPauseReason,
   PAUSE_RANK,
@@ -119,6 +119,12 @@ export type RunPlanOptions = {
    * "handoff" for a handoff to another node, anything else means the user.
    */
   signal?: AbortSignal;
+  /**
+   * Winds the build down without aborting workers: no unit starts and no unit starts another
+   * attempt, but attempts in flight finish and are kept. The build then pauses (reason from this
+   * signal, "handoff" for a handoff that waits). `signal` still interrupts workers.
+   */
+  drain?: AbortSignal;
   /** Who runs attempts. Default: in this process, with `worker` and `gates`. */
   runner?: Runner;
   /** Tests only: called before and after every effect (see effects.ts). */
@@ -566,7 +572,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
   }
 
   const stopped = async (): Promise<RunOutcome> => {
-    const reason = stopReason(opts.signal);
+    const reason = stopReason(stopSignal(opts));
     ledger.append({ ...engine, type: "run.paused", data: { reason } });
     return { status: "paused", runBranch: branch, heads: await heads(), reason };
   };
@@ -596,8 +602,9 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
 
     const stop = cancelled(ledger, runId);
     if (stop) return { status: "cancelled", reason: stop };
-    if (opts.signal?.aborted) {
-      const reason = stopReason(opts.signal);
+    const halt = stopSignal(opts);
+    if (halt) {
+      const reason = stopReason(halt);
       return { status: "paused", reason, detail: reason };
     }
     const h = history.get(id) ?? { next: 1, used: 0, reds: 0 };
@@ -622,7 +629,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
     accepted,
     scopeOf: (id) => humanInput(ctx, byId.get(id) as Task).scope,
     start,
-    stopped: () => opts.signal?.aborted === true,
+    stopped: () => stopSignal(opts) !== undefined,
   });
   if (out.kind === "cancelled")
     return { status: "cancelled", runBranch: branch, heads: await heads(), reason: out.reason };
@@ -636,7 +643,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
   const stop = accepted.size < byId.size ? cancelled(ledger, runId) : undefined;
   if (stop) return { status: "cancelled", runBranch: branch, heads: await heads(), reason: stop };
 
-  if (opts.signal?.aborted) return stopped();
+  if (stopSignal(opts)) return stopped();
   // The whole changeset must pass the workspace integration gate before it can land.
   const integration = await integrationGate(ctx, repos);
   ledger.append({ ...base, actor: "gate", type: "gate.result", data: integration });
@@ -820,8 +827,9 @@ async function runUnit(
     if (stop) return { status: "cancelled", reason: stop };
     const at = { ...unit, attempt: n };
     const engine = { ...at, actor: "engine" as const };
-    if (ctx.signal?.aborted) {
-      const reason = stopReason(ctx.signal);
+    const halt = stopSignal(ctx);
+    if (halt) {
+      const reason = stopReason(halt);
       return { status: "paused", reason, detail: `${t.id}: ${reason}` };
     }
     const { constraints, budgetTokens, scope } = humanInput(ctx, t);
