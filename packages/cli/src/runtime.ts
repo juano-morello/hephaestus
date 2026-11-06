@@ -630,7 +630,13 @@ export function openRuntime(opts: {
      * from where the run is: a stopped or paused build resumes, a built one is staged, and a
      * rate-limited one first waits for the limit to pass (`now` skips the wait).
      */
-    async build(runId: string, o: { now?: boolean; signal?: AbortSignal } = {}) {
+    /** How long one worker attempt may run here (`limits.attempt_timeout_ms`). */
+    attemptTimeoutMs: config.limits.attempt_timeout_ms,
+
+    async build(
+      runId: string,
+      o: { now?: boolean; signal?: AbortSignal; drain?: AbortSignal } = {},
+    ) {
       const row = runRow(runId);
       if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is ${row.status}`);
       if (row.status === "staged")
@@ -650,7 +656,11 @@ export function openRuntime(opts: {
         const { brief: _brief, ...ro } = runOptions(runId);
         let heads: Record<string, string> = {};
         if (runRow(runId).status !== "built") {
-          const out = await buildRun({ ...ro, ...(o.signal ? { signal: o.signal } : {}) });
+          const out = await buildRun({
+            ...ro,
+            ...(o.signal ? { signal: o.signal } : {}),
+            ...(o.drain ? { drain: o.drain } : {}),
+          });
           const base = {
             run_id: runId,
             status: out.status,

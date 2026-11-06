@@ -44,8 +44,13 @@ export type HandoffOptions = {
   workspaceRoot: string;
   /** What the new owner needs to find or make its checkout. */
   description: WorkspaceDescription;
-  /** Stops this node's build of the run, if one is going, and waits until it has stopped. */
-  stopBuild?: () => Promise<void>;
+  /**
+   * Stops this node's build of the run, if one is going, and waits until it has stopped. With
+   * `waitMs` it lets attempts in flight finish for up to that long before interrupting them.
+   */
+  stopBuild?: (waitMs?: number) => Promise<void>;
+  /** How long a build may keep finishing its attempts in flight before they are interrupted. */
+  waitMs?: number;
   chaos?: Chaos;
 };
 
@@ -86,7 +91,7 @@ export async function handOff(
   // here, nothing has happened yet and the build goes on.
   await o.transport.request("workspace.ensure", { workspace: o.description });
 
-  await o.stopBuild?.();
+  await o.stopBuild?.(o.waitMs);
   // A handoff stopped halfway left its push pending; close it before going on.
   await reconcile(o.ledger, o.runId, realityOf({}, dirOf));
 

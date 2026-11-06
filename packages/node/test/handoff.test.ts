@@ -197,6 +197,26 @@ async function buildingOnA(n: Nodes) {
 const tree = (cwd: string, ref: string) => git(cwd, "ls-tree", "-r", ref);
 
 describe("handoff", () => {
+  test("waitMs reaches stopBuild, and without it stopBuild gets undefined", async () => {
+    for (const waitMs of [1234, undefined]) {
+      const n = await twoNodes();
+      const { handoff } = await buildingOnA(n);
+      const seen: (number | undefined)[] = [];
+      const stop = handoff.stopBuild;
+      await handOff({
+        ...handoff,
+        ...(waitMs !== undefined ? { waitMs } : {}),
+        stopBuild: async (ms?: number) => {
+          seen.push(ms);
+          await stop();
+        },
+      });
+      expect(seen).toEqual([waitMs]);
+      n.a.close();
+      n.b.close();
+    }
+  });
+
   test("a run handed off mid-build is finished by the new owner without redoing accepted units", async () => {
     const n = await twoNodes();
     const { handoff } = await buildingOnA(n);

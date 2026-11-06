@@ -61,6 +61,8 @@ export type HostOptions = {
 
 type Job = {
   controller: AbortController;
+  /** Raised to let attempts in flight finish while nothing new starts (a handoff that waits). */
+  drain: AbortController;
   promise: Promise<void>;
   done: boolean;
   result?: unknown;
@@ -230,9 +232,10 @@ export function openHost(o: HostOptions) {
     if (running && !running.done) return { run_id: runId, started: false, running: true, ...after };
     const { rt } = await runtimeFor(workspaceOf(runId));
     const controller = new AbortController();
-    const job: Job = { controller, done: false, promise: Promise.resolve() };
+    const drain = new AbortController();
+    const job: Job = { controller, drain, done: false, promise: Promise.resolve() };
     job.promise = rt
-      .build(runId, { ...opts, signal: controller.signal })
+      .build(runId, { ...opts, signal: controller.signal, drain: drain.signal })
       .then((r) => {
         job.result = r;
       })
@@ -252,10 +255,25 @@ export function openHost(o: HostOptions) {
   /** Runs this node is handing off right now: their followers wait for the new owner. */
   const handingOff = new Set<string>();
 
-  const stopJob = async (runId: string, reason: string) => {
+  /**
+   * Stops a build job. With `waitMs` above 0 the attempts in flight get that long to finish (the
+   * job drains: nothing new starts) before the workers are interrupted; 0 interrupts at once.
+   */
+  const stopJob = async (runId: string, reason: string, waitMs = 0) => {
     const job = jobs.get(runId);
     if (!job || job.done) return;
-    job.controller.abort(reason);
+    if (waitMs > 0) {
+      job.drain.abort(reason);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        job.promise,
+        new Promise<void>((r) => {
+          timer = setTimeout(r, waitMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    if (!job.done) job.controller.abort(reason);
     await job.promise;
   };
 
@@ -422,7 +440,11 @@ export function openHost(o: HostOptions) {
         case "sync":
           return { peers: await syncAll() };
         case "handoff": {
-          const [runId, to] = args as [string, string];
+          const [runId, to, handoffOpts] = args as [
+            string,
+            string,
+            { wait?: number | "attempt" } | undefined,
+          ];
           const owner = ownerOf(runId);
           const handedByMe = ledger
             .read({ run_id: runId, types: ["run.handed_off"] })
@@ -430,7 +452,10 @@ export function openHost(o: HostOptions) {
           if (owner !== me && !(handedByMe?.node_id === me && owner === to))
             return forward(owner, "handoff", args);
           const dir = workspaceOf(runId);
-          const { workspace } = await runtimeFor(dir);
+          const { workspace, rt } = await runtimeFor(dir);
+          // `wait: N` is N seconds; "attempt" is as long as one attempt may run on this node.
+          const wait = handoffOpts?.wait;
+          const waitMs = wait === "attempt" ? rt.attemptTimeoutMs : wait ? wait * 1000 : 0;
           handingOff.add(runId);
           return withPeer(to, async (t) => {
             const out = await handOff({
@@ -441,7 +466,8 @@ export function openHost(o: HostOptions) {
               workspace,
               workspaceRoot: dir,
               description: await describeWorkspace(dir, workspace),
-              stopBuild: () => stopJob(runId, "handoff"),
+              ...(waitMs > 0 ? { waitMs } : {}),
+              stopBuild: (ms) => stopJob(runId, "handoff", ms),
             });
             return { run_id: runId, to, pushed: out.pushed, dir: out.taken.dir };
           }).finally(() => handingOff.delete(runId));

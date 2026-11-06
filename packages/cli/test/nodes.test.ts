@@ -384,3 +384,103 @@ describe("a run handed off while heph run follows it", () => {
     }
   }, 60_000);
 });
+
+describe("handing a run off with --wait", () => {
+  /**
+   * Hands R5 off while mbp's T2 attempt is in flight. `hold` decides what that worker does once it
+   * starts: "finish" ignores the abort and completes after a short while, "until-aborted" only
+   * returns when its signal aborts.
+   */
+  async function handOffWhileBuilding(hold: "finish" | "until-aborted", wait?: number) {
+    await heph(["init", "--force"]);
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh }\n",
+    );
+    let reached: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      reached = r;
+    });
+    const scripted = deps.worker as Worker;
+    const worker: Worker = {
+      async spawn(input) {
+        // denver builds with its own scripted worker; only mbp's first T2 attempt is held.
+        if (input.brief.task.id !== "T2") return scripted.spawn(input);
+        reached();
+        if (hold === "finish") {
+          await Bun.sleep(200);
+          return scripted.spawn(input);
+        }
+        while (!input.signal?.aborted) await Bun.sleep(5);
+        return {
+          output: undefined,
+          transcript: "",
+          usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+          exit: "interrupted",
+        };
+      },
+    };
+    const mbp = openHost({
+      home: homeA,
+      config: await loadHomeConfig(homeA),
+      deps: { ...deps, worker, prs },
+      daemon: true,
+      connect: () => localTransport(denver.peerMethods()),
+    });
+    try {
+      await mbp.api.call("newRun", [Bun.YAML.parse(BRIEF), { runId: "R5", on: "local" }], ws);
+      await mbp.api.call("approvePlan", ["R5"], ws);
+      await mbp.api.call("run", ["R5", {}], ws);
+      await held;
+      await mbp.api.call("handoff", ["R5", "denver", wait ? { wait } : {}], ws);
+      type Seen = { id: string; type: string; node_id: string; unit_id?: string; data: unknown };
+      const seen: Seen[] = [];
+      let after: string | undefined;
+      for (let i = 0; i < 400; i++) {
+        const f = (await mbp.api.call("follow", ["R5", after], ws)) as {
+          events: Seen[];
+          done: boolean;
+        };
+        seen.push(...f.events);
+        after = f.events.at(-1)?.id ?? after;
+        if (f.done) break;
+        await Bun.sleep(25);
+      }
+      return seen;
+    } finally {
+      await mbp.close();
+    }
+  }
+
+  test("lets the attempt in flight finish, then hands off", async () => {
+    const events = await handOffWhileBuilding("finish", 30);
+    const at = (type: string, node: string) =>
+      events.findIndex((e) => e.type === type && e.node_id === node && e.unit_id === "T2");
+    // The attempt in flight ran to its end on mbp, uninterrupted, and mbp started no second one
+    // (whether its gates pass depends on the sandbox the test runs in).
+    const mbpStarts = events.filter(
+      (e) => e.type === "unit.attempt.started" && e.node_id === "mbp" && e.unit_id === "T2",
+    );
+    expect(mbpStarts).toHaveLength(1);
+    expect(at("unit.attempt.finished", "mbp")).toBeGreaterThan(-1);
+    expect(events.filter((e) => e.type === "unit.attempt.interrupted")).toEqual([]);
+    // Only after it finished did the run move: handed off by mbp, then resumed by denver.
+    const handedOff = events.findIndex((e) => e.type === "run.handed_off" && e.node_id === "mbp");
+    expect(handedOff).toBeGreaterThan(at("unit.attempt.finished", "mbp"));
+    expect(events.some((e) => e.type === "run.resumed" && e.node_id === "denver")).toBe(true);
+  }, 60_000);
+
+  test("a wait shorter than the attempt interrupts it, and denver redoes it", async () => {
+    const events = await handOffWhileBuilding("until-aborted", 1);
+    const interrupted = events.filter((e) => e.type === "unit.attempt.interrupted");
+    expect(interrupted).toMatchObject([
+      { unit_id: "T2", node_id: "mbp", data: { reason: "handoff" } },
+    ]);
+    // The attempt was thrown away, so denver starts T2 again (whether its gates pass is another test).
+    expect(
+      events.some(
+        (e) => e.type === "unit.attempt.started" && e.unit_id === "T2" && e.node_id === "denver",
+      ),
+    ).toBe(true);
+  }, 60_000);
+});
