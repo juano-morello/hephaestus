@@ -64,7 +64,7 @@ export type Git = {
   isAncestor(a: string, b: string): Promise<boolean>;
   /** Every file at a ref, repo-relative. */
   lsTree(ref: string): Promise<string[]>;
-  /** The newline count of a file at a ref (repo-relative path). */
+  /** The newline count of a file at a ref (repo-relative path); 0 for a non-blob (submodule). */
   fileLines(ref: string, path: string): Promise<number>;
   /**
    * The parent of the oldest commit on `branch` carrying the trailer `Heph-Run: <runId>`: where
@@ -191,8 +191,12 @@ export function createGit(repoDir: string): Git {
       return r.code === 0;
     },
     lsTree: async (ref) => lines(await git(["ls-tree", "-r", "--name-only", ref])),
-    fileLines: async (ref, path) =>
-      (await git(["cat-file", "blob", `${ref}:${path}`])).split("\n").length - 1,
+    async fileLines(ref, path) {
+      // Only blobs have lines: a submodule (gitlink, type commit) counts as 0.
+      const entry = await git(["ls-tree", ref, "--", path]);
+      if (entry.split(/\s+/)[1] !== "blob") return 0;
+      return (await git(["cat-file", "blob", `${ref}:${path}`])).split("\n").length - 1;
+    },
     async forkPoint(branch, runId) {
       const escaped = runId.replace(/[.[\]\\*+?(){}|^$]/g, "\\$&");
       const oldest = lines(

@@ -203,6 +203,15 @@ describe("git", () => {
     expect(await git.fileLines("main", "a.go")).toBe(1);
   });
 
+  test("fileLines of a submodule (gitlink) entry is 0", async () => {
+    const { git, repo } = await setup();
+    const head = await git.revParse("main");
+    await sh(repo, "update-index", "--add", "--cacheinfo", `160000,${head},vendor/sub`);
+    await sh(repo, "commit", "-q", "-m", "submodule");
+    expect(await git.lsTree("main")).toContain("vendor/sub");
+    expect(await git.fileLines("main", "vendor/sub")).toBe(0);
+  });
+
   test("isAncestor_true_false", async () => {
     const { git, repo } = await setup();
     const base = await git.revParse("main");

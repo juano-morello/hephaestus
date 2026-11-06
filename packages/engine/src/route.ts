@@ -41,7 +41,8 @@ export async function routeSignals(o: RouteInput): Promise<RouteSignals> {
   let lines = matched.length * 100;
   if (matched.length <= MAX_LINE_READS) {
     lines = 0;
-    for (const f of matched) lines += await o.git.fileLines(o.ref, f);
+    // A measurement never stops routing: a file whose lines can't be read counts as 0.
+    for (const f of matched) lines += await o.git.fileLines(o.ref, f).catch(() => 0);
   }
   // As complexitySanity computes it: some input of the task comes from another project.
   const projectOf = new Map(o.plan.tasks.map((x) => [x.id, x.project]));

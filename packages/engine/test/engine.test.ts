@@ -994,6 +994,46 @@ describe("the fallback provider", () => {
 });
 
 describe("routeSignals", () => {
+  test("a submodule (gitlink) in scope is measured as 0 lines instead of failing the route", async () => {
+    const repoDir = await initRepo(dir(), { "server/vendor/a.txt": "1\n2\n" });
+    const sha = (await runOk(["git", "rev-parse", "HEAD"], { cwd: repoDir })).trim();
+    await runOk(
+      ["git", "update-index", "--add", "--cacheinfo", `160000,${sha},server/vendor/sub`],
+      { cwd: repoDir },
+    );
+    await runOk(["git", "commit", "-q", "-m", "submodule"], { cwd: repoDir });
+    const t = task("T1", { scope: ["vendor/**"] });
+    for (const scope of [["vendor/**"], ["**"]]) {
+      const signals = await routeSignals({
+        git: createGit(repoDir),
+        ref: "main",
+        projectPath: "server",
+        task: { ...t, scope },
+        plan: plan([t]),
+      });
+      expect(signals).toMatchObject({ files: 2, lines: 2 });
+    }
+  });
+
+  test("a file whose lines cannot be read counts as 0 lines", async () => {
+    const repoDir = await initRepo(dir(), { "server/a.go": "1\n2\n3\n", "server/b.go": "1\n" });
+    const real = createGit(repoDir);
+    const git: Git = {
+      ...real,
+      fileLines: (ref, path) =>
+        path.endsWith("a.go") ? Promise.reject(new Error("boom")) : real.fileLines(ref, path),
+    };
+    const t = task("T1", { scope: ["*.go"] });
+    const signals = await routeSignals({
+      git,
+      ref: "main",
+      projectPath: "server",
+      task: t,
+      plan: plan([t]),
+    });
+    expect(signals).toMatchObject({ files: 2, lines: 1 });
+  });
+
   test("more than 20 matched files: no line counts read, lines = files * 100", async () => {
     const files = Object.fromEntries(
       Array.from({ length: 25 }, (_, i) => [`server/gen/f${i}.txt`, "x\n"]),
