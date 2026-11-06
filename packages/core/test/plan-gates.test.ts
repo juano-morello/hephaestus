@@ -486,10 +486,11 @@ describe("scope_paths", () => {
     });
   });
 
-  test("existing paths, new files in existing directories and matching globs pass; new files are listed", () => {
+  test("existing paths, declared new files and matching globs pass; new files are listed", () => {
     const p = plan([
       task("T1", {
         scope: ["inventory/stack.go", "inventory/cap.go", "inventory/*.go", "README.md"],
+        creates: ["inventory/cap.go", "README.md"],
       }),
     ]);
     expect(scopePaths(p, ctx({ files }))).toEqual({
@@ -506,6 +507,7 @@ describe("scope_paths", () => {
       task("T1", {
         project: "client",
         scope: ["godot/tests/**/*auth*.gd", "godot/tests/auth_test.gd"],
+        creates: ["godot/tests/auth_test.gd"],
       }),
     ]);
     expect(scopePaths(p, ctx({ files: f }))).toMatchObject({
@@ -519,9 +521,72 @@ describe("scope_paths", () => {
       task("T1", {
         kind: "test",
         scope: ["internal/loadbot/testdata/*.ini", "internal/loadbot/x_test.go"],
+        creates: ["internal/loadbot/x_test.go"],
       }),
     ]);
     expect(scopePaths(p, ctx({ files }))).toMatchObject({ verdict: "pass" });
+  });
+
+  test("a test task's literal new file needs creates too", () => {
+    const p = plan([task("T1", { kind: "test", scope: ["inventory/new_test.go"] })]);
+    expect(scopePaths(p, ctx({ files })).verdict).toBe("fail");
+  });
+
+  test("a guessed existing file fails with the closest existing names", () => {
+    const p = plan([task("T1", { scope: ["inventory/cap.go"] })]);
+    expect(scopePaths(p, ctx({ files }))).toEqual({
+      gate: "scope_paths",
+      verdict: "fail",
+      reason: "scopes point at paths that do not exist or are not declared in creates",
+      evidence: [
+        "T1: inventory/cap.go does not exist and is not in creates (closest existing: inventory/stack.go, inventory/stack_test.go)",
+      ],
+    });
+  });
+
+  test("root-level guesses are compared with root-level files; a missing directory keeps its own message", () => {
+    const f = { server: ["go.mod"] };
+    const p = plan([task("T1", { scope: ["README.md"] })]);
+    expect(scopePaths(p, ctx({ files: f })).evidence).toEqual([
+      "T1: README.md does not exist and is not in creates (closest existing: go.mod)",
+    ]);
+    const q = plan([task("T1", { scope: ["inventory/cap.go"] })]);
+    expect(scopePaths(q, ctx({ files: f })).evidence).toEqual([
+      "T1: inventory/cap.go is in a directory that does not exist (inventory/)",
+    ]);
+  });
+
+  test("a creates path that already exists fails", () => {
+    const p = plan([
+      task("T1", { scope: ["inventory/stack.go"], creates: ["inventory/stack.go"] }),
+    ]);
+    expect(scopePaths(p, ctx({ files })).evidence).toEqual([
+      "T1: inventory/stack.go is in creates but already exists",
+    ]);
+  });
+
+  test("a creates path outside the task scope fails", () => {
+    const p = plan([
+      task("T1", { scope: ["inventory/stack.go"], creates: ["inventory/cap.go"] }),
+    ]);
+    expect(scopePaths(p, ctx({ files })).evidence).toEqual([
+      "T1: inventory/cap.go is in creates but outside the task scope",
+    ]);
+  });
+
+  test("a leading ./ is rejected with a clear message", () => {
+    const p = plan([
+      task("T1", { scope: ["./inventory/cap.go"], creates: ["./inventory/cap.go"] }),
+    ]);
+    const ev = scopePaths(p, ctx({ files })).evidence;
+    expect(ev).toContain("T1: ./inventory/cap.go is not project-relative; drop the leading ./");
+  });
+
+  test("a project with no tracked files passes when every literal path is declared", () => {
+    const p = plan([task("T1", { scope: ["main.go"], creates: ["main.go"] })]);
+    expect(scopePaths(p, ctx({ files: { server: [] } })).verdict).toBe("pass");
+    const q = plan([task("T1", { scope: ["main.go"] })]);
+    expect(scopePaths(q, ctx({ files: { server: [] } })).verdict).toBe("fail");
   });
 
   test("even a test task cannot escape the project", () => {

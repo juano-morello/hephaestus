@@ -19,6 +19,15 @@ export const Task = z
     complexity: Complexity,
     complexity_reason: z.string().min(1),
     scope: z.array(z.string().min(1)),
+    /** Files this task adds, as literal project-relative paths inside its scope. */
+    creates: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((p) => !/[*?[{]/.test(p), "creates takes literal paths, no globs"),
+      )
+      .optional(),
     covers: z.array(z.string()),
     produces: z.array(z.string().min(1)).optional(),
     consumes: z.array(z.string().min(1)).optional(),

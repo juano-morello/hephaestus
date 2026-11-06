@@ -70,6 +70,14 @@ describe("Plan", () => {
     expect(result.error?.issues[0]?.message).toBe('duplicate task id "T1"');
   });
 
+  test("creates is optional and takes literal paths only", () => {
+    expect(Plan.safeParse(plan([task("T1", { creates: ["a/b.go"] })])).success).toBe(true);
+    expect(Plan.safeParse(plan([task("T1")])).success).toBe(true);
+    for (const bad of ["a/*.go", "a/?.go", "a/[x].go", "a/{b,c}.go"]) {
+      expect(Plan.safeParse(plan([task("T1", { creates: [bad] })])).success).toBe(false);
+    }
+  });
+
   test("rejects a non-positive context budget", () => {
     const t = task("T1", { context_budget: { tokens: 0, reason: "none" } });
     expect(Plan.safeParse(plan([t])).success).toBe(false);

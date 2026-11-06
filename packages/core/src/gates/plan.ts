@@ -1,6 +1,7 @@
 import { deriveEdges, reachability, topoOrder } from "../graph/edges.ts";
 import type { Complexity, Plan, Task } from "../schemas/plan.ts";
 import { globsOverlap } from "./glob.ts";
+import { closestNames } from "./names.ts";
 import { type GateContext, type GateResult, result } from "./types.ts";
 
 const ids = (plan: Plan) => plan.tasks.map((t) => t.id);
@@ -276,7 +277,19 @@ export function scopePaths(plan: Plan, ctx: GateContext): GateResult {
   for (const t of plan.tasks) {
     const files = ctx.files[t.project] ?? [];
     const dirExists = (dir: string) => dir === "" || files.some((f) => f.startsWith(dir));
-    for (const g of t.scope) {
+    const creates = new Set(t.creates ?? []);
+    for (const c of creates) {
+      if (c.startsWith("./")) continue; // reported below with the scope entries
+      if (files.includes(c)) failures.push(`${t.id}: ${c} is in creates but already exists`);
+      else if (!t.scope.some((g) => globsOverlap(g, c)))
+        failures.push(`${t.id}: ${c} is in creates but outside the task scope`);
+    }
+    for (const g of [...t.scope, ...[...creates].filter((c) => !t.scope.includes(c))]) {
+      if (g.startsWith("./")) {
+        failures.push(`${t.id}: ${g} is not project-relative; drop the leading ./`);
+        continue;
+      }
+      if (!t.scope.includes(g)) continue; // creates entries outside scope are already reported
       if (matches(g, files).length) continue;
       if (g.startsWith("/") || g.split("/").includes("..")) {
         failures.push(`${t.id}: ${g} leaves the project; scopes are project-relative`);
@@ -289,22 +302,30 @@ export function scopePaths(plan: Plan, ctx: GateContext): GateResult {
             ? g.slice(0, g.lastIndexOf("/") + 1)
             : ""
           : g.slice(0, g.lastIndexOf("/", wild) + 1);
-      // Test tasks create their files and fixtures; others may add subdirectories to a real one.
+      if (wild < 0) {
+        // A literal path that is not there must be declared as new, or it is a guess.
+        if (creates.has(g)) notes.push(`${t.id}: new file ${g}`);
+        else if (!dirExists(dir))
+          failures.push(`${t.id}: ${g} is in a directory that does not exist (${dir})`);
+        else {
+          const near = closestNames(g, files);
+          failures.push(
+            `${t.id}: ${g} does not exist and is not in creates${near.length ? ` (closest existing: ${near.join(", ")})` : ""}`,
+          );
+        }
+        continue;
+      }
+      // Globs: test tasks create their files and fixtures; others may add subdirectories to a real one.
       const top = g.includes("/") ? `${g.slice(0, g.indexOf("/"))}/` : "";
       const mayCreate = t.kind === "test" || dirExists(dir) || (top !== "" && dirExists(top));
-      if (wild < 0) {
-        if (mayCreate) notes.push(`${t.id}: new file ${g}`);
-        else failures.push(`${t.id}: ${g} is in a directory that does not exist (${dir})`);
-      } else if (!mayCreate) {
-        failures.push(`${t.id}: ${g} matches no files and ${dir} does not exist`);
-      }
+      if (!mayCreate) failures.push(`${t.id}: ${g} matches no files and ${dir} does not exist`);
     }
   }
   return failures.length
     ? {
         gate: "scope_paths",
         verdict: "fail",
-        reason: "scopes point at directories that do not exist",
+        reason: "scopes point at paths that do not exist or are not declared in creates",
         evidence: failures,
       }
     : { gate: "scope_paths", verdict: "pass", reason: "scopes match the repo", evidence: notes };
