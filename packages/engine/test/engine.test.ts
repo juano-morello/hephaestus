@@ -6,7 +6,7 @@ import { briefHash, RUNGS } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
 import { openSandbox, runOk, type Sandbox } from "@hephaestus/sandbox";
 import { builtinGates } from "../src/builtin-gates.ts";
-import { type EngineConfig, resolveRoute, rungFor } from "../src/config.ts";
+import { DEFAULT_COOLDOWN_MS, type EngineConfig, resolveRoute, rungFor } from "../src/config.ts";
 import { attemptBranch, buildRun, type RunPlanOptions, runBranch, runPlan } from "../src/engine.ts";
 import type { UnitGate, UnitGateContext } from "../src/gates.ts";
 import { createGit, type Git } from "../src/git.ts";
@@ -769,6 +769,195 @@ describe("the escalation ladder", () => {
     const s = started(ledger);
     expect(s.map((e) => e.tier)).toEqual(["trivial", "trivial"]);
     expect(s.map((e) => Boolean(e.routed))).toEqual([true, false]);
+    ledger.close();
+  });
+});
+
+describe("the fallback provider", () => {
+  const primary = "claude/sonnet";
+  const other = "other/model";
+  const routes = (fallback?: string): EngineConfig => ({
+    ...config,
+    routing: {
+      implementer: {
+        default: { model: primary },
+        ...(fallback ? { fallback: { model: fallback } } : {}),
+      },
+    },
+  });
+  /** A chain T1 -> T2 -> ... of implement units, each writing its own file. */
+  const chain = (n: number) =>
+    plan(
+      Array.from({ length: n }, (_, i) =>
+        task(`T${i + 1}`, {
+          scope: [`inventory/t${i + 1}.go`],
+          ...(i > 0 ? { consumes: [`fn:${i}`] } : {}),
+          produces: [`fn:${i + 1}`],
+        }),
+      ),
+    );
+  type Answer = Partial<Pick<SpawnOutput, "exit" | "retry_after">>;
+  /** Answers by unit and model; records "unit model" per call. */
+  function byModel(answer: (unit: string, model: string) => Answer | undefined) {
+    const calls: string[] = [];
+    const worker: Worker = {
+      async spawn(input) {
+        const id = input.brief.task.id;
+        calls.push(`${id} ${input.model}`);
+        const a = answer(id, input.model) ?? {};
+        const exit = a.exit ?? "ok";
+        const file = `inventory/${id.toLowerCase()}.go`;
+        if (exit === "ok") writeFiles(input.workdir, { [file]: `package inventory // ${id}\n` });
+        return {
+          output: { schema: 1, summary: id, claims: [], touched: exit === "ok" ? [file] : [] },
+          transcript: `transcript ${id}`,
+          usage,
+          exit,
+          prompt_hash: "p1",
+          ...(a.retry_after ? { retry_after: a.retry_after } : {}),
+        };
+      },
+    };
+    return { worker, calls };
+  }
+  const started = (ledger: ReturnType<typeof openLedger>) =>
+    ledger.read({ types: ["unit.attempt.started"] }).map(
+      (s) =>
+        ({ ...(s.event.data as object), unit: s.event.unit_id, attempt: s.event.attempt }) as {
+          unit: string;
+          attempt: number;
+          model: string;
+          provider: string;
+          fallback_for?: string;
+        },
+    );
+  const limited: Answer = { exit: "rate_limited" };
+
+  test("rate limited on the primary: the next attempt runs on the fallback and the unit finishes", async () => {
+    const { go, ledger, types } = await setup();
+    const { worker, calls } = byModel((_, m) => (m === primary ? limited : undefined));
+    const result = await go(worker, [], chain(1), { config: routes(other), now: () => 0 });
+
+    expect(result.status).toBe("built");
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`]);
+    const s = started(ledger);
+    expect(s).toHaveLength(2);
+    expect(s[0]).toMatchObject({ attempt: 1, model: primary, provider: "claude" });
+    expect(s[0]?.fallback_for).toBeUndefined();
+    expect(s[1]).toMatchObject({
+      attempt: 2,
+      model: other,
+      provider: "other",
+      fallback_for: "claude",
+    });
+    const finished = ledger.read({ types: ["unit.attempt.finished"] }).map((e) => e.event.data);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ model: other, fallback_for: "claude", outcome: "green" });
+    const interrupted = ledger.read({ types: ["unit.attempt.interrupted"] });
+    expect(interrupted.map((e) => [e.event.attempt, e.event.data])).toEqual([
+      [1, { reason: "rate_limit" }],
+    ]);
+    expect(types()).not.toContain("run.paused");
+    expect(ledger.units("R1").find((u) => u.unit_id === "T1")?.attempts).toBe(1);
+    ledger.close();
+  });
+
+  test("a unit starting while the primary cools goes straight to the fallback", async () => {
+    const { go, ledger } = await setup();
+    const retry_after = new Date(3_600_000).toISOString();
+    const { worker, calls } = byModel((_, m) =>
+      m === primary ? { exit: "rate_limited", retry_after } : undefined,
+    );
+    const result = await go(worker, [], chain(2), { config: routes(other), now: () => 0 });
+
+    expect(result.status).toBe("built");
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`, `T2 ${other}`]);
+    expect(started(ledger).find((e) => e.unit === "T2")).toMatchObject({
+      model: other,
+      fallback_for: "claude",
+    });
+    ledger.close();
+  });
+
+  test("past the cooldown a new unit uses the primary again", async () => {
+    const { go, ledger } = await setup();
+    let clock = 0;
+    const retry_after = new Date(10_000).toISOString();
+    const { worker, calls } = byModel((u, m) => {
+      if (u === "T1" && m === primary) return { exit: "rate_limited", retry_after };
+      if (u === "T1") clock = 10_000;
+      return undefined;
+    });
+    const result = await go(worker, [], chain(2), { config: routes(other), now: () => clock });
+
+    expect(result.status).toBe("built");
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`, `T2 ${primary}`]);
+    expect(started(ledger).find((e) => e.unit === "T2")?.fallback_for).toBeUndefined();
+    ledger.close();
+  });
+
+  test("no fallback configured: the run pauses on the rate limit as before", async () => {
+    const { go, ledger, types } = await setup();
+    const retry_after = new Date(10_000).toISOString();
+    const { worker, calls } = byModel(() => ({ exit: "rate_limited", retry_after }));
+    const result = await go(worker, [], chain(1), { config: routes(), now: () => 0 });
+
+    expect(result).toMatchObject({ status: "paused", reason: "T1: rate_limit" });
+    expect(calls).toEqual([`T1 ${primary}`]);
+    expect(types().slice(-3)).toEqual([
+      "unit.attempt.started",
+      "unit.attempt.interrupted",
+      "run.paused",
+    ]);
+    expect(ledger.read({ types: ["run.paused"] })[0]?.event.data).toEqual({
+      reason: "rate_limit",
+      retry_after,
+    });
+    ledger.close();
+  });
+
+  test("a fallback on the primary's provider is ignored: the run pauses", async () => {
+    const { go, ledger } = await setup();
+    const { worker, calls } = byModel((_, m) => (m === primary ? limited : undefined));
+    const result = await go(worker, [], chain(1), { config: routes("claude/haiku"), now: () => 0 });
+
+    expect(result).toMatchObject({ status: "paused", reason: "T1: rate_limit" });
+    expect(calls).toEqual([`T1 ${primary}`]);
+    expect(ledger.read({ types: ["run.paused"] })).toHaveLength(1);
+    ledger.close();
+  });
+
+  test("a fallback whose provider is cooling too is not used: the run pauses", async () => {
+    const { go, ledger, types } = await setup();
+    const { worker, calls } = byModel(() => limited);
+    const result = await go(worker, [], chain(2), { config: routes(other), now: () => 0 });
+
+    expect(result).toMatchObject({ status: "paused", reason: "T1: rate_limit" });
+    // The 429 on the fallback cools its provider as well: no third attempt, T2 never starts.
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`]);
+    expect(types().slice(-2)).toEqual(["unit.attempt.interrupted", "run.paused"]);
+    expect(ledger.read({ types: ["unit.attempt.interrupted"] })).toHaveLength(2);
+    expect(ledger.units("R1").find((u) => u.unit_id === "T1")).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
+    ledger.close();
+  });
+
+  test("without retry_after the cooldown lasts DEFAULT_COOLDOWN_MS", async () => {
+    expect(DEFAULT_COOLDOWN_MS).toBe(60_000);
+    const { go, ledger } = await setup();
+    let clock = 0;
+    const { worker, calls } = byModel((u, m) => {
+      if (u === "T1" && m === primary) return limited;
+      if (u === "T1") clock = 59_999;
+      if (u === "T2") clock = 60_000;
+      return undefined;
+    });
+    const result = await go(worker, [], chain(3), { config: routes(other), now: () => clock });
+
+    expect(result.status).toBe("built");
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`, `T2 ${other}`, `T3 ${primary}`]);
     ledger.close();
   });
 });

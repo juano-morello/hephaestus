@@ -7,6 +7,7 @@ import {
   type GateResult,
   type Plan,
   type Return,
+  type Rung,
   reachability,
   type Task,
   topoOrder,
@@ -16,9 +17,12 @@ import type { EventDraft, Ledger, LedgerEvent } from "@hephaestus/ledger";
 import type { Sandbox } from "@hephaestus/sandbox";
 import {
   configHash,
+  DEFAULT_COOLDOWN_MS,
   type EngineConfig,
+  fallbackRoute,
   providerOf,
   ROLE_BY_KIND,
+  type Route,
   resolveRoute,
   rungFor,
 } from "./config.ts";
@@ -124,6 +128,8 @@ export type RunPlanOptions = {
    * start from the nearest unmerged ancestor's branch there (see stack.ts).
    */
   stackOn?: string;
+  /** The clock for provider cooldowns (routing design 3). Default Date.now. */
+  now?: () => number;
 };
 
 export type RunOutcome = {
@@ -146,6 +152,9 @@ type Ctx = RunPlanOptions & {
   join: JoinLock;
   /** A unit of this build was killed (Stopped): nothing more may be written or applied. */
   killed: () => boolean;
+  now: () => number;
+  /** One per build(), shared by its units: provider -> epoch ms until which it is rate limited. */
+  cooldown: Map<string, number>;
 };
 
 /** The repos the plan touches, in first-use order. Unknown projects or repos are errors. */
@@ -487,6 +496,8 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
     hash,
     join: joinLocks(),
     killed: () => killed,
+    now: opts.now ?? Date.now,
+    cooldown: new Map(),
   };
   const { ledger, runId } = opts;
   const gits = new Map(repos.map((r) => [r, createGit(dirOf(r))]));
@@ -748,6 +759,23 @@ export async function integrationGate(
   });
 }
 
+const cooling = (ctx: Ctx, provider: string) => (ctx.cooldown.get(provider) ?? 0) > ctx.now();
+
+/**
+ * The rung's route, or the role's fallback while the route's provider is cooling and the
+ * fallback's (another provider) is not (routing design 3).
+ */
+function pickRoute(ctx: Ctx, role: string, rung: Rung): { route: Route; fallbackFor?: string } {
+  const route = resolveRoute(ctx.config, role, rung);
+  const primary = providerOf(route.model);
+  if (!cooling(ctx, primary)) return { route };
+  const fallback = fallbackRoute(ctx.config, role);
+  const other = fallback && providerOf(fallback.model);
+  if (fallback && other !== primary && !cooling(ctx, other as string))
+    return { route: fallback, fallbackFor: primary };
+  return { route };
+}
+
 async function runUnit(
   ctx: Ctx,
   t: Task,
@@ -798,13 +826,14 @@ async function runUnit(
     const task = scope.length === t.scope.length ? t : { ...t, scope };
     const tip = await git.revParse(branch);
     const rung = rungFor(start, reds, hasTop);
-    const route = resolveRoute(config, role, rung);
+    const { route, fallbackFor } = pickRoute(ctx, role, rung);
     const info = {
       role,
       tier: rung,
       model: route.model,
       provider: providerOf(route.model),
       ...(route.effort ? { effort: route.effort } : {}),
+      ...(fallbackFor ? { fallback_for: fallbackFor } : {}),
     };
     const result = await ctx.runner.runAttempt(
       {
@@ -854,6 +883,20 @@ async function runUnit(
       ledger.appendMany([
         { ...engine, ...prompt, type: "unit.attempt.interrupted", data: { reason } },
       ]);
+      if (reason === "rate_limit") {
+        const until = result.retryAfter ? Date.parse(result.retryAfter) : Number.NaN;
+        ctx.cooldown.set(
+          info.provider,
+          Number.isNaN(until) ? ctx.now() + DEFAULT_COOLDOWN_MS : until,
+        );
+        // Another provider is free: retry there now. The interrupted attempt never counts.
+        // Never again on the provider that just said no (a past retry_after would spin).
+        const next = providerOf(pickRoute(ctx, role, rung).route.model);
+        if (next !== info.provider && !cooling(ctx, next)) {
+          used--;
+          continue;
+        }
+      }
       const retry = result.retryAfter ? { retryAfter: result.retryAfter } : {};
       return { status: "paused", reason, detail: `${t.id}: ${reason}`, ...retry };
     }

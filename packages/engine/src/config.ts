@@ -51,6 +51,11 @@ export function resolveRoute(config: EngineConfig, role: string, rung: Rung): Ro
   return route;
 }
 
+/** The role's route on another provider, for when the ladder's provider is rate limited. */
+export function fallbackRoute(config: EngineConfig, role: string): Route | undefined {
+  return config.routing[role]?.fallback;
+}
+
 /**
  * The ladder (routing design 2): the start tier plus one rung per red attempt, capped at `top`,
  * or at `complex` for a role without a `top` route.
@@ -59,6 +64,9 @@ export function rungFor(start: Complexity, reds: number, hasTop: boolean): Rung 
   const cap = RUNGS.indexOf(hasTop ? "top" : "complex");
   return RUNGS[Math.min(RUNGS.indexOf(start) + reds, cap)] as Rung;
 }
+
+/** How long a provider cools after a rate limit that gave no `retry_after`. */
+export const DEFAULT_COOLDOWN_MS = 60_000;
 
 /** "claude/sonnet" -> "claude". */
 export const providerOf = (model: string) => model.split("/")[0] || model;
