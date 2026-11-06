@@ -27,7 +27,7 @@ import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
-import { type Deps, describe, type Runtime } from "./runtime.ts";
+import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
 import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { watchRun } from "./watch.ts";
@@ -245,12 +245,22 @@ type StatusOne = {
   usage: { model: string; input?: unknown; output?: unknown; cache_read?: unknown }[];
   prs?: Record<string, string>;
 };
-type StatusView = StatusOne | { runs: { run_id: string; status: string; updated_at: string }[] };
+type StatusView =
+  | StatusOne
+  | {
+      runs: { run_id: string; status: string; updated_at: string }[];
+      /** Peer health, as the daemon last saw it. */
+      nodes?: Record<string, { ok: boolean; since?: string; error?: string }>;
+    };
 
 /** `heph status` text. */
 export const statusText = (s: StatusView) => {
-  if (s.runs)
-    return `${s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}`).join("\n") || "no runs"}\n`;
+  if (s.runs) {
+    const down = Object.entries(s.nodes ?? {})
+      .filter(([, n]) => !n.ok)
+      .map(([id, n]) => `node ${id} unreachable since ${n.since}: ${n.error} (heph doctor)`);
+    return `${[s.runs.map((r) => `${r.run_id}  ${r.status}  ${r.updated_at}`).join("\n") || "no runs", ...down].join("\n")}\n`;
+  }
   return [
     `run ${s.run.run_id}: ${s.run.status}${s.plan_approved ? "" : " (plan not approved)"}`,
     ...(s.stack_on ? [`  stacked on ${s.stack_on.run_id} (${s.stack_on.status})`] : []),
@@ -537,7 +547,10 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ...(ctx.deps ? { deps: ctx.deps } : {}),
         notify: log,
         onAppend: (events) => {
-          for (const e of events) log(`${e.run_id} ${line(e).trim()}`);
+          for (const e of events)
+            log(
+              `${e.run_id} ${e.unit_id ? `${e.unit_id}${e.attempt ? `/a${e.attempt}` : ""} ` : ""}${describeForLog(e, e.run_id)}`,
+            );
         },
       });
       // The bundle is built by `bun run build:ui`; without it the daemon runs with no dashboard.
@@ -739,7 +752,11 @@ function match(positionals: string[]): { name: string; args: string[] } | undefi
 
 /** A daemon log line, timestamped: under launchd the log is a plain file. */
 export const daemonLine = (text: string, now = new Date()) =>
-  `${now.toISOString()} heph daemon: ${text}\n`;
+  `${text
+    .replace(/\n+$/, "")
+    .split("\n")
+    .map((l) => `${now.toISOString()} heph daemon: ${l}`)
+    .join("\n")}\n`;
 
 /** Errors whose cause isn't heph's: say what to do about them. */
 export function explainError(message: string): string {

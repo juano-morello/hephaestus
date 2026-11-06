@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ResolvedConfig } from "@hephaestus/core";
 import { createGit, targetBase } from "@hephaestus/engine";
+import { PROTOCOL_VERSION } from "@hephaestus/node";
 import { openSandbox, run, type SandboxSpec, which } from "@hephaestus/sandbox";
 import { findWorkspace, loadConfig, loadHomeConfig } from "./config.ts";
 import { hephVersion } from "./version.ts";
@@ -26,11 +27,12 @@ export type DoctorEnv = {
   probeModel(pattern: string, cwd: string): Promise<{ model: string } | { error: string }>;
   daemonUp(): Promise<boolean>;
   /** Says hello to a configured node; throws when it can't be reached. */
-  helloNode(node: string): Promise<{ version?: string | undefined }>;
+  helloNode(node: string): Promise<{ version?: string | undefined; protocol?: number | undefined }>;
   ghLoggedIn(): Promise<boolean>;
 };
 
 const TEST_TIMEOUT_MS = 20 * 60_000;
+const NODE_TIMEOUT_MS = 20_000;
 const OMP_LOGIN =
   "log in on this machine: run omp, then /login (anthropic for claude/*, openai for openai/*)";
 
@@ -40,6 +42,8 @@ export async function doctor(o: {
   /** Also run each project's test command in the sandbox (slow: a full test run each). */
   tests: boolean;
   env: DoctorEnv;
+  /** How long a node may take to answer hello before it counts as down. Default 20 s. */
+  nodeTimeoutMs?: number;
 }): Promise<DoctorReport> {
   const { version, build } = hephVersion();
   const checks: Check[] = [];
@@ -170,28 +174,52 @@ export async function doctor(o: {
         },
   );
 
-  // Every configured node.
+  // Every configured node: reachable over ssh, speaking this protocol, running this version.
   for (const node of Object.keys(home.nodes)) {
     if (node === home.node.id) continue;
+    const peer = home.nodes[node];
+    const target = peer?.ssh ?? node;
+    const area = `node ${node}`;
+    const limit = o.nodeTimeoutMs ?? NODE_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const h = await o.env.helloNode(node);
-      add(
-        h.version === version
-          ? { area: `node ${node}`, state: "ok", detail: `heph ${h.version}` }
-          : {
-              area: `node ${node}`,
-              state: "warn",
-              detail: `heph ${h.version ?? "older than 0.1.0"} there, ${version} here`,
-              fix: `install this version there (bun run install:heph -- --remote ${home.nodes[node]?.ssh ?? node})`,
-            },
-      );
+      const h = await Promise.race([
+        o.env.helloNode(node),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`ssh ${target} did not answer within ${limit / 1000} s`)),
+            limit,
+          );
+        }),
+      ]);
+      if (h.protocol !== undefined && h.protocol !== PROTOCOL_VERSION)
+        add({
+          area,
+          state: "fail",
+          detail: `speaks protocol ${h.protocol}, this node speaks ${PROTOCOL_VERSION} (heph ${h.version ?? "unknown"} there, ${version} here)`,
+          fix: `install the same version on both: bun run install:heph -- --remote ${target}`,
+        });
+      else
+        add(
+          h.version === version
+            ? { area, state: "ok", detail: `heph ${h.version}` }
+            : {
+                area,
+                state: "warn",
+                detail: `heph ${h.version ?? "older than 0.1.0"} there, ${version} here`,
+                fix: `install this version there (bun run install:heph -- --remote ${target})`,
+              },
+        );
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
       add({
-        area: `node ${node}`,
+        area,
         state: "fail",
-        detail: (e instanceof Error ? e.message : String(e)).split("\n")[0] ?? "unreachable",
-        fix: `check ssh ${home.nodes[node]?.ssh ?? node} works without a password prompt`,
+        detail: message.split("\n")[0] ?? "unreachable",
+        fix: nodeFix(message, target, peer?.heph),
       });
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -251,6 +279,25 @@ export async function doctor(o: {
     checks,
     ok: !checks.some((c) => c.state === "fail"),
   };
+}
+
+/** What to do about a node that failed hello, read off the ssh error. */
+export function nodeFix(message: string, target: string, heph = "heph"): string {
+  if (/command not found|No such file|exited with 127/i.test(message))
+    return `${heph} is not on the remote PATH: bun run install:heph -- --remote ${target} (or set nodes.<id>.heph to its full path)`;
+  if (/Permission denied|publickey|passphrase/i.test(message))
+    return `ssh needs a key without a prompt (heph runs it with BatchMode): ssh-add the key, or add IdentityFile for ${target} in ~/.ssh/config; test with: ssh -o BatchMode=yes ${target} true`;
+  if (/UNKNOWN port|port 65535/i.test(message))
+    return `ssh could not resolve ${target} to a real host or hop (it reports port 65535): run ssh -v ${target} true and check the Host ${target} block in ~/.ssh/config (HostName, ProxyJump, ProxyCommand, ControlPath), or set nodes.<id>.ssh to user@hostname`;
+  if (/Could not resolve|Name or service not known/i.test(message))
+    return `ssh cannot resolve ${target}: fix the name, add a Host ${target} entry with HostName in ~/.ssh/config, or set nodes.<id>.ssh to user@ip`;
+  if (/timed out|did not answer|No route|Network is unreachable/i.test(message))
+    return `${target} did not answer: is it asleep, off the VPN or off the network? Try ssh -v ${target} true; heph retries on its own once it is back`;
+  if (/refused/i.test(message))
+    return `${target} is up but nothing accepts ssh: start sshd there (macOS: System Settings > General > Sharing > Remote Login)`;
+  if (/protocol/i.test(message))
+    return `install the same heph version on both nodes: bun run install:heph -- --remote ${target}`;
+  return `check ssh ${target} works without a password prompt (ssh -v ${target} true), then that ${heph} peer runs there`;
 }
 
 /** `claude/claude-opus-5-5` -> `claude-opus-5-5`: the pattern OMP resolves, as the worker does. */
