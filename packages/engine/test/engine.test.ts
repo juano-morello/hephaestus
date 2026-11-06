@@ -944,6 +944,37 @@ describe("the fallback provider", () => {
     ledger.close();
   });
 
+  test("providers never take turns: a provider that rate limited in this unit is not retried", async () => {
+    const { go, ledger, types } = await setup();
+    let clock = 0;
+    const { worker, calls } = byModel((_, m) => {
+      // The fallback's attempt outlives the primary's cooldown before its own 429.
+      if (m === other) clock = 61_000;
+      return limited;
+    });
+    const result = await go(worker, [], chain(1), { config: routes(other), now: () => clock });
+
+    expect(result).toMatchObject({ status: "paused", reason: "T1: rate_limit" });
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`]);
+    expect(ledger.read({ types: ["unit.attempt.started"] })).toHaveLength(2);
+    expect(ledger.read({ types: ["unit.attempt.interrupted"] })).toHaveLength(2);
+    expect(types().slice(-2)).toEqual(["unit.attempt.interrupted", "run.paused"]);
+    ledger.close();
+  });
+
+  test("with maxAttempts 1 the rate-limited attempt does not use the budget", async () => {
+    const { go, ledger } = await setup();
+    const { worker, calls } = byModel((_, m) => (m === primary ? limited : undefined));
+    const result = await go(worker, [], chain(1), {
+      config: { ...routes(other), maxAttempts: 1 },
+      now: () => 0,
+    });
+
+    expect(result.status).toBe("built");
+    expect(calls).toEqual([`T1 ${primary}`, `T1 ${other}`]);
+    ledger.close();
+  });
+
   test("without retry_after the cooldown lasts DEFAULT_COOLDOWN_MS", async () => {
     expect(DEFAULT_COOLDOWN_MS).toBe(60_000);
     const { go, ledger } = await setup();

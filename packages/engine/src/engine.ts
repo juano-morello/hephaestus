@@ -813,6 +813,8 @@ async function runUnit(
   };
 
   let feedback: Return | undefined = history.feedback;
+  /** Providers that rate limited during this call: a unit never moves back to one of them. */
+  const limitedBy = new Set<string>();
   for (let used = history.used, n = history.next; used < config.maxAttempts; used++, n++) {
     const stop = cancelled(ledger, ctx.runId);
     if (stop) return { status: "cancelled", reason: stop };
@@ -890,9 +892,11 @@ async function runUnit(
           Number.isNaN(until) ? ctx.now() + DEFAULT_COOLDOWN_MS : until,
         );
         // Another provider is free: retry there now. The interrupted attempt never counts.
-        // Never again on the provider that just said no (a past retry_after would spin).
+        // Only to a provider that has not rate limited in this call: two providers taking turns
+        // (or a past retry_after) would otherwise retry forever outside maxAttempts.
+        limitedBy.add(info.provider);
         const next = providerOf(pickRoute(ctx, role, rung).route.model);
-        if (next !== info.provider && !cooling(ctx, next)) {
+        if (!limitedBy.has(next) && !cooling(ctx, next)) {
           used--;
           continue;
         }
