@@ -58,8 +58,27 @@ export type PlannerInput = {
   createSession?: (opts: CreateAgentSessionOptions) => Promise<{ session: PlannerSession }>;
 };
 
+/**
+ * Why the model call itself failed, or undefined when it produced an answer worth judging: an
+ * error/aborted/length stop, or no text at all. Those are retried fresh, not corrected.
+ */
+export function transportFailure(
+  last: { stopReason: string; errorMessage?: string } | undefined,
+  output: string,
+): string | undefined {
+  if (!last) return "the planner session returned no message";
+  const bad = last.stopReason !== "stop" && last.stopReason !== "toolUse";
+  if (bad) {
+    return `the planner stopped with ${last.stopReason}${last.errorMessage ? `: ${last.errorMessage}` : ""}${output ? ` after ${output.length} chars` : ""}`;
+  }
+  if (!output.trim()) return "the planner returned no text";
+  return undefined;
+}
+
 export type PlannerResult = {
   evaluation: Evaluation;
+  /** Set when the call failed before an answer (empty, aborted, cut off); retry fresh. */
+  transport?: string;
   output: string;
   usage: Usage;
   transcript: string;
@@ -165,14 +184,13 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerResult> {
       clearTimeout(timer);
     }
     const last = session.getLastAssistantMessage();
-    const output =
-      (last?.content ?? [])
-        .flatMap((b) => {
-          const block = b as { type?: string; text?: unknown };
-          return block.type === "text" && typeof block.text === "string" ? [block.text] : [];
-        })
-        .join("") ||
-      (last?.errorMessage ?? "");
+    const output = (last?.content ?? [])
+      .flatMap((b) => {
+        const block = b as { type?: string; text?: unknown };
+        return block.type === "text" && typeof block.text === "string" ? [block.text] : [];
+      })
+      .join("");
+    const transport = transportFailure(last, output);
     const ctx: GateContext = {
       brief: input.brief,
       workspace: input.workspace,
@@ -182,7 +200,10 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerResult> {
     };
     const tokens = session.getSessionStats().tokens;
     return {
-      evaluation: evaluatePlannerOutput(output, ctx, briefHash(input.brief)),
+      evaluation: transport
+        ? { valid: false, failures: ["transport"], error: transport, gates: [] }
+        : evaluatePlannerOutput(output, ctx, briefHash(input.brief)),
+      ...(transport ? { transport } : {}),
       output,
       usage: {
         input: tokens.input,

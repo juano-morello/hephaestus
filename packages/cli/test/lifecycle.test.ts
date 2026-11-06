@@ -419,6 +419,57 @@ describe("heph lifecycle", () => {
     ]);
   });
 
+  test("an empty planner answer is retried fresh, with no bogus correction, and the raw answer is kept", async () => {
+    await initWithTests();
+    const prompts: string[] = [];
+    const replies: Array<{ last: unknown }> = [
+      { last: { stopReason: "aborted", errorMessage: "Request was aborted" } },
+      { last: { stopReason: "stop", content: [{ type: "text", text: PLAN }] } },
+    ];
+    const fn = (input: PlannerInput) =>
+      runPlanner({
+        ...input,
+        createSession: async () => {
+          const r = replies.shift() as { last: never };
+          const session: PlannerSession = {
+            async prompt(p) {
+              prompts.push(p);
+              return true;
+            },
+            async abort() {},
+            getLastAssistantMessage: () => r.last,
+            getSessionStats: () => ({
+              tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+            }),
+            messages: [],
+            async dispose() {},
+          };
+          return { session };
+        },
+      });
+    const r = await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R3t"], {
+      planner: fn,
+    });
+    expect(r.data).toMatchObject({ status: "planned" });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).not.toContain("Your previous answer failed");
+    expect(await planAnswers("R3t")).toMatchObject([
+      { attempt: 1, outcome: "invalid", failures: ["transport"] },
+      { attempt: 2, outcome: "valid" },
+    ]);
+    const ledger = openLedger(home, { nodeId: "test-node" });
+    try {
+      const ev = ledger.read({ run_id: "R3t", types: ["plan.answer"] }) as unknown as {
+        event: { blobs?: { log?: string } };
+      }[];
+      for (const e of ev) expect(e.event.blobs?.log).toMatch(/^[0-9a-f]{64}$/);
+      const second = ev[1]?.event.blobs?.log as string;
+      expect(new TextDecoder().decode(ledger.blobs.get(second))).toBe(PLAN);
+    } finally {
+      ledger.close();
+    }
+  });
+
   test("the correction can fix the plan; the answers are recorded by attempt", async () => {
     await initWithTests();
     const noTest = JSON.stringify({ schema: 1, tasks: [JSON.parse(PLAN).tasks[1]], risks: [] });
