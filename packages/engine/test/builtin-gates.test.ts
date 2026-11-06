@@ -60,7 +60,10 @@ describe("diff_scope", () => {
     );
     expect(r).toMatchObject({
       verdict: "fail",
-      evidence: ["outside project: NOTICE", "out of scope: net/session.go"],
+      evidence: [
+        "outside project: NOTICE",
+        'out of scope: net/session.go (task scope: inventory/*.go; add "net/session.go" or "net/*" to the task scope to allow it)',
+      ],
     });
   });
 
@@ -68,7 +71,19 @@ describe("diff_scope", () => {
     const r = diffScopeGate.run(
       ctx({ projectPath: ".", diff: { files: ["inventory/a.go", "README.md"], text: "" } }),
     );
-    expect(r.evidence).toEqual(["out of scope: README.md"]);
+    expect(r.evidence).toEqual([
+      'out of scope: README.md (task scope: inventory/*.go; add "README.md" or "*" to the task scope to allow it)',
+    ]);
+  });
+
+  test("a scope written from the repo root is called out as the likely mistake", () => {
+    const r = diffScopeGate.run(ctx({ task: task({ scope: ["server/inventory/*.go"] }) }));
+    expect(r.evidence[0]).toContain('scope entries "server/inventory/*.go" would allow it');
+    expect(r.evidence[0]).toContain('drop the "server/" prefix');
+  });
+
+  test.each(["./server", "server/"])("project path %p is normalized", (projectPath) => {
+    expect(diffScopeGate.run(ctx({ projectPath })).verdict).toBe("pass");
   });
 });
 
@@ -119,6 +134,37 @@ describe("touched_vs_diff", () => {
     );
     expect(r.verdict).toBe("pass");
   });
+
+  test.each(["client", "./client", "client/"])(
+    "a file changed at the repo root, touched under project path %p",
+    (projectPath) => {
+      const r = touchedVsDiffGate.run(
+        ctx({
+          project: "client",
+          projectPath,
+          diff: { files: ["MIGRATION_PLAN.md"], text: "" },
+          worker: { schema: 1, summary: "", claims: [], touched: ["client/MIGRATION_PLAN.md"] },
+        }),
+      );
+      expect(r.evidence).toEqual([]);
+      expect(r.verdict).toBe("pass");
+    },
+  );
+
+  test.each(["./godot", "godot/"])(
+    "touched prefixed with the project name, project path %p",
+    (projectPath) => {
+      const r = touchedVsDiffGate.run(
+        ctx({
+          project: "client",
+          projectPath,
+          diff: { files: ["godot/MIGRATION_PLAN.md"], text: "" },
+          worker: { schema: 1, summary: "", claims: [], touched: ["client/MIGRATION_PLAN.md"] },
+        }),
+      );
+      expect(r.evidence).toEqual([]);
+    },
+  );
 
   test("reports both directions of a mismatch", () => {
     const r = touchedVsDiffGate.run(

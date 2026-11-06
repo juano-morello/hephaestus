@@ -1,7 +1,10 @@
 import { posix } from "node:path";
 
-const prefixOf = (projectPath: string) =>
-  projectPath === "." ? "" : `${projectPath.replace(/\/$/, "")}/`;
+/** "./client/" -> "client/"; the repo root (".", "", "./") -> "". */
+export const prefixOf = (projectPath: string) => {
+  const p = posix.normalize(projectPath).replace(/^\.\//, "").replace(/\/+$/, "");
+  return p === "" || p === "." ? "" : `${p}/`;
+};
 
 /** Repo-relative path -> project-relative, or undefined when it is outside the project. */
 export function projectRelative(projectPath: string, repoPath: string): string | undefined {
