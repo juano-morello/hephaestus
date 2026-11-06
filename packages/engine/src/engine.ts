@@ -35,7 +35,7 @@ import {
   type UnitResult,
 } from "./scheduler.ts";
 import { ancestorsOf, baseRef, restackChildren, stackRefs, unresolvedStack } from "./stack.ts";
-import { diffStat, isStalled, stallReason, stuckEvidence } from "./stall.ts";
+import { diffStat, failureDetail, isStalled, stallReason, stuckEvidence } from "./stall.ts";
 import type { Worker } from "./worker.ts";
 
 const RETURN_INSTRUCTION = "fix only the listed failures; do not modify locked paths";
@@ -463,6 +463,10 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
         worktreesDir: opts.worktreesDir,
         tools: opts.config.tools,
         gateTimeoutMs: opts.config.gateTimeoutMs,
+        attemptTimeoutMs: opts.config.attemptTimeoutMs,
+        attemptTimeoutByTier: opts.config.attemptTimeoutByTier,
+        idleTimeoutMs: opts.config.idleTimeoutMs,
+        transportRetries: opts.config.transportRetries,
       }),
     base,
     dirOf,
@@ -959,7 +963,7 @@ async function runUnit(
     if (stall) {
       const top = feedback.reasons[0];
       const evidence = top ? stuckEvidence(top.evidence) : "";
-      const reason = stallReason(top?.gate, stall.attempts, evidence);
+      const reason = stallReason(top?.gate, stall.attempts, evidence, top && failureDetail(top));
       ledger.appendMany([
         ...finished,
         returned,

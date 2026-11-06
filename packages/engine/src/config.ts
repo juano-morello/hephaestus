@@ -13,6 +13,13 @@ export type EngineConfig = {
   commands: Record<string, ContextPack["project"]["commands"]>;
   /** Per command gate run. Default 10 minutes. */
   gateTimeoutMs?: number;
+  /** Wall-clock limit per worker attempt, and per tier. Default 20 minutes. */
+  attemptTimeoutMs?: number;
+  attemptTimeoutByTier?: Partial<Record<Complexity, number>>;
+  /** Abort an attempt with no model output and no tool running for this long. Default 10 minutes. */
+  idleTimeoutMs?: number;
+  /** Re-runs of a worker that returned nothing; they do not use one of maxAttempts. Default 2. */
+  transportRetries?: number;
   /** Units run at once. 1 runs the plan serially; the configured default is 3. */
   parallel: number;
 };

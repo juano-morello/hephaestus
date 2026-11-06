@@ -27,6 +27,21 @@ export const Limits = z
     attempts_per_unit: z.int().positive(),
     budget_tokens: z.int().positive(),
     gate_timeout_ms: z.int().positive(),
+    /** Wall-clock limit for one worker attempt; the worker is aborted and the attempt fails. */
+    attempt_timeout_ms: z.int().positive(),
+    /** An attempt with no model output and no tool running for this long is aborted as hung. */
+    idle_timeout_ms: z.int().positive(),
+    /** Re-runs of a worker that gave no result (hang, timeout, crash); they do not use an attempt. */
+    transport_retries: z.int().nonnegative(),
+    /** Overrides attempt_timeout_ms per complexity tier. */
+    attempt_timeout_ms_by_tier: z
+      .object({
+        trivial: z.int().positive().optional(),
+        standard: z.int().positive().optional(),
+        complex: z.int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     parallel: z.int().positive(),
   })
   .strict();
@@ -182,7 +197,15 @@ export function defaultConfig(opts: { nodeId: string }): DefaultConfig {
       implementer: tiered(),
       documenter: { default: { model: "claude/claude-haiku-5-5" } },
     },
-    limits: { attempts_per_unit: 3, budget_tokens: 20000, gate_timeout_ms: 600000, parallel: 3 },
+    limits: {
+      attempts_per_unit: 3,
+      budget_tokens: 20000,
+      gate_timeout_ms: 600000,
+      attempt_timeout_ms: 1_200_000,
+      idle_timeout_ms: 600_000,
+      transport_retries: 2,
+      parallel: 3,
+    },
     // Native by default (decided 2026-11-04): container mode has no per-project images, network
     // allowlist or dependency caches yet. runtime and image apply when mode is container.
     sandbox: { mode: "native", runtime: "docker", image: "alpine:3.20" },

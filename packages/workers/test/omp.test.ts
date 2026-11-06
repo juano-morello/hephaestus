@@ -116,7 +116,7 @@ describe("exitFrom", () => {
 function fakeSession(
   script: (call: (name: string, params: object) => Promise<string>) => Promise<void>,
 ) {
-  const state = { disposed: false, aborted: false, prompt: "" };
+  const state = { disposed: false, aborted: false, prompt: "", messages: 1, last: "stop" };
   const make = async (opts: ReturnType<typeof sessionOptions>) => {
     const tools = new Map((opts.customTools ?? []).map((t) => [t.name, t]));
     const call = async (name: string, params: object) => {
@@ -134,10 +134,10 @@ function fakeSession(
       async abort() {
         state.aborted = true;
       },
-      getLastAssistantMessage: () => ({ stopReason: "stop" }),
+      getLastAssistantMessage: () => ({ stopReason: state.last }),
       getSessionStats: () => ({ tokens: { input: 10, output: 20, cacheRead: 300, cacheWrite: 4 } }),
       get messages() {
-        return [{ role: "user", content: "x" }];
+        return Array.from({ length: state.messages }, () => ({ role: "user", content: "x" }));
       },
       async dispose() {
         state.disposed = true;
@@ -228,6 +228,95 @@ describe("createOmpWorker", () => {
     expect(state.aborted).toBe(true);
     expect(out.exit).toBe("error");
     expect(state.disposed).toBe(true);
+  });
+});
+
+describe("attempt limits", () => {
+  const make = (
+    extra: Partial<Parameters<typeof createOmpWorker>[0]> = {},
+    script: Parameters<typeof fakeSession>[0] = never,
+  ) => {
+    const f = fakeSession(script);
+    const worker = createOmpWorker({
+      sandbox: (i) => ({ mode: "native", hostDir: i.workdir }),
+      createSession: f.make,
+      ...extra,
+    });
+    return { ...f, worker };
+  };
+  // A model call that never answers, even after the session is aborted.
+  async function never() {
+    await new Promise(() => {});
+  }
+
+  test("a timeout says so, and does not wait for a session that ignores the abort", async () => {
+    const { worker, state } = make({ timeoutMs: 50, abortGraceMs: 50 });
+    const started = Date.now();
+    const out = await worker.spawn(input(dir()));
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(state.aborted).toBe(true);
+    expect(out.exit).toBe("error");
+    expect(out.output).toBeUndefined();
+    expect(out.failure?.kind).toBe("timeout");
+    expect(out.failure?.detail).toContain("attempt limit");
+    expect(state.disposed).toBe(true);
+  });
+
+  test("the limit can be set per attempt through the spawn input", async () => {
+    const { worker } = make({ timeoutMs: 60_000, abortGraceMs: 50 });
+    const out = await worker.spawn({ ...input(dir()), timeoutMs: 40 });
+    expect(out.failure?.kind).toBe("timeout");
+  });
+
+  test("no new message and no tool running for the idle limit aborts as idle", async () => {
+    const { worker, state } = make({ idleTimeoutMs: 80, abortGraceMs: 50 });
+    state.last = "aborted";
+    const out = await worker.spawn(input(dir()));
+    expect(state.aborted).toBe(true);
+    expect(out.failure?.kind).toBe("idle");
+    expect(out.failure?.detail).toMatch(/no model or tool activity/);
+    expect(out.failure?.detail).toContain("last stop reason: aborted");
+  });
+
+  test("a tool call in flight is not idle", async () => {
+    const { worker, state } = make({ idleTimeoutMs: 80, abortGraceMs: 50 }, async (call) => {
+      await call("bash", { command: "sleep 0.4" });
+    });
+    const out = await worker.spawn(input(dir()));
+    expect(state.aborted).toBe(false);
+    expect(out.exit).toBe("ok");
+    expect(out.failure).toBeUndefined();
+  });
+
+  test("new messages keep the attempt alive", async () => {
+    const { worker, state } = make({ idleTimeoutMs: 100, abortGraceMs: 50 }, async () => {
+      for (let i = 0; i < 6; i++) {
+        await Bun.sleep(40);
+        state.messages++;
+      }
+    });
+    const out = await worker.spawn(input(dir()));
+    expect(out.exit).toBe("ok");
+  });
+
+  test("a clean finish and an interrupt carry no failure", async () => {
+    const stop = new AbortController();
+    const { worker, state } = make({ abortGraceMs: 50 }, async () => {
+      stop.abort("handoff");
+      while (!state.aborted) await Bun.sleep(5);
+    });
+    const out = await worker.spawn({ ...input(dir()), signal: stop.signal });
+    expect(out.exit).toBe("interrupted");
+    expect(out.failure).toBeUndefined();
+  });
+
+  test("a model call that threw is reported as an error with the message", async () => {
+    const { worker } = make({}, async () => {
+      throw new Error("socket hang up");
+    });
+    const out = await worker.spawn(input(dir()));
+    expect(out.exit).toBe("error");
+    expect(out.failure).toEqual({ kind: "error", detail: "socket hang up" });
   });
 });
 

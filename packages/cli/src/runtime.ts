@@ -916,6 +916,12 @@ function toEngineConfig(config: ResolvedConfig): EngineConfig {
     maxAttempts: config.limits.attempts_per_unit,
     budgetTokens: config.limits.budget_tokens,
     gateTimeoutMs: config.limits.gate_timeout_ms,
+    attemptTimeoutMs: config.limits.attempt_timeout_ms,
+    idleTimeoutMs: config.limits.idle_timeout_ms,
+    transportRetries: config.limits.transport_retries,
+    ...(config.limits.attempt_timeout_ms_by_tier
+      ? { attemptTimeoutByTier: config.limits.attempt_timeout_ms_by_tier }
+      : {}),
     parallel: config.limits.parallel,
     tools: [],
     commands: Object.fromEntries(Object.entries(config.projects).map(([p, s]) => [p, s.commands])),

@@ -20,10 +20,28 @@ export function normalizeEvidence(text: string): string {
     .replace(/0x[0-9a-f]{6,}/gi, "<addr>");
 }
 
+/**
+ * Evidence lines that start with "detail:" explain a failure for humans (a timing, a count, the
+ * provider's message) and vary run to run; they are left out of the signature, so two hangs
+ * for the same reason count as the same failure.
+ */
+const DETAIL = "detail: ";
+const isDetail = (line: string) => line.startsWith(DETAIL);
+
+/** "reason (detail)" when the gate recorded a detail line, else undefined. */
+export function failureDetail(r: Return["reasons"][number]): string | undefined {
+  const detail = r.evidence.find(isDetail);
+  return detail ? `${r.reason} (${detail.slice(DETAIL.length)})` : undefined;
+}
+
 /** Identifies how an attempt failed: its failing gates, reasons and evidence, order aside. */
 export function stallSignature(r: Pick<Return, "reasons">): string {
   const lines = r.reasons
-    .map((x) => normalizeEvidence(`${x.gate} | ${x.reason} | ${x.evidence.join(" / ")}`))
+    .map((x) =>
+      normalizeEvidence(
+        `${x.gate} | ${x.reason} | ${x.evidence.filter((e) => !isDetail(e)).join(" / ")}`,
+      ),
+    )
     .sort()
     .join("\n");
   return createHash("sha256").update(lines).digest("hex").slice(0, 12);
@@ -56,8 +74,9 @@ export function stallReason(
   gate: string | undefined,
   [a, b]: [number, number],
   evidence?: string,
+  detail?: string,
 ): string {
-  return `stalled: ${gate} failed the same way on a${a} and a${b}${evidence ? ` (repeated: ${evidence})` : ""}`;
+  return `stalled: ${gate} failed the same way on a${a} and a${b}${detail ? `: ${detail}` : ""}${evidence ? ` (repeated: ${evidence})` : ""}`;
 }
 
 /** "2 files changed, +3 -2: a.go (+2 -1), b.go (+1 -1)" from a unified diff. */
