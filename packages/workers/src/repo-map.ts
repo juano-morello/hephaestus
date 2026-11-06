@@ -80,28 +80,36 @@ function renderProject(list: string[], opts: RepoMapOptions, maxLines: number): 
     const b = f.slice(f.lastIndexOf("/") + 1);
     baseCount.set(b, (baseCount.get(b) ?? 0) + 1);
   }
+  // A term counts when the Brief has it as a whole word: "app" is not in "happen".
+  const word = /[a-z0-9_]/;
+  const hasWord = (term: string) => {
+    for (let i = brief.indexOf(term); i >= 0; i = brief.indexOf(term, i + 1)) {
+      if (!word.test(brief[i - 1] ?? " ") && !word.test(brief[i + term.length] ?? " ")) return true;
+    }
+    return false;
+  };
   const mentioned = (n: Node) => {
     const bare = n.path.slice(0, -1).toLowerCase();
     const seg = bare.slice(bare.lastIndexOf("/") + 1);
     return (
-      brief.includes(bare) ||
-      (seg.length >= 3 && brief.includes(seg)) ||
+      hasWord(bare) ||
+      (seg.length >= 3 && hasWord(seg)) ||
       n.files.some((f) => {
-        const b = f.slice(f.lastIndexOf("/") + 1).toLowerCase();
-        return (
-          b.length >= 3 && baseCount.get(f.slice(f.lastIndexOf("/") + 1)) === 1 && brief.includes(b)
-        );
+        const raw = f.slice(f.lastIndexOf("/") + 1);
+        return raw.length >= 3 && baseCount.get(raw) === 1 && hasWord(raw.toLowerCase());
       })
     );
   };
-  const failed = (n: Node) => focus.some((p) => p.startsWith(n.path));
+  // A failure path names the directory that holds it, not every ancestor.
+  const failed = (n: Node) => focus.some((p) => p.slice(0, p.lastIndexOf("/") + 1) === n.path);
   const dirs = [...walk(root)].filter((n) => n !== root);
   const parentOf = new Map<Node, Node>();
   for (const p of walk(root)) for (const c of p.dirs.values()) parentOf.set(c, p);
-  const wanted = [...dirs.filter(failed), ...dirs.filter((n) => !failed(n) && mentioned(n))].slice(
-    0,
-    50,
-  );
+  const candidates = [...dirs.filter(failed), ...dirs.filter((n) => !failed(n) && mentioned(n))];
+  // The most specific directory wins: a parent that only matched through its child is dropped.
+  const wanted = candidates
+    .filter((w) => !candidates.some((o) => o !== w && o.path.startsWith(w.path)))
+    .slice(0, 50);
 
   const within = (n: Node, anc: Node) => n.path.startsWith(anc.path);
   const ancestors = (n: Node) => dirs.filter((a) => a !== n && within(n, a));
@@ -173,4 +181,16 @@ export function pathsInEvidence(feedback: GateResult[]): string[] {
         .filter((t) => t.includes("/")),
     ),
   );
+}
+
+/** The string values of a structure, newline-joined; keys are left out. */
+export function textOf(value: unknown): string {
+  const out: string[] = [];
+  const visit = (v: unknown) => {
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) v.forEach(visit);
+    else if (v && typeof v === "object") Object.values(v).forEach(visit);
+  };
+  visit(value);
+  return out.join("\n");
 }

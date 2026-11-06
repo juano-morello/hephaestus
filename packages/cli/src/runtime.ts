@@ -446,7 +446,7 @@ export function openRuntime(opts: {
         repoMap: await (async () => {
           const w = await workers();
           return w.repoMapFromFiles(files, {
-            brief: JSON.stringify(brief),
+            brief: w.textOf(brief),
             focus: feedback ? w.pathsInEvidence(feedback) : [],
           });
         })(),

@@ -85,7 +85,7 @@ export type PlannerResult = {
   prompt_hash: string;
 };
 
-export { pathsInEvidence, type RepoMapOptions, repoMapFromFiles } from "./repo-map.ts";
+export { pathsInEvidence, type RepoMapOptions, repoMapFromFiles, textOf } from "./repo-map.ts";
 
 /** The previous answer is shown in full up to this size; a runaway answer is cut. */
 const MAX_PREVIOUS_OUTPUT = 40_000;

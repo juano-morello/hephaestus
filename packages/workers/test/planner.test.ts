@@ -6,6 +6,7 @@ import {
   renderPlannerPrompt,
   repoMapFromFiles,
   runPlanner,
+  textOf,
 } from "../src/planner.ts";
 import { brief, gates, workspace } from "./planner-fixtures.ts";
 
@@ -234,11 +235,42 @@ describe("repoMapFromFiles", () => {
     expect(map).toContain("more files)");
   });
 
+  test("a nested directory named by a failure or the Brief is listed, not shadowed by its parent", () => {
+    const nested = {
+      server: Array.from({ length: 30 }, (_, d) =>
+        Array.from({ length: 20 }, (_, i) => `src/pkg${String(d).padStart(2, "0")}/f${i}.go`),
+      ).flat(),
+    };
+    expect(repoMapFromFiles(nested, { focus: ["src/pkg25/cap.go"] })).toContain("src/pkg25/f0.go");
+    expect(repoMapFromFiles(nested, { brief: "change src/pkg25/f3.go" })).toContain(
+      "src/pkg25/f0.go",
+    );
+  });
+
+  test("the Brief is matched on word boundaries, not inside other words", () => {
+    const dirs = ["app", "lib", "cli", "core", "zzz"];
+    const files = { server: dirs.flatMap((d) => many(d, 80)) };
+    const map = repoMapFromFiles(files, {
+      brief: "Happen: the client library score; change zzz/f1.go",
+      maxLines: 100,
+    });
+    expect(map).toContain("zzz/f1.go");
+    for (const d of ["app", "lib", "cli", "core"]) expect(map).toContain(`${d}/ (80 files)`);
+  });
+
   test("maxLines is honoured", () => {
     const files = { server: Array.from({ length: 5 }, (_, i) => `f${i}.go`) };
     const map = repoMapFromFiles(files, { maxLines: 3 });
     expect(lines(map).length).toBeLessThanOrEqual(3 + 3);
     expect(map).toContain("f0.go");
+  });
+});
+
+describe("textOf", () => {
+  test("joins the string values of a structure and ignores its keys", () => {
+    expect(textOf({ constraints: ["use core"], nested: { goal: "ship it" }, n: 3 })).toBe(
+      "use core\nship it",
+    );
   });
 });
 
