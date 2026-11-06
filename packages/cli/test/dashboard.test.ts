@@ -60,6 +60,7 @@ const T1 = task({
   title: "tests",
   kind: "test",
   scope: ["test_add.sh"],
+  creates: ["test_add.sh"],
   produces: ["test:Add"],
   spec: "write test_add.sh",
 });
@@ -69,6 +70,7 @@ const IMPL = (id: string) =>
     title: "impl",
     kind: "implement",
     scope: ["add.sh"],
+    creates: ["add.sh"],
     consumes: ["test:Add"],
     spec: "write add.sh",
   });

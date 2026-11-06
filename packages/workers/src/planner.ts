@@ -85,17 +85,7 @@ export type PlannerResult = {
   prompt_hash: string;
 };
 
-/** Tracked files per project as a trimmed listing, until per-stack repo maps exist. */
-export function repoMapFromFiles(files: Record<string, string[]>, maxLines = 200): string {
-  return Object.entries(files)
-    .map(([project, list]) => {
-      if (!list.length) return `## ${project}\n(no tracked files)`;
-      const shown = list.slice(0, maxLines);
-      const more = list.length - shown.length;
-      return [`## ${project}`, ...shown, ...(more > 0 ? [`(${more} more files)`] : [])].join("\n");
-    })
-    .join("\n\n");
-}
+export { pathsInEvidence, type RepoMapOptions, repoMapFromFiles } from "./repo-map.ts";
 
 /** The previous answer is shown in full up to this size; a runaway answer is cut. */
 const MAX_PREVIOUS_OUTPUT = 40_000;

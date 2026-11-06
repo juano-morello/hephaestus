@@ -443,7 +443,13 @@ export function openRuntime(opts: {
         workspace,
         projectGates,
         files,
-        repoMap: (await workers()).repoMapFromFiles(files),
+        repoMap: await (async () => {
+          const w = await workers();
+          return w.repoMapFromFiles(files, {
+            brief: JSON.stringify(brief),
+            focus: feedback ? w.pathsInEvidence(feedback) : [],
+          });
+        })(),
         route,
         ...extra,
         ...(feedback ? { feedback, ...(previousOutput ? { previousOutput } : {}) } : {}),

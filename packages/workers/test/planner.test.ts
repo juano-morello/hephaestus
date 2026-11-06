@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { briefHash, type GateResult, type Plan } from "@hephaestus/core";
 import {
   type PlannerSession,
+  pathsInEvidence,
   renderPlannerPrompt,
   repoMapFromFiles,
   runPlanner,
@@ -194,10 +195,63 @@ describe("renderPlannerPrompt", () => {
 });
 
 describe("repoMapFromFiles", () => {
-  test("one section per project, trimmed", () => {
-    const files = { server: Array.from({ length: 5 }, (_, i) => `f${i}.go`), web: [] };
-    expect(repoMapFromFiles(files, 3)).toBe(
-      "## server\nf0.go\nf1.go\nf2.go\n(2 more files)\n\n## web\n(no tracked files)",
-    );
+  const many = (dir: string, n: number) => Array.from({ length: n }, (_, i) => `${dir}/f${i}.go`);
+  const big = {
+    server: ["go.mod", ...many("world", 150), ...many("net", 150), ...many("util", 100)],
+  };
+  const lines = (map: string) => map.split("\n");
+
+  test("a small project renders as a flat list; an empty one says so", () => {
+    const files = { server: ["a.go", "b/c.go"], web: [] };
+    expect(repoMapFromFiles(files)).toBe("## server\na.go\nb/c.go\n\n## web\n(no tracked files)");
+  });
+
+  test("a large project collapses directories the Brief does not mention", () => {
+    const map = repoMapFromFiles(big, { brief: "fix world/f3.go" });
+    expect(map).toContain("world/f3.go");
+    expect(map).toContain("world/f149.go");
+    expect(map).toContain("net/ (150 files)");
+    expect(map).toContain("util/ (100 files)");
+    expect(map).toContain("go.mod");
+    expect(map).toContain("(listing is partial");
+    expect(lines(map).length).toBeLessThanOrEqual(200 + 3);
+  });
+
+  test("a failure path expands its directory on the retry", () => {
+    const map = repoMapFromFiles(big, { brief: "", focus: ["net/f1.go"] });
+    expect(map).toContain("net/f149.go");
+    expect(map).toContain("world/ (150 files)");
+  });
+
+  test("Brief text with regex characters never throws", () => {
+    expect(() => repoMapFromFiles(big, { brief: "a.*(b[ \\" })).not.toThrow();
+  });
+
+  test("one directory far over budget is cut and says the listing is partial", () => {
+    const map = repoMapFromFiles({ server: many("big", 500) }, { brief: "big" });
+    expect(lines(map).length).toBeLessThanOrEqual(200 + 3);
+    expect(map).toContain("(listing is partial");
+    expect(map).toContain("more files)");
+  });
+
+  test("maxLines is honoured", () => {
+    const files = { server: Array.from({ length: 5 }, (_, i) => `f${i}.go`) };
+    const map = repoMapFromFiles(files, { maxLines: 3 });
+    expect(lines(map).length).toBeLessThanOrEqual(3 + 3);
+    expect(map).toContain("f0.go");
+  });
+});
+
+describe("pathsInEvidence", () => {
+  test("takes every path-looking token from gate evidence, without trailing punctuation", () => {
+    const gate: GateResult = {
+      gate: "scope_paths",
+      verdict: "fail",
+      reason: "x",
+      evidence: [
+        "T1: inventory/cap.go does not exist and is not in creates (closest existing: inventory/stack.go)",
+      ],
+    };
+    expect(pathsInEvidence([gate])).toEqual(["inventory/cap.go", "inventory/stack.go"]);
   });
 });

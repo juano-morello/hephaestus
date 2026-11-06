@@ -566,9 +566,7 @@ describe("scope_paths", () => {
   });
 
   test("a creates path outside the task scope fails", () => {
-    const p = plan([
-      task("T1", { scope: ["inventory/stack.go"], creates: ["inventory/cap.go"] }),
-    ]);
+    const p = plan([task("T1", { scope: ["inventory/stack.go"], creates: ["inventory/cap.go"] })]);
     expect(scopePaths(p, ctx({ files })).evidence).toEqual([
       "T1: inventory/cap.go is in creates but outside the task scope",
     ]);
