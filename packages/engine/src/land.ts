@@ -14,6 +14,7 @@ import {
 } from "./engine.ts";
 import { createGit, type Git } from "./git.ts";
 import type { PullRequests } from "./prs.ts";
+import { withRepoLocks } from "./repo-lock.ts";
 import {
   ancestorBranch,
   ancestorsOf,
@@ -109,7 +110,26 @@ export function abortLanding(opts: LandOptions, reason: string): LandOutcome {
  * A stacked run is rebased `--onto` its nearest unmerged ancestor's branch, and its PR opened
  * against it, until that ancestor lands (design 3.2).
  */
-export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
+export function landChangeset(opts: LandOptions): Promise<LandOutcome> {
+  return locked(opts, () => landUnlocked(opts));
+}
+
+/** Landing is one at a time per repo: see repo-lock.ts. */
+function locked<T>(opts: LandOptions, fn: () => Promise<T>): Promise<T> {
+  const { repos, gits } = context(opts);
+  return withRepoLocks(
+    repos.map((r) => gits.get(r) as Git),
+    fn,
+  );
+}
+
+/** Times a merge re-stages onto a target that moved under it before it gives up. */
+const MAX_RESTAGES = 3;
+
+const conflictReason = (opts: LandOptions, repo: string, files: string[], target: string) =>
+  `rebase conflict in ${repo}: ${files.join(", ")}. The run is paused, not failed: ${runBranch(opts.runId)} is untouched and nothing landed. Either rebase it onto ${target} in ${repo} yourself and resolve those files, or send a unit back with: heph hint ${opts.runId} <unit> "<how to reconcile with the upstream change>"; then heph run ${opts.runId} re-stages it.`;
+
+async function landUnlocked(opts: LandOptions): Promise<LandOutcome> {
   const { ledger } = opts;
   const c = context(opts);
   const { base, repos, gits, dirOf, remote, target, scope } = c;
@@ -196,7 +216,7 @@ export async function landChangeset(opts: LandOptions): Promise<LandOutcome> {
       },
     );
     if (res.conflicts)
-      return abort(ledger, base, `rebase conflict in ${r}: ${res.conflicts.join(", ")}`, {});
+      return abort(ledger, base, conflictReason(opts, r, res.conflicts, target(r)), {});
     rebased.push(r);
   }
   // A landing stopped after its rebase still owes the re-gate.
@@ -435,6 +455,19 @@ function lastStaged(opts: LandOptions, needPrs = false): Staged {
   return staged;
 }
 
+/** Whether a local-only repo's target has commits the staged ref is not built on. */
+async function movedSince(c: ReturnType<typeof context>, staged: Staged): Promise<boolean> {
+  for (const r of c.repos) {
+    const to = staged.refs[r];
+    if (!to || staged.prs?.[r]) continue;
+    const git = c.gits.get(r) as Git;
+    const from = await git.revParse(c.target(r));
+    // Equal: a stopped merge got this far.
+    if (from !== to && (await git.mergeBase(to, from)) !== from) return true;
+  }
+  return false;
+}
+
 /** Repos staged without a PR (no remote): fast-forward their targets, all or none. */
 async function finishLocal(opts: LandOptions, staged: Staged): Promise<Record<string, string>> {
   const { repos, gits, target, scope } = context(opts);
@@ -470,7 +503,9 @@ async function finishLocal(opts: LandOptions, staged: Staged): Promise<Record<st
       // Already there: a stopped merge got this far.
       if (from === to) continue;
       if ((await git.mergeBase(to, from)) !== from)
-        throw new Error(`${target(r)} in ${r} moved since staging`);
+        throw new Error(
+          `${target(r)} in ${r} moved again while landing (a change outside Hephaestus landed after the re-stage); nothing landed, run paused: heph run ${opts.runId} re-stages onto the new tip`,
+        );
       await move(r, `target_advance:${r}`, from, to);
       moved.push({ r, from });
     }
@@ -503,14 +538,31 @@ export type MergeOutcome =
  * is ready, then merges them in depends_on order, then fast-forwards any local-only repos.
  * A merged PR can't be undone, so a failure after the first merge is recorded as half-landed.
  */
-export async function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
+export function mergeChangeset(opts: LandOptions): Promise<MergeOutcome> {
+  return locked(opts, () => mergeUnlocked(opts));
+}
+
+async function mergeUnlocked(opts: LandOptions): Promise<MergeOutcome> {
   // A stacked run merges after its parent (design 3.3), which in turn waits for its own.
   const parent = ancestorsOf(opts.ledger, opts.runId, opts.stackOn)[0];
   if (parent && parent.status !== "finished")
     return { status: "not_ready", reasons: [`waiting for ${parent.runId}`] };
   const c = context(opts);
   const { base, repos, dirOf, scope, target } = c;
-  const staged = lastStaged(opts);
+  let staged = lastStaged(opts);
+  // A target that moved since staging (another run landed first) is not a failure: the staged
+  // branch is rebased onto its new tip, re-gated and staged again, a bounded number of times.
+  for (let attempt = 0; await movedSince(c, staged); attempt++) {
+    if (attempt >= MAX_RESTAGES) {
+      const reason = `landing paused: a target kept moving: re-staged ${MAX_RESTAGES} times and it moved again each time (other runs or pushes are landing on it); nothing landed, heph run ${opts.runId} tries again`;
+      abort(opts.ledger, base, reason, staged.refs);
+      return { status: "aborted", reason };
+    }
+    const out = await landUnlocked(opts);
+    if (out.status !== "staged")
+      return { status: "aborted", reason: out.reason ?? "re-stage failed" };
+    staged = lastStaged(opts);
+  }
   const order = repos.filter((r) => staged.prs?.[r]);
   if (order.length && !opts.prs) throw new Error("no pull request client configured");
   const prs = opts.prs as PullRequests;
@@ -618,7 +670,11 @@ export type CheckOutcome =
   | { status: "half_landed"; reason: string };
 
 /** For a changeset staged as pull requests: finish the run once all are merged, abort if one closed. */
-export async function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
+export function checkChangeset(opts: LandOptions): Promise<CheckOutcome> {
+  return locked(opts, () => checkUnlocked(opts));
+}
+
+async function checkUnlocked(opts: LandOptions): Promise<CheckOutcome> {
   // Landed already: nothing to finish again (a second run.finished would read as a new landing).
   if (opts.ledger.run(opts.runId)?.status === "finished") return { status: "merged" };
   const c = context(opts);
