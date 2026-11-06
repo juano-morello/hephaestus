@@ -99,6 +99,59 @@ describe("heph doctor", () => {
     });
   });
 
+  test("an unreachable node gets a fix that fits the ssh error", async () => {
+    const fixFor = async (message: string) => {
+      const r = await doctor({
+        home,
+        cwd: ws,
+        tests: false,
+        env: env({
+          helloNode: async () => {
+            throw new Error(message);
+          },
+        }),
+      });
+      return byArea(r)["node denver"];
+    };
+    const unknown = await fixFor(
+      "ssh -o BatchMode=yes denver -- heph peer exited with 255: Connection to UNKNOWN port 65535 timed out",
+    );
+    expect(unknown?.state).toBe("fail");
+    expect(unknown?.fix).toContain("ssh -v denver");
+    expect(unknown?.fix).toContain("ProxyJump");
+    expect((await fixFor("Connection timed out"))?.fix).toContain("asleep");
+    expect((await fixFor("Permission denied (publickey)"))?.fix).toContain("ssh-add");
+    expect((await fixFor("bash: heph: command not found"))?.fix).toContain("install:heph");
+    expect((await fixFor("exited with 127"))?.fix).toContain("install:heph");
+  });
+
+  test("a node speaking another protocol fails with an upgrade fix", async () => {
+    const r = await doctor({
+      home,
+      cwd: ws,
+      tests: false,
+      env: env({ helloNode: async () => ({ version: "0.1.0", protocol: 999 }) }),
+    });
+    expect(byArea(r)["node denver"]).toMatchObject({
+      state: "fail",
+      detail: expect.stringContaining("protocol 999"),
+    });
+  });
+
+  test("a node that never answers fails after the probe timeout instead of hanging", async () => {
+    const r = await doctor({
+      home,
+      cwd: ws,
+      tests: false,
+      nodeTimeoutMs: 50,
+      env: env({ helloNode: () => new Promise(() => {}) }),
+    });
+    expect(byArea(r)["node denver"]).toMatchObject({
+      state: "fail",
+      detail: expect.stringContaining("did not answer"),
+    });
+  });
+
   test("a node on another version warns", async () => {
     const r = await doctor({
       home,

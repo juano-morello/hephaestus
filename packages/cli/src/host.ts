@@ -521,11 +521,12 @@ export function openHost(o: HostOptions) {
     }
   }
 
-  async function syncAll() {
+  /** Syncs with every other configured node (those `only` accepts, when given). */
+  async function syncAll(only?: (node: string) => boolean) {
     const out: { node: string; ok: boolean; pulled?: number; pushed?: number; error?: string }[] =
       [];
     for (const node of Object.keys(o.config.nodes)) {
-      if (node === me) continue;
+      if (node === me || (only && !only(node))) continue;
       try {
         const r = await withPeer(node, (t) => syncWith(ledger, t));
         out.push({ node, ok: true, pulled: r.pulled, pushed: r.pushed });

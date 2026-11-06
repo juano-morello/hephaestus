@@ -4,6 +4,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Host } from "./host.ts";
+import { createNodeHealth } from "./node-health.ts";
 import { startUiServer, type UiAssets } from "./ui-server.ts";
 
 export const socketOf = (home: string) => join(home, "daemon.sock");
@@ -97,11 +98,13 @@ export async function startDaemon(
   if (await daemonAt(o.home)) throw new Error(`a daemon is already running for ${o.home}`);
   // A socket file nothing answers on is what a killed daemon leaves behind.
   if (existsSync(unix)) rmSync(unix);
+  const health = createNodeHealth({ intervalS: o.intervalS, ...(o.log ? { log: o.log } : {}) });
   const server = Bun.serve({
     unix,
     async fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname === "/health") return Response.json({ node: host.node, pid: process.pid });
+      if (url.pathname === "/health")
+        return Response.json({ node: host.node, pid: process.pid, nodes: health.snapshot() });
       if (url.pathname !== "/call" || req.method !== "POST")
         return new Response("not found", { status: 404 });
       const { method, args, cwd } = (await req.json()) as {
@@ -110,7 +113,12 @@ export async function startDaemon(
         cwd?: string;
       };
       try {
-        return Response.json({ ok: true, data: await host.api.call(method, args, cwd) });
+        const data = (await host.api.call(method, args, cwd)) as Record<string, unknown> | null;
+        // `heph status` with no run: the runs, and which peers this daemon can reach.
+        const nodes = health.snapshot();
+        const withNodes =
+          method === "status" && !args[0] && Object.keys(nodes).length && data && !("run" in data);
+        return Response.json({ ok: true, data: withNodes ? { ...data, nodes } : data });
       } catch (e) {
         return Response.json({
           ok: false,
@@ -145,8 +153,8 @@ export async function startDaemon(
       if (syncing) return;
       syncing = true;
       try {
-        for (const r of await host.syncAll())
-          if (!r.ok) o.log?.(`sync with ${r.node} failed: ${r.error}`);
+        for (const r of await host.syncAll((n) => health.due(n)))
+          health.record(r.node, r.ok ? { ok: true } : { ok: false, error: r.error ?? "failed" });
       } finally {
         syncing = false;
       }

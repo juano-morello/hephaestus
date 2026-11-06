@@ -903,6 +903,42 @@ function toEngineConfig(config: ResolvedConfig): EngineConfig {
   };
 }
 
+const LOG_CAPTURED_LINES = 6;
+const LOG_LINE_CHARS = 200;
+const LOG_TEXT_CHARS = 240;
+
+const clip = (s: string, n: number) =>
+  s.length > n ? `${s.slice(0, n)}... (truncated, ${s.length - n} more chars)` : s;
+
+/**
+ * An event for the daemon log: Heph's own words on the first line, and what a command printed
+ * (a project's test output can be pages of it) only as a bounded, `  | `-prefixed tail. The
+ * whole event stays in the ledger: `heph explain <run> <unit>` shows it.
+ */
+export function describeForLog(
+  e: { type: string; data: unknown; unit_id?: string; attempt?: number | undefined },
+  runId: string,
+): string {
+  const d = e.data as Record<string, unknown>;
+  if (e.type === "gate.result") {
+    const g = d as unknown as GateResult;
+    const [exit, ...rest] = g.evidence;
+    const head = `${g.gate} ${g.verdict}: ${clip(g.reason, LOG_TEXT_CHARS)}${exit ? ` (${clip(exit, 60)})` : ""}`;
+    const out = rest.join("\n").replace(/\n+$/, "");
+    if (!out || g.verdict === "pass") return head;
+    const all = out.split("\n");
+    const shown = all.slice(-LOG_CAPTURED_LINES);
+    const hidden = all.length - shown.length;
+    const where = `heph explain ${runId}${e.unit_id ? ` ${e.unit_id}` : ""}`;
+    return [
+      head,
+      ...shown.map((l) => `  | ${clip(l, LOG_LINE_CHARS)}`),
+      `  (${hidden ? `${hidden} earlier lines not shown; ` : ""}full evidence in the ledger: ${where})`,
+    ].join("\n");
+  }
+  return clip(describe(e), LOG_TEXT_CHARS).replace(/\n/g, " ");
+}
+
 /** One readable line per event for heph explain and progress output. */
 export function describe(e: { type: string; data: unknown; attempt?: number | undefined }): string {
   const d = e.data as Record<string, unknown>;
