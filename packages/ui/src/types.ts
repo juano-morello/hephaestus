@@ -72,3 +72,36 @@ export type DiffSummary = {
   projects: { project: string; files: number; added: number; removed: number }[];
   stale?: string;
 };
+
+/** Mirror of `PlanDetail` in packages/cli/src/output.ts. */
+export type PlanDetail = {
+  schema: 1;
+  run_id: string;
+  plan_id: string;
+  approved: boolean;
+  tasks: {
+    id: string;
+    title: string;
+    kind: string;
+    project: string;
+    lane: string;
+    complexity: string;
+    complexity_reason: string;
+    scope: string[];
+    creates: string[];
+    covers: string[];
+    produces: string[];
+    consumes: string[];
+    spec: string;
+  }[];
+  risks: string[];
+  criteria: {
+    id: string;
+    text: string;
+    kind: string;
+    check?: string;
+    projects?: string[];
+    covered_by: string[];
+  }[];
+  stale?: string;
+};

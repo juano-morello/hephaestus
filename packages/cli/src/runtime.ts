@@ -59,7 +59,7 @@ const workers = () => import("@hephaestus/workers");
 import type { LoadedConfig } from "./config.ts";
 import { summarizeDiff } from "./diff-summary.ts";
 import { lockRun } from "./lock.ts";
-import type { DiffSummary } from "./output.ts";
+import type { DiffSummary, PlanDetail } from "./output.ts";
 import { listRoleFiles, roleInstructions } from "./role-files.ts";
 import { attentionLine } from "./watch.ts";
 
@@ -653,6 +653,44 @@ export function openRuntime(opts: {
         order: order.ok ? order.order : [],
         tasks: summary(p),
         risks: p.risks,
+      };
+    },
+
+    /** The whole latest plan and the Brief's criteria, for review (the dashboard's Plan tab). */
+    planDetail(runId: string): PlanDetail {
+      runRow(runId);
+      if (!ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length)
+        throw new Error(`run ${runId} has no finished plan (heph plan revise ${runId})`);
+      const { id, plan: p } = latestPlan(runId);
+      return {
+        schema: 1,
+        run_id: runId,
+        plan_id: id,
+        approved: approvedPlan(runId),
+        tasks: p.tasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          kind: t.kind,
+          project: t.project,
+          lane: t.lane,
+          complexity: t.complexity,
+          complexity_reason: t.complexity_reason,
+          scope: t.scope,
+          creates: t.creates ?? [],
+          covers: t.covers,
+          produces: t.produces ?? [],
+          consumes: t.consumes ?? [],
+          spec: t.spec,
+        })),
+        risks: p.risks,
+        criteria: created(runId).brief.acceptance.map((c) => ({
+          id: c.id,
+          text: c.text,
+          kind: c.kind,
+          ...(c.check ? { check: c.check.gate } : {}),
+          ...(c.projects ? { projects: c.projects } : {}),
+          covered_by: p.tasks.filter((t) => t.covers.includes(c.id)).map((t) => t.id),
+        })),
       };
     },
 

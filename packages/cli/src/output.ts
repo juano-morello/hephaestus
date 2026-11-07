@@ -191,6 +191,50 @@ export const Dashboard = z
   .strict();
 export type Dashboard = z.infer<typeof Dashboard>;
 
+/** The plan page: every task field and the Brief's criteria with the tasks covering each. */
+export const PlanDetail = z
+  .object({
+    schema: z.literal(1),
+    run_id: z.string(),
+    plan_id: z.string(),
+    approved: z.boolean(),
+    tasks: z.array(
+      z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          kind: z.string(),
+          project: z.string(),
+          lane: z.string(),
+          complexity: z.string(),
+          complexity_reason: z.string(),
+          scope: z.array(z.string()),
+          creates: z.array(z.string()),
+          covers: z.array(z.string()),
+          produces: z.array(z.string()),
+          consumes: z.array(z.string()),
+          spec: z.string(),
+        })
+        .strict(),
+    ),
+    risks: z.array(z.string()),
+    criteria: z.array(
+      z
+        .object({
+          id: z.string(),
+          text: z.string(),
+          kind: z.string(),
+          check: z.string().optional(),
+          projects: z.array(z.string()).optional(),
+          covered_by: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    stale: z.string().optional(),
+  })
+  .strict();
+export type PlanDetail = z.infer<typeof PlanDetail>;
+
 const DiffFile = z
   .object({
     path: z.string(),

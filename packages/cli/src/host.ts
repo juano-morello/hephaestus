@@ -423,12 +423,17 @@ export function openHost(o: HostOptions) {
           };
         }
         case "dashboard":
+        case "planDetail":
         case "diffSummary": {
           const runId = args[0] as string;
           const fresh = await refresh(runId);
           const { rt } = await runtimeFor(cwd ?? workspaceOfOrHome(runId));
           return {
-            ...(method === "dashboard" ? rt.dashboard(runId) : rt.diffSummary(runId)),
+            ...(method === "dashboard"
+              ? rt.dashboard(runId)
+              : method === "planDetail"
+                ? rt.planDetail(runId)
+                : rt.diffSummary(runId)),
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }

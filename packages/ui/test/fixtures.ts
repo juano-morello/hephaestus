@@ -275,3 +275,68 @@ export const diffSummaryEmpty: DiffSummary = {
 };
 
 export const diffSummaryFixtures = { diffSummaryOk, diffSummaryEmpty };
+
+import type { PlanDetail } from "../src/types.ts";
+
+export const planDetailFull: PlanDetail = {
+  schema: 1,
+  run_id: "r-live",
+  plan_id: "plan-1",
+  approved: true,
+  tasks: [
+    {
+      id: "T1",
+      title: "Write the tests",
+      kind: "test",
+      project: "calc",
+      lane: "contained",
+      complexity: "standard",
+      complexity_reason: "one new test file",
+      scope: ["test_add.sh"],
+      creates: ["test_add.sh"],
+      covers: ["AC1"],
+      produces: ["test:Add"],
+      consumes: [],
+      spec: "Write test_add.sh so it checks the sum.\nSecond line of the spec.",
+    },
+    {
+      id: "T2",
+      title: "Implement add",
+      kind: "implement",
+      project: "calc",
+      lane: "contained",
+      complexity: "trivial",
+      complexity_reason: "one line",
+      scope: ["add.sh"],
+      creates: [],
+      covers: ["AC1"],
+      produces: [],
+      consumes: ["test:Add"],
+      spec: "Write add.sh.",
+    },
+  ],
+  risks: ["POSIX sh differs between platforms"],
+  criteria: [
+    {
+      id: "AC1",
+      text: "sh add.sh 2 3 prints 5",
+      kind: "behavior",
+      projects: ["calc"],
+      covered_by: ["T1", "T2"],
+    },
+    { id: "AC2", text: "stays POSIX", kind: "nonfunctional", check: "lint", covered_by: [] },
+    { id: "AC3", text: "handles negatives", kind: "behavior", covered_by: [] },
+  ],
+};
+
+export const planDetailEmpty: PlanDetail = {
+  schema: 1,
+  run_id: "r-new",
+  plan_id: "plan-0",
+  approved: false,
+  tasks: [],
+  risks: [],
+  criteria: [],
+};
+
+export const planDetailFixtures = { planDetailFull, planDetailEmpty };

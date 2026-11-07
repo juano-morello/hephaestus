@@ -6,7 +6,7 @@ import { type SpawnInput, type SpawnOutput, Stopped, type Worker } from "@hephae
 import { type PlannerInput, type PlannerSession, runPlanner } from "@hephaestus/workers";
 import { loadConfig } from "../src/config.ts";
 import { type Io, run } from "../src/main.ts";
-import { Dashboard, DiffSummary } from "../src/output.ts";
+import { Dashboard, DiffSummary, PlanDetail } from "../src/output.ts";
 import { type Deps, openRuntime } from "../src/runtime.ts";
 
 let root: string;
@@ -282,5 +282,81 @@ describe("diffSummary", () => {
     const rt2 = await rtOpen();
     expect(DiffSummary.parse(rt2.diffSummary("V4")).units).toEqual([]);
     rt2.close();
+  });
+});
+
+describe("planDetail", () => {
+  const BRIEF2 = BRIEF.replace(
+    '  - { id: AC1, text: "sh add.sh 2 3 prints 5", kind: behavior }',
+    '  - { id: AC1, text: "sh add.sh 2 3 prints 5", kind: behavior, projects: [calc] }\n' +
+      '  - { id: AC2, text: "stays POSIX", kind: nonfunctional, check: { gate: lint } }',
+  );
+
+  test("returns every plan field with defaults, and which tasks cover each criterion", async () => {
+    await setup();
+    put(join(root, "brief2.yaml"), BRIEF2);
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "projects:\n  calc:\n    commands: { test: sh test_add.sh, lint: 'true' }\n",
+    );
+    const bare = task({
+      id: "T1",
+      title: "tests",
+      kind: "test",
+      spec: "write it",
+      scope: ["README.md"],
+      produces: ["test:Add"],
+    });
+    const deps: Deps = {
+      planner: planner([plan(bare, { ...IMPL("T2"), covers: ["AC1", "AC2"] })]),
+    };
+    const r = await heph(["new", "--brief", join(root, "brief2.yaml"), "--run-id", "P1"], deps);
+    expect(r.error?.message).toBeUndefined();
+    expect(r.data).toMatchObject({ status: "planned" });
+    const rt = await rtOpen();
+    const d = rt.planDetail("P1");
+    expect(d.approved).toBe(false);
+    expect(d.tasks[0]).toMatchObject({
+      id: "T1",
+      title: "tests",
+      kind: "test",
+      project: "calc",
+      lane: "contained",
+      complexity: "standard",
+      complexity_reason: "small",
+      scope: ["README.md"],
+      creates: [],
+      produces: ["test:Add"],
+      consumes: [],
+      covers: ["AC1"],
+      spec: "write it",
+    });
+    expect(d.tasks[1]).toMatchObject({
+      consumes: ["test:Add"],
+      creates: ["add.sh"],
+      produces: [],
+    });
+    expect(d.criteria).toEqual([
+      {
+        id: "AC1",
+        text: "sh add.sh 2 3 prints 5",
+        kind: "behavior",
+        projects: ["calc"],
+        covered_by: ["T1", "T2"],
+      },
+      { id: "AC2", text: "stays POSIX", kind: "nonfunctional", check: "lint", covered_by: ["T2"] },
+    ]);
+    expect(d.risks).toEqual([]);
+    expect(PlanDetail.parse(d)).toBeDefined();
+    rt.close();
+  });
+
+  test("a run with no finished plan fails like dry-run does", async () => {
+    await setup();
+    const esc = JSON.stringify({ schema: 1, escalate: ["AC1 contradicts decision 1"] });
+    await create("P2", { planner: planner([esc]) });
+    const rt = await rtOpen();
+    expect(() => rt.planDetail("P2")).toThrow("has no finished plan");
+    rt.close();
   });
 });

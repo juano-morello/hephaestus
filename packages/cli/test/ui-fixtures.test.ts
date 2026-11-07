@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { dashboardFixtures, diffSummaryFixtures } from "../../ui/test/fixtures.ts";
-import { Dashboard, DiffSummary } from "../src/output.ts";
+import {
+  dashboardFixtures,
+  diffSummaryFixtures,
+  planDetailFixtures,
+} from "../../ui/test/fixtures.ts";
+import { Dashboard, DiffSummary, PlanDetail } from "../src/output.ts";
 
 const covers = (
   name: string,
@@ -19,3 +23,4 @@ const covers = (
 
 covers("Dashboard", Dashboard, dashboardFixtures);
 covers("DiffSummary", DiffSummary, diffSummaryFixtures);
+covers("PlanDetail", PlanDetail, planDetailFixtures);
