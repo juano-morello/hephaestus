@@ -93,6 +93,8 @@ export type RunPlanOptions = {
   changesetId: string;
   worker: Worker;
   gates: UnitGate[];
+  /** Per-task gates run after `gates` (custom command gates); not in the join or landing re-gate. */
+  extraGates?: (task: Task) => UnitGate[];
   config: EngineConfig;
   worktreesDir: string;
   /** Opens a sandbox over an attempt's project dir for the command gates; same spec as the worker's. */
@@ -487,6 +489,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
       localRunner({
         worker: opts.worker,
         gates: opts.gates,
+        extraGates: opts.extraGates,
         gateSandbox: opts.gateSandbox,
         worktreesDir: opts.worktreesDir,
         tools: opts.config.tools,

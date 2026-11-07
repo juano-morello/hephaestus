@@ -1,6 +1,7 @@
 export * from "./builtin-gates.ts";
 export * from "./config.ts";
 export * from "./context.ts";
+export * from "./custom-gates.ts";
 export * from "./effects.ts";
 export * from "./engine.ts";
 export * from "./files.ts";

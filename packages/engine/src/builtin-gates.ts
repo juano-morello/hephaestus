@@ -1,4 +1,4 @@
-import { type GateResult, globsOverlap } from "@hephaestus/core";
+import { type GateResult, globsOverlap, type ProjectGate } from "@hephaestus/core";
 import type { UnitGate, UnitGateContext } from "./gates.ts";
 import { normalizePath, prefixOf, projectRelative } from "./paths.ts";
 
@@ -164,6 +164,37 @@ function commandGate(name: "tests" | "typecheck" | "lint", key: CommandKey): Uni
         name,
         r.code === 0,
         r.code === 0 ? "tests pass" : "tests must pass here",
+        evidence,
+      );
+    },
+  };
+}
+
+/**
+ * A custom command gate (project config `gates`): the command runs in the gate sandbox and passes
+ * on exit 0. A gate named by a criterion but without a command fails loudly instead of passing.
+ */
+export function namedCommandGate(
+  name: string,
+  spec: ProjectGate | undefined,
+  project: string,
+): UnitGate {
+  return {
+    name,
+    needsSandbox: true,
+    async run(ctx) {
+      if (!spec?.command)
+        return result(name, false, `gate ${name} has no command in project ${project}`);
+      if (!ctx.sandbox) return result(name, false, "no sandbox configured for gates");
+      const timeoutMs = spec.timeout_ms ?? ctx.timeoutMs;
+      const r = await ctx.sandbox.exec(spec.command, { timeoutMs });
+      const out = tail(r.stdout, r.stderr);
+      const evidence = [`exit ${r.code}`, ...(out ? [out] : [])];
+      if (r.timedOut) return result(name, false, `timed out after ${timeoutMs} ms`, evidence);
+      return result(
+        name,
+        r.code === 0,
+        r.code === 0 ? `${name} passed` : `${name} failed`,
         evidence,
       );
     },

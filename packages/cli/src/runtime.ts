@@ -8,6 +8,7 @@ import {
   deriveEdges,
   type GateResult,
   type Plan,
+  type ProjectGate,
   type ProjectGates,
   type ResolvedConfig,
   topoOrder,
@@ -22,6 +23,7 @@ import {
   configHash,
   createGit,
   createRun,
+  customGatesFor,
   diagnose,
   dropJoinPins,
   type EngineConfig,
@@ -385,6 +387,12 @@ export function openRuntime(opts: {
       changesetId: c.changesetId,
       worker: worker(runId),
       gates,
+      extraGates: (task) =>
+        customGatesFor({
+          task,
+          criteria: c.brief.acceptance,
+          specs: engineConfig.customGates,
+        }),
       config: engineConfig,
       worktreesDir: join(opts.home, "worktrees"),
       gateSandbox: (workdir, t) => openSandbox(sandboxFor(runId, t.project, workdir)),
@@ -1034,6 +1042,11 @@ export function openRuntime(opts: {
 }
 
 function toEngineConfig(config: ResolvedConfig): EngineConfig {
+  const customGates = Object.fromEntries(
+    Object.entries(config.projects)
+      .filter(([, s]) => Object.keys(s.gates ?? {}).length > 0)
+      .map(([p, s]) => [p, s.gates as Record<string, ProjectGate>]),
+  );
   return {
     routing: config.routing,
     maxAttempts: config.limits.attempts_per_unit,
@@ -1048,6 +1061,7 @@ function toEngineConfig(config: ResolvedConfig): EngineConfig {
     parallel: config.limits.parallel,
     tools: [],
     commands: Object.fromEntries(Object.entries(config.projects).map(([p, s]) => [p, s.commands])),
+    ...(Object.keys(customGates).length > 0 ? { customGates } : {}),
   };
 }
 

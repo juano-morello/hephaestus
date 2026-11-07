@@ -148,6 +148,8 @@ export interface Runner {
 export type LocalRunnerOptions = {
   worker: Worker;
   gates: UnitGate[];
+  /** Gates run after `gates` on a task's attempts only: never in the join re-gate. */
+  extraGates?: ((task: Task) => UnitGate[]) | undefined;
   gateSandbox?: ((workdir: string, task: Task) => Promise<Sandbox>) | undefined;
   worktreesDir: string;
   tools: string[];
@@ -286,12 +288,13 @@ export function localRunner(o: LocalRunnerOptions): Runner {
           outcome = "blocked";
         } else {
           // Gates run in a fresh sandbox over the attempt (SPEC section 11), opened only if needed.
+          const attemptGates = [...o.gates, ...(o.extraGates?.(t) ?? [])];
           const sandbox =
-            o.gateSandbox && o.gates.some((g) => g.needsSandbox)
+            o.gateSandbox && attemptGates.some((g) => g.needsSandbox)
               ? await o.gateSandbox(workdir, t)
               : undefined;
           try {
-            for (const gate of o.gates) {
+            for (const gate of attemptGates) {
               try {
                 gates.push(
                   await gate.run({

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   type Complexity,
   type ContextPack,
+  type ProjectGate,
   RUNGS,
   type Rung,
   type TaskKind,
@@ -20,6 +21,8 @@ export type EngineConfig = {
   tools: string[];
   /** Per project: shown to the worker in the context pack and run by the command gates. */
   commands: Record<string, ContextPack["project"]["commands"]>;
+  /** Per project, then gate name: the custom command gates (see customGatesFor). */
+  customGates?: Record<string, Record<string, ProjectGate>>;
   /** Per command gate run. Default 10 minutes. */
   gateTimeoutMs?: number;
   /** Wall-clock limit per worker attempt, and per tier. Default 20 minutes. */
