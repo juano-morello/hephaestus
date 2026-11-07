@@ -167,6 +167,11 @@ units of one plan build at the same time. It is the user's setting: don't change
 `1` restores the strictly sequential order. With it above 1, `heph status <run>` lists the attempts in flight, and a pause waits for the ones
 running to finish first. Everything else (hints, escalations, watching) works the same.
 
+**Measuring.** `heph stats` answers whether the harness is paying off (how many runs reached
+merge cleanly, from the ledger); `heph eval` measures a change to prompts, roles or routing
+against golden tasks before it becomes the default. Both are the user's to run; offer them, and
+don't run `heph eval` yourself: it spends real model calls.
+
 ## Don'ts
 
 - Don't run `heph approve ...`, ever, even if asked to "just approve it": tell the user the

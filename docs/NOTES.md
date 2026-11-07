@@ -240,7 +240,7 @@ How it works and what I interpreted:
 
 **Live smoke (2026-11-03, `dist/heph`, opus planner, container sandbox):** `init`, `new` (29 s, planned on the first answer), `plan show`, `approve plan`, `run` (114 s; both units green on attempt 1, every gate streamed, staged), `approve merge` (merged), `status` finished; `main` has `add.sh` and `test_add.sh`. The planner rated both tasks `trivial`, so the default routing used haiku.
 
-Not built: `--on local|devserver`, handoff/adopt/sync (2.8), `eval`, `retro`, `--dry-run`, presets, workflows, custom gates as TS files in `.heph/gates/` (command gates are built since, see "Custom command gates (2026-11-07)"). `heph init` writes `.heph/` into the repo for a single-repo workspace and does not commit it.
+Not built (as of this smoke; `--on`, handoff, adopt, sync, `--dry-run` and `heph eval` are built since, see "Eval runner and stats (2026-11-07)"): `retro`, presets, workflows, custom gates as TS files in `.heph/gates/` (command gates are built since, see "Custom command gates (2026-11-07)"). `heph init` writes `.heph/` into the repo for a single-repo workspace and does not commit it.
 
 ## Resume and idempotency (v0 step 2.7)
 
@@ -705,3 +705,26 @@ Spec `docs/superpowers/specs/2026-11-07-dashboard-views-design.md`, plan `docs/s
 **Decided not now:** hint and cancel buttons (writes are 404 even with the token, so they need a write-surface design first), SSE (polling works), remote-node dashboards, MCP Apps widgets and an HTTP MCP transport (pending host support and an auth design), provider usage versus limits (no quota signal), a gate statistics panel.
 
 **Fixed follow-ups** from "Dashboard (2026-11-05)": (a) the stale-port token leak, (b) the chunked-body, `startUiServer` failure and exclusive temp file gaps, and the `statuses[id]` inherited-key lookup.
+
+## Eval runner and stats (2026-11-07)
+
+Sub-project F, the measuring tools. Spec `docs/superpowers/specs/2026-11-07-eval-and-stats-design.md`, plan `docs/superpowers/plans/2026-11-07-eval-and-stats.md`. SPEC sections 14 and 18 have the as-built description; this records the decisions, the limits and what is left out.
+
+**Built.** `heph stats` (`packages/cli/src/stats.ts`: `classifyRun`, `buildStats`, `parseSince`; `Runtime.stats` and a host case that needs no workspace), `heph eval` and `heph eval compare` (`packages/cli/src/eval/`: `oracle.ts`, `metrics.ts`, `results.ts`, `workspace.ts`, `run.ts`), `newRun`'s `eval` option (sets the existing `run.created` flag) and `Deps.sandbox` (an injection point for the sandbox the gates, and by default the oracle, run in). No ledger event, schema or projection changed.
+
+**Decisions.**
+- *Strict clean definition.* A run is clean only if it is merge-ready with one plan, no hint, no escalation and no stall. Letting hints through, or reporting counts with no headline, were the alternatives; the strict one is the harder test of "reach merge without manual rewriting". `approve` inputs are not hints; a `plan_edit` counts as a replan.
+- *Results are JSON files in the suite's repo* (`<suite>/results/<label>/<task>/run-<k>.json`), not a new projection: they are reviewable, diffable and travel with the golden tasks.
+- *Throwaway workspaces with no remotes.* Each run clones the pinned commits (`--no-hardlinks`), removes every remote and uses a ledger home under `<HEPH_HOME>/eval`, so a run cannot push, open a PR or write to the real ledger. The runner reads the user's real node config (models, routing) and nothing else from their home.
+- *Repo config sources.* `<suite>/repo-configs/<repo>.yaml` if present, else the real checkout's (usually uncommitted) `.heph/config.yaml`, else none. The workspace file is cut to the repos the task pins.
+- *Errors are excluded from rates* and counted separately; a thrown run records `error` with its message and the eval goes on. A plan that never validates, or a build that does not stage, is `unsolved` with the reason.
+- *Regression is a drop beyond the run-to-run spread.* Solved rate: below A's rate minus A's spread. First-pass plan validity: any drop (it has no spread of its own). With one run per task the spread is 0, so any solved-rate drop counts; use `--runs 3` or more for a meaningful gate.
+- *Label and task id become directory names*, so they are limited to letters, digits, `.`, `_` and `-`.
+
+**Limits.** A live `heph eval` run was **not performed**: it needs real model calls, OMP and the real game repo, none of which work in the agent sandbox. The runner is verified with scripted planners and workers, temporary git repos and a plain (unconfined) sandbox standing in for the native one, so the container and native oracle sandboxes, a real planner and the real hidden tests are unverified. Suggest the first live run be `--runs 1 --task <one small task>` (for instance `heph eval --suite ~/Workspaces/heph-evals/legendsao --runs 1 --task minimap-teleport --label first-look`), then `heph stats` once there are runs to count. Reusing a label without `--resume` overwrites the run files it reruns, but files from other tasks stay in the label directory and enter the summary: use a fresh label. `--resume` keeps every run whose file exists, including `error` ones: delete the file to try that run again.
+
+**Decided not now, and what would reopen each.**
+- Retro and the constraint store, and learned routing: a few dozen closed runs in `heph stats` (the router already records `routed` per unit).
+- Extra worker backends: a named backend someone wants.
+- A shared results store: results needed by more than one person or machine.
+- Parallel eval runs: a suite whose sequential wall time hurts (cost and rate limits are the other half of that question).

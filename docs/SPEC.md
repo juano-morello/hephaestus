@@ -702,6 +702,16 @@ heph eval compare planner-v3 planner-v4
 
 Runs each task N times on throwaway worktrees, flagged as eval in the ledger.
 
+**As built (2026-11-07).** `heph eval --suite <dir> [--task <id>]... [--tag <t>]... [--runs N] [--label L] [--out <dir>] [--resume]` loads the suite (`loadSuite`), skips and lists the tasks `eval-check` reports `needs_oracle` or `invalid` (and unknown `--task` ids), and runs the others sequentially, in this process (not through the daemon). Per task and run:
+
+1. A throwaway directory under `<HEPH_HOME>/eval/<label>/<task>/run-<k>/`: each repo of `workspace_ref` is cloned from the suite's `workspace.yaml` repo path (`--no-hardlinks`), checked out at its pinned commit as branch `eval-base`, and has every remote removed, so nothing can push or open a pull request. `.heph/workspace.yaml` is the suite's workspace cut to the pinned repos, with local repo paths, the name `eval-<task>` and the target `eval-base`. Each repo's `.heph/config.yaml` is `<suite>/repo-configs/<repo>.yaml` when it exists, else a copy of the real checkout's working copy.
+2. A runtime on the user's real node config (models, routing) with a throwaway ledger home (`<run dir>/home`); the run is created with the existing `eval: true` flag, planned, auto-approved and built. Nothing lands, and the real ledger and repos are never written.
+3. The oracle runs on a fresh clone of the run branch: `must_not_touch` is checked against `git diff --name-only <pin>..HEAD` first, then the hidden tests are copied to their `to` paths, then each `must_pass` command runs in the node's kind of sandbox (the project's own image in container mode) with the gate timeout. Solved means every command exits 0 and no forbidden path changed.
+
+Statuses per run: `solved`, `unsolved` (the failures are named: `must_pass <project>: <cmd> exited <code>` or `timed out`, `must_not_touch <project>: <file>`; also a plan that never validated and a build that did not stage), `escalated` (an `expect: escalate` task whose planner returned an Escalation; counts as solved), `missed_escalation` (it returned a Plan; not built), `false_escalation` (a task with an oracle whose planner escalated) and `error` (the run threw; recorded with its message, excluded from every rate, counted separately; the eval goes on). Metrics per run come from the throwaway ledger: first-pass plan validity, attempts per unit, escalations, stalls, `diff_scope` failures, tokens, wall time.
+
+Results are JSON files, `<out>/<label>/<task>/run-<k>.json` (default `<out>` is `<suite>/results`; `--label` defaults to `eval-<UTC date and time>`). `--resume` keeps the runs whose file exists. `heph eval compare <labelA> <labelB> [--suite <dir> | --out <dir>] [--fail-on-regression]` prints each rate and metric mean with the run-to-run spread, the per-task solved rates, and `REGRESSED` or `no regression`: first-pass validity regresses on any drop, the solved rate only when it falls below A's rate minus A's spread (the max minus min of the per-run-index solved rate). With `--fail-on-regression` the exit code is 1 on a regression. No ledger event, schema or projection changed.
+
 ### Metrics
 
 Solved rate (oracle green), first-pass plan validity on plannable tasks, attempts per unit, escalation rate, scope violations caught, tokens and wall time per solved task, honest failure rate on should-escalate tasks (planner Escalation returned), false escalation rate on plannable tasks. Comparisons show run-to-run spread.
@@ -753,7 +763,9 @@ heph adopt <run> [--force]
 heph sync
 heph daemon
 heph peer                  (the far side of node-to-node traffic; run through ssh)
-heph eval ...
+heph eval --suite <dir> [--task <id>]... [--tag <t>]... [--runs N] [--label L] [--out <dir>] [--resume]
+heph eval compare <labelA> <labelB> [--suite <dir>] [--out <dir>] [--fail-on-regression]
+heph stats [--since 28d|<date>] [--list]
 heph retro
 heph config explain
 heph init
@@ -886,6 +898,8 @@ Small MMORPG across three projects: Go server, Godot client, web. Optional share
 ### Kill criteria (4 weeks after v0 runs)
 
 If fewer than half of runs reach merge without manual rewriting, or work keeps bypassing the harness for direct sessions, stop and keep the discipline as skills.
+
+**As built (2026-11-07).** `heph stats [--since 28d|<date>] [--list]` computes the first criterion from this node's ledger (synced runs included; runs flagged `eval` excluded; default window 28 days). A run is **clean** when it is merge-ready (`staged` or `finished`) with exactly one `run.plan_ready`, no `human.input` of kind `hint`, `budget_override`, `scope` or `plan_edit` (`approve` inputs do not count), no `unit.escalated` and no `unit.stalled`; merge-ready otherwise is **assisted**; `failed` (cancelled included) and planner-escalated runs **did not merge**; everything else (`created`, `planned`, `paused`, `running`, `built`) is **open** and not counted. The headline is clean over clean + assisted + did not merge, with a line saying whether it is above or below the 50% line (`n/a` with no closed runs), plus the hint, replan, escalation and stall totals across assisted runs; `--list` prints each run's class and reasons. Every output ends with what the ledger cannot see: manual edits made outside heph or on GitHub after a PR was opened, and work done in direct sessions that never went through heph, so the second criterion is not measurable from it.
 
 ---
 
