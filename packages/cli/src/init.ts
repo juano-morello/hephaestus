@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { ProjectCommands } from "@hephaestus/core";
+import { SCHEMA_NAMES, schemaFor } from "./schema.ts";
 
 export type DetectedProject = {
   repo: string;
@@ -106,7 +107,7 @@ export function detectWorkspace(dir: string): Detected {
   return { repos, projects };
 }
 
-export type InitResult = Detected & { workspaceDir: string; written: string[] };
+export type InitResult = Detected & { workspaceDir: string; written: string[]; schemas: string[] };
 
 const HEADER =
   "# Written by heph init. Edit freely; heph config explain shows the resolved values.\n";
@@ -115,21 +116,27 @@ const HEADER =
 export function initWorkspace(dir: string, opts: { force?: boolean } = {}): InitResult {
   const workspaceDir = resolve(dir);
   const detected = detectWorkspace(workspaceDir);
-  const files = new Map<string, unknown>();
+  const files = new Map<string, { data: unknown; schema: "workspace" | "repo" }>();
   files.set(join(workspaceDir, ".heph", "workspace.yaml"), {
-    name: basename(workspaceDir).replace(/[^A-Za-z0-9._-]/g, "-") || "workspace",
-    repos: detected.repos,
-    projects: Object.fromEntries(
-      Object.entries(detected.projects).map(([n, p]) => [
-        n,
-        { repo: p.repo, path: p.path, stack: p.stack },
-      ]),
-    ),
+    schema: "workspace",
+    data: {
+      name: basename(workspaceDir).replace(/[^A-Za-z0-9._-]/g, "-") || "workspace",
+      repos: detected.repos,
+      projects: Object.fromEntries(
+        Object.entries(detected.projects).map(([n, p]) => [
+          n,
+          { repo: p.repo, path: p.path, stack: p.stack },
+        ]),
+      ),
+    },
   });
   for (const [repo, path] of Object.entries(detected.repos)) {
     const projects = Object.entries(detected.projects).filter(([, p]) => p.repo === repo);
     files.set(join(workspaceDir, path, ".heph", "config.yaml"), {
-      projects: Object.fromEntries(projects.map(([n, p]) => [n, { commands: p.commands }])),
+      schema: "repo",
+      data: {
+        projects: Object.fromEntries(projects.map(([n, p]) => [n, { commands: p.commands }])),
+      },
     });
   }
   if (!opts.force) {
@@ -137,9 +144,20 @@ export function initWorkspace(dir: string, opts: { force?: boolean } = {}): Init
       if (existsSync(f)) throw new Error(`${f} already exists (use --force to overwrite)`);
     }
   }
-  for (const [f, data] of files) {
+  // Schemas are derived from the installed binary, so they are rewritten on every run that
+  // gets this far; only the YAML files obey the never-overwrite rule above.
+  const schemaDir = join(workspaceDir, ".heph", "schemas");
+  const schemas = SCHEMA_NAMES.filter((n) => n !== "home").map((n) => {
+    const f = join(schemaDir, `${n}.schema.json`);
+    mkdirSync(schemaDir, { recursive: true });
+    writeFileSync(f, `${JSON.stringify(schemaFor(n), null, 2)}\n`);
+    return f;
+  });
+  for (const [f, { data, schema: name }] of files) {
+    const schema = join(schemaDir, `${name}.schema.json`);
+    const modeline = `# yaml-language-server: $schema=${relative(dirname(f), schema).split(sep).join("/")}\n`;
     mkdirSync(dirname(f), { recursive: true });
-    writeFileSync(f, `${HEADER}${Bun.YAML.stringify(data, null, 2)}\n`);
+    writeFileSync(f, `${modeline}${HEADER}${Bun.YAML.stringify(data, null, 2)}\n`);
   }
-  return { ...detected, workspaceDir, written: [...files.keys()] };
+  return { ...detected, workspaceDir, written: [...files.keys()], schemas };
 }

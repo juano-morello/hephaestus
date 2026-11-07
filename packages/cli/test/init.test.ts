@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { detectWorkspace, initWorkspace } from "../src/init.ts";
 
@@ -128,5 +128,71 @@ describe("initWorkspace", () => {
     initWorkspace(root, { force: true });
     expect(readFileSync(join(root, ".heph", "workspace.yaml"), "utf8")).toContain("repos:");
     expect(existsSync(join(root, "server", ".heph", "config.yaml"))).toBe(true);
+  });
+});
+
+describe("initWorkspace schemas and modelines", () => {
+  const schemaNames = ["workspace", "repo", "brief"];
+  const schemaFile = (dir: string, n: string) => join(dir, ".heph", "schemas", `${n}.schema.json`);
+  const modelinePath = (file: string) => {
+    const first = readFileSync(file, "utf8").split("\n")[0] as string;
+    const m = /^# yaml-language-server: \$schema=(.+)$/.exec(first);
+    expect(m).not.toBeNull();
+    return resolve(dirname(file), (m as RegExpExecArray)[1] as string);
+  };
+
+  test("writes the three schemas and a resolving modeline on every generated YAML", () => {
+    repo(join(root, "server"), { "go.mod": "module s\n" });
+    repo(join(root, "web"), { "package.json": "{}" });
+    const out = initWorkspace(root);
+    expect(out.schemas.sort()).toEqual(schemaNames.map((n) => schemaFile(root, n)).sort());
+    for (const n of schemaNames) {
+      expect(JSON.parse(readFileSync(schemaFile(root, n), "utf8")).type).toBe("object");
+    }
+    expect(readFileSync(join(root, ".heph", "workspace.yaml"), "utf8").split("\n")[0]).toBe(
+      "# yaml-language-server: $schema=schemas/workspace.schema.json",
+    );
+    expect(modelinePath(join(root, ".heph", "workspace.yaml"))).toBe(schemaFile(root, "workspace"));
+    for (const r of ["server", "web"]) {
+      const cfg = join(root, r, ".heph", "config.yaml");
+      const target = modelinePath(cfg);
+      expect(target).toBe(schemaFile(root, "repo"));
+      expect(existsSync(target)).toBe(true);
+    }
+  });
+
+  test("a repo that is the workspace directory points at schemas/repo.schema.json", () => {
+    repo(root, { "go.mod": "module s\n" });
+    initWorkspace(root);
+    const cfg = join(root, ".heph", "config.yaml");
+    expect(readFileSync(cfg, "utf8").split("\n")[0]).toBe(
+      "# yaml-language-server: $schema=schemas/repo.schema.json",
+    );
+    expect(existsSync(modelinePath(cfg))).toBe(true);
+  });
+
+  test("the generated YAML still loads as config", async () => {
+    repo(join(root, "server"), { "go.mod": "module s\n" });
+    initWorkspace(root);
+    const { config } = await loadConfig({
+      workspaceDir: root,
+      home: join(root, "home"),
+      nodeId: "n",
+    });
+    expect(Object.keys(config.workspace.repos)).toEqual(["server"]);
+  });
+
+  test("a second run leaves the YAML alone and refuses; --force rewrites YAML and schemas", () => {
+    repo(join(root, "server"), { "go.mod": "module s\n" });
+    initWorkspace(root);
+    writeFileSync(join(root, ".heph", "workspace.yaml"), "# mine\n");
+    rmSync(schemaFile(root, "brief"));
+    expect(() => initWorkspace(root)).toThrow("already exists (use --force to overwrite)");
+    // A refused run writes nothing, schemas included.
+    expect(existsSync(schemaFile(root, "brief"))).toBe(false);
+    expect(readFileSync(join(root, ".heph", "workspace.yaml"), "utf8")).toBe("# mine\n");
+    initWorkspace(root, { force: true });
+    expect(existsSync(schemaFile(root, "brief"))).toBe(true);
+    expect(readFileSync(join(root, ".heph", "workspace.yaml"), "utf8")).toContain("repos:");
   });
 });

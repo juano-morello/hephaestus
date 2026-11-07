@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { LedgerEvent } from "@hephaestus/ledger";
 import {
@@ -30,6 +30,7 @@ import { serveStdio } from "./mcp/serve.ts";
 import { explainText } from "./output.ts";
 import { listRoleFiles, type RoleFile } from "./role-files.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
+import { isSchemaName, SCHEMA_NAMES, schemaFor } from "./schema.ts";
 import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { parseWaitFlag, type Wait } from "./wait-flag.ts";
@@ -383,11 +384,25 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ),
         "wrote:",
         ...r.written.map((f) => `  ${f}`),
+        `schemas for editor autocomplete: ${dirname(r.schemas[0] ?? r.workspaceDir)} (commit or ignore them)`,
         "",
       ].join("\n"),
     usage: [
       "init [--force]",
       "Set up .heph/ in this workspace (finds projects and their commands)",
+    ],
+  }),
+  schema: command<Record<string, unknown>>({
+    run: async (ctx) => {
+      const name = ctx.args[0] ?? "";
+      if (!isSchemaName(name))
+        throw new Error(`unknown schema "${name}"; one of: ${SCHEMA_NAMES.join(", ")}`);
+      return schemaFor(name);
+    },
+    render: (s) => `${JSON.stringify(s, null, 2)}\n`,
+    usage: [
+      "schema <home|workspace|repo|brief>",
+      "Print the JSON Schema of a config file or the Brief",
     ],
   }),
   new: {
