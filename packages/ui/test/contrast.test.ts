@@ -32,4 +32,19 @@ describe("theme contrast", () => {
       checkContrast(weak).some((p) => p.includes("--accent") && p.includes("--surface-2")),
     ).toBe(true);
   });
+
+  test("primary and danger text on the surfaces the views use are checked", () => {
+    const weak = css
+      .replaceAll(/--primary:\s*#[0-9a-fA-F]{6};/g, "--primary: #f3ebd9;")
+      .replaceAll(/--danger:\s*#[0-9a-fA-F]{6};/g, "--danger: #dccfb2;");
+    const problems = checkContrast(weak);
+    for (const pair of [
+      ["--primary", "--surface"],
+      ["--primary", "--bg"],
+      ["--danger", "--surface-2"],
+    ])
+      expect(
+        problems.some((p) => p.includes(`${pair[0]} #`) && p.includes(`on ${pair[1]} #`)),
+      ).toBe(true);
+  });
 });

@@ -59,7 +59,7 @@ function Body({ d }: { d: DiffSummary }) {
   if (d.units.length === 0) return <p className="text-muted">No accepted units yet.</p>;
   return (
     <div className="flex flex-col gap-3">
-      <section aria-label="Projects" className="rounded border border-line bg-surface-2 p-3">
+      <section aria-label="Projects" className="rounded border border-line-strong bg-surface p-3">
         <h3 className="font-semibold">Projects</h3>
         <ul className="text-sm">
           {d.projects.map((p) => (

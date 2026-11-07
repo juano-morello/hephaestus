@@ -38,6 +38,9 @@ const PAIRS: [string, string][] = [
   ["--danger", "--surface"],
   ["--accent", "--surface-2"],
   ["--on-primary", "--primary"],
+  ["--primary", "--bg"],
+  ["--primary", "--surface"],
+  ["--danger", "--surface-2"],
 ];
 
 /** Pairs that carry meaning without text (WCAG 1.4.11, 3:1): [foreground, background]. */
