@@ -33,5 +33,21 @@ export function briefGate(
     }
   }
 
+  for (const c of brief.acceptance) {
+    if (!c.projects?.length) continue;
+    for (const p of new Set(c.projects)) {
+      if (!(p in workspace.projects)) {
+        evidence.push(`${c.id}: projects names "${p}", which is not in the workspace`);
+      }
+    }
+    const dups = c.projects.filter((p, i) => c.projects?.indexOf(p) !== i);
+    for (const p of new Set(dups)) evidence.push(`${c.id}: projects lists "${p}" twice`);
+    if (c.check) {
+      evidence.push(
+        `${c.id}: projects applies to criteria checked by tests; a gate check (check.gate) is per project already`,
+      );
+    }
+  }
+
   return result("brief", evidence, "brief is ready to plan", "brief is not ready to plan");
 }

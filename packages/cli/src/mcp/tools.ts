@@ -150,7 +150,7 @@ const withoutUndefined = <T extends Record<string, unknown>>(o: T): Record<strin
 
 const { $schema: _dialect, ...briefJsonSchema } = z.toJSONSchema(Brief) as Record<string, unknown>;
 // Built from the real schema, so what the model is told cannot drift from what heph_new accepts.
-const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; every list field is required except known_paths, but the brief gate rejects an empty acceptance, any open_questions left unresolved, duplicate criterion ids, a check gate not configured in any project, and known_paths projects not in the workspace). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
+const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; every list field is required except known_paths, but the brief gate rejects an empty acceptance, any open_questions left unresolved, duplicate criterion ids, a check gate not configured in any project, known_paths projects not in the workspace, and a criterion whose projects names a project not in the workspace, lists one twice, or also sets check). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
 
 export function registerTools(server: McpServer, ctx: McpCtx): void {
   server.registerTool(

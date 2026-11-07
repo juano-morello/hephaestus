@@ -11,6 +11,8 @@ export const Criterion = z
       .object({ gate: z.string().min(1) })
       .strict()
       .optional(),
+    /** Needs a covering test task in each listed project. Meaningless with `check`. */
+    projects: z.array(z.string().min(1)).optional(),
   })
   .strict();
 export type Criterion = z.infer<typeof Criterion>;

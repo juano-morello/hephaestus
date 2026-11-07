@@ -31,6 +31,48 @@ describe("briefGate", () => {
     expect(result.evidence).toEqual(['known_paths project "mobile" is not in the workspace']);
   });
 
+  describe("criterion projects", () => {
+    const withProjects = (projects: string[], extra: Record<string, unknown> = {}) =>
+      brief({
+        acceptance: [
+          { id: "AC1", text: "a", kind: "behavior" },
+          { id: "AC2", text: "b", kind: "behavior", projects, ...extra },
+        ],
+      });
+
+    test("passes when every project is in the workspace", () => {
+      expect(briefGate(withProjects(["server", "client"]), workspace()).verdict).toBe("pass");
+    });
+
+    test("fails on a project not in the workspace", () => {
+      const result = briefGate(withProjects(["server", "x"]), workspace());
+      expect(result.verdict).toBe("fail");
+      expect(result.evidence).toEqual(['AC2: projects names "x", which is not in the workspace']);
+    });
+
+    test("fails on a project listed twice", () => {
+      const result = briefGate(withProjects(["client", "server", "client"]), workspace());
+      expect(result.evidence).toEqual(['AC2: projects lists "client" twice']);
+    });
+
+    test("fails when the criterion also has check", () => {
+      const result = briefGate(
+        withProjects(["server"], { check: { gate: "buf" } }),
+        workspace(),
+        gates(),
+      );
+      expect(result.evidence).toEqual([
+        "AC2: projects applies to criteria checked by tests; a gate check (check.gate) is per project already",
+      ]);
+    });
+
+    test("an empty projects array is treated as absent", () => {
+      expect(briefGate(withProjects([]), workspace()).verdict).toBe("pass");
+      const checked = withProjects([], { check: { gate: "buf" } });
+      expect(briefGate(checked, workspace(), gates()).verdict).toBe("pass");
+    });
+  });
+
   test("fails on duplicate criterion ids", () => {
     const b = brief({
       acceptance: [

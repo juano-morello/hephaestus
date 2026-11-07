@@ -72,7 +72,7 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    spans projects is several tasks.
 2. **Every criterion is covered by its check.** Use only Criterion ids that exist in the Brief.
    - A criterion **without** `check` is verified by tests: its id appears in `covers` of at
-     least one `test` task.
+     least one `test` task. A criterion with `projects` needs a `test` task in each listed project that lists its id in `covers`.
    - A criterion **with** `check: { gate }` is verified by that gate, not by tests. Put its id
      in `covers` of the task whose output the gate checks, in a project where that gate is
      configured (see Project gates below). Never list it in a `test` task: a test cannot

@@ -31,6 +31,23 @@ describe("Brief", () => {
     expect(Brief.safeParse(b).success).toBe(false);
   });
 
+  test("accepts a criterion with projects, and without", () => {
+    const withProjects = brief({
+      acceptance: [{ id: "AC1", text: "x", kind: "behavior", projects: ["server", "client"] }],
+    });
+    expect(Brief.safeParse(withProjects).success).toBe(true);
+    expect(Brief.safeParse(brief()).success).toBe(true);
+  });
+
+  test("rejects non-string or empty projects items", () => {
+    for (const projects of [[1], [""]]) {
+      const b = brief({
+        acceptance: [{ id: "AC1", text: "x", kind: "behavior", projects: projects as string[] }],
+      });
+      expect(Brief.safeParse(b).success).toBe(false);
+    }
+  });
+
   test("rejects unknown criterion kinds", () => {
     const b = brief({ acceptance: [{ id: "AC1", text: "x", kind: "vibe" as "behavior" }] });
     expect(Brief.safeParse(b).success).toBe(false);
