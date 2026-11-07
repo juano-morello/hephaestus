@@ -146,7 +146,7 @@ export function openRuntime(opts: {
   const projectGates: ProjectGates = Object.fromEntries(
     Object.keys(workspace.projects).map((p) => [
       p,
-      [...BUILTIN_GATES, ...(config.projects[p]?.gates ?? [])],
+      [...BUILTIN_GATES, ...Object.keys(config.projects[p]?.gates ?? {})],
     ]),
   );
   const hash = configHash(

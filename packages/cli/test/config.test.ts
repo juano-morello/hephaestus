@@ -215,17 +215,68 @@ describe("loadConfig", () => {
     const file = join(ws, "web", ".heph", "config.yaml");
     await put(
       file,
-      "projects:\n  web-app:\n    commands: { test: bun test, lint: biome ci . }\n    image: oven/bun:1\n    gates: [tests, lint]\n",
+      "projects:\n  web-app:\n    commands: { test: bun test, lint: biome ci . }\n    image: oven/bun:1\n    gates: [buf, proto]\n",
     );
     const { config, sources } = await loadConfig({ workspaceDir: ws, home });
     expect(config.projects["web-app"]).toEqual({
       commands: { test: "bun test", lint: "biome ci ." },
       image: "oven/bun:1",
-      gates: ["tests", "lint"],
+      gates: { buf: { always: false }, proto: { always: false } },
     });
     expect(config.projects["web-docs"]).toEqual({ commands: {} });
     expect(sources["projects.web-app.commands.test"]).toBe(file);
-    expect(sources["projects.web-app.gates"]).toBe(file);
+    expect(sources["projects.web-app.gates.buf.always"]).toBe(file);
+  });
+
+  test("a command gate resolves to the map form", async () => {
+    await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
+    await put(
+      join(ws, "server", ".heph", "config.yaml"),
+      "project:\n  gates: { buf: buf lint, nc: { command: ./nc.sh, always: true, timeout_ms: 9 } }\n",
+    );
+    const { config } = await loadConfig({ workspaceDir: ws, home });
+    expect(config.projects.server?.gates).toEqual({
+      buf: { command: "buf lint", always: false },
+      nc: { command: "./nc.sh", timeout_ms: 9, always: true },
+    });
+  });
+
+  test("a later layer redefining a gate replaces the entry whole", async () => {
+    await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
+    await put(
+      join(ws, "server", ".heph", "config.yaml"),
+      "project:\n  gates: { buf: { command: buf lint, timeout_ms: 9000 } }\n",
+    );
+    const { config, sources } = await loadConfig({
+      workspaceDir: ws,
+      home,
+      overrides: { "projects.server.gates.buf": { command: "buf lint -v", always: false } },
+    });
+    expect(config.projects.server?.gates?.buf).toEqual({ command: "buf lint -v", always: false });
+    expect(sources["projects.server.gates.buf.command"]).toBe("flag");
+    expect(sources["projects.server.gates.buf.timeout_ms"]).toBeUndefined();
+  });
+
+  test("a reserved gate name is a config error naming the key and file", async () => {
+    await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
+    const file = join(ws, "server", ".heph", "config.yaml");
+    await put(file, "project:\n  gates: { lint: x }\n");
+    const err = await loadError({ workspaceDir: ws, home });
+    expect(err.issues[0]?.file).toBe(file);
+    expect(err.issues[0]?.key.endsWith("lint")).toBe(true);
+    expect(err.issues[0]?.message).toContain("built-in gate");
+  });
+
+  test("always without a command and an unknown gate key name the exact key", async () => {
+    await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
+    const file = join(ws, "server", ".heph", "config.yaml");
+    await put(file, "project:\n  gates:\n    nc: { always: true }\n");
+    const a = await loadError({ workspaceDir: ws, home });
+    expect(a.issues[0]).toMatchObject({ file, key: "project.gates.nc", line: 3 });
+    expect(a.issues[0]?.message).toContain("always needs a command");
+    await put(file, "project:\n  gates:\n    buf: { command: x, nope: 1 }\n");
+    const b = await loadError({ workspaceDir: ws, home });
+    expect(b.issues[0]).toMatchObject({ file, key: "project.gates.buf.nope" });
   });
 
   test("the project shorthand applies to the repo's only project", async () => {
@@ -341,14 +392,14 @@ describe("explainConfig", () => {
   test("prints every leaf with its value and source", async () => {
     const file = join(home, "config.yaml");
     await put(file, "limits:\n  attempts_per_unit: 5\n");
-    await put(join(ws, ".heph", "config.yaml"), "project:\n  gates: [tests, lint]\n");
+    await put(join(ws, ".heph", "config.yaml"), "project:\n  gates: { buf: buf lint }\n");
     const lines = explainConfig(await loadConfig({ workspaceDir: ws, home }));
     expect(lines).toContain(`limits.attempts_per_unit = 5  (${file})`);
     expect(lines).toContain("limits.budget_tokens = 20000  (default)");
     expect(lines).toContain("limits.parallel = 3  (default)");
     expect(lines).toContain("sandbox.image = alpine:3.20  (default)");
     expect(lines).toContain(
-      `projects.${basename(ws)}.gates = ["tests","lint"]  (${join(ws, ".heph", "config.yaml")})`,
+      `projects.${basename(ws)}.gates.buf.command = buf lint  (${join(ws, ".heph", "config.yaml")})`,
     );
     expect(lines[0]).toBe(`node.id = ${hostname()}  (default)`);
   });

@@ -3,6 +3,10 @@ import {
   defaultConfig,
   HomeConfigLayer,
   Limits,
+  normalizeGates,
+  ProjectLayer,
+  ProjectSettings,
+  RESERVED_GATE_NAMES,
   RepoConfigLayer,
   ResolvedConfig,
   RoleRoutes,
@@ -162,6 +166,65 @@ describe("layers", () => {
     expect(RepoConfigLayer.safeParse({ project: { commands: { build: "make" } } }).success).toBe(
       false,
     );
+  });
+});
+
+describe("custom gates config", () => {
+  const layer = (gates: unknown) => ProjectLayer.safeParse({ gates });
+
+  test("the layer takes a list, a command string or an object spec", () => {
+    expect(layer(["buf"]).success).toBe(true);
+    expect(layer({ buf: "buf lint" }).success).toBe(true);
+    expect(layer({ buf: { command: "buf lint", timeout_ms: 5000 } }).success).toBe(true);
+    expect(layer({ nc: { command: "x", always: true } }).success).toBe(true);
+  });
+
+  test("reserved names are rejected in both forms", () => {
+    expect(RESERVED_GATE_NAMES).toEqual([
+      "tests",
+      "typecheck",
+      "lint",
+      "diff_scope",
+      "locked_paths",
+      "touched_vs_diff",
+    ]);
+    expect(layer(["tests"]).success).toBe(false);
+    const r = layer({ lint: "x" });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error?.issues)).toContain(
+      "lint is a built-in gate and cannot be redefined",
+    );
+  });
+
+  test("always needs a command; unknown keys and a zero timeout are rejected", () => {
+    const r = layer({ a: { always: true } });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error?.issues)).toContain("always needs a command");
+    expect(layer({ a: { command: "x", nope: 1 } }).success).toBe(false);
+    expect(layer({ a: { command: "x", timeout_ms: 0 } }).success).toBe(false);
+  });
+
+  test("normalizeGates yields the resolved map", () => {
+    expect(normalizeGates(["buf"])).toEqual({ buf: { always: false } });
+    expect(normalizeGates({ buf: "buf lint" })).toEqual({
+      buf: { command: "buf lint", always: false },
+    });
+    expect(normalizeGates({ nc: { command: "x", always: true } })).toEqual({
+      nc: { command: "x", always: true },
+    });
+    expect(normalizeGates({ b: { command: "x", timeout_ms: 10 } })).toEqual({
+      b: { command: "x", timeout_ms: 10, always: false },
+    });
+    expect(normalizeGates(undefined)).toBeUndefined();
+  });
+
+  test("ProjectSettings accepts the resolved map and rejects the list", () => {
+    const base = { commands: {} };
+    expect(
+      ProjectSettings.safeParse({ ...base, gates: { buf: { command: "b", always: false } } })
+        .success,
+    ).toBe(true);
+    expect(ProjectSettings.safeParse({ ...base, gates: ["buf"] }).success).toBe(false);
   });
 });
 

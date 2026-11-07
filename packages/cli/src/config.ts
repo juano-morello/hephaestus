@@ -5,6 +5,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   defaultConfig,
   HomeConfigLayer,
+  normalizeGates,
+  type ProjectGate,
   type ProjectLayer,
   RepoConfigLayer,
   ResolvedConfig,
@@ -45,8 +47,13 @@ type Path = (string | number)[];
 
 const isObj = (v: unknown): v is Obj => v !== null && typeof v === "object" && !Array.isArray(v);
 
-/** A route (`routing.<role>.<tier>`) is one value: a later layer replaces it whole. */
-const isAtomic = (path: string[]) => path.length === 3 && path[0] === "routing";
+/**
+ * A route (`routing.<role>.<tier>`) and a custom gate (`projects.<p>.gates.<name>`) are one value
+ * each: a later layer replaces it whole.
+ */
+const isAtomic = (path: string[]) =>
+  (path.length === 3 && path[0] === "routing") ||
+  (path.length === 4 && path[0] === "projects" && path[2] === "gates");
 
 /** Later wins, leaf by leaf. Arrays and routes replace; `sources` follows every leaf. */
 function apply(target: Obj, layer: Obj, source: string, sources: Sources, prefix: string[] = []) {
@@ -150,8 +157,24 @@ export function findLine(text: string, path: Path): number | undefined {
   return at >= 0 ? at + 1 : undefined;
 }
 
+/**
+ * A union failure hides the branch that nearly matched (`gates` is a list or a map). Replace it
+ * by the issues of the branches that got past the top-level type check.
+ */
+function flattenUnions(issues: readonly z.core.$ZodIssue[]): z.core.$ZodIssue[] {
+  return issues.flatMap((issue) => {
+    if (issue.code !== "invalid_union") return [issue];
+    const prefix = issue.path;
+    const deep = issue.errors
+      .filter((branch) => !branch.every((i) => i.code === "invalid_type" && i.path.length === 0))
+      .flat()
+      .map((i) => ({ ...i, path: [...prefix, ...i.path] }));
+    return deep.length > 0 ? flattenUnions(deep) : [issue];
+  });
+}
+
 function issuesOf(error: z.ZodError, file: string, text: string, mount: string[] = []) {
-  return error.issues.map((issue): ConfigIssue => {
+  return flattenUnions(error.issues).map((issue): ConfigIssue => {
     const path: Path = [...issue.path].map((p) => (typeof p === "symbol" ? String(p) : p));
     if (issue.code === "unrecognized_keys" && issue.keys[0]) path.push(issue.keys[0]);
     const line = findLine(text, path);
@@ -295,7 +318,7 @@ function repoProjects(
   layer: FileLayer<RepoConfigLayer>,
   repo: string,
   workspace: WorkspaceConfig,
-): Record<string, ProjectLayer> {
+): Record<string, ResolvedProjectLayer> {
   const own = Object.entries(workspace.projects)
     .filter(([, p]) => p.repo === repo)
     .map(([name]) => name);
@@ -312,14 +335,25 @@ function repoProjects(
         `repo "${repo}" has ${own.length} projects; use projects.<name> (${own.join(", ") || "none"})`,
       );
     }
-    return { [own[0] as string]: layer.data.project };
+    return { [own[0] as string]: resolveLayer(layer.data.project) };
   }
   const projects = layer.data.projects ?? {};
   for (const name of Object.keys(projects)) {
     if (!(name in workspace.projects)) fail(["projects", name], `unknown project "${name}"`);
     if (!own.includes(name)) fail(["projects", name], `project "${name}" is not in repo "${repo}"`);
   }
-  return projects;
+  return Object.fromEntries(Object.entries(projects).map(([n, p]) => [n, resolveLayer(p)]));
+}
+
+type ResolvedProjectLayer = Omit<ProjectLayer, "gates"> & {
+  gates?: Record<string, ProjectGate>;
+};
+
+/** A project layer with its `gates` in the resolved map form. */
+function resolveLayer(layer: ProjectLayer): ResolvedProjectLayer {
+  const { gates, ...rest } = layer;
+  const resolved = normalizeGates(gates);
+  return resolved ? { ...rest, gates: resolved } : rest;
 }
 
 const show = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));

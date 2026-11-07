@@ -31,6 +31,12 @@ describe("schemaFor", () => {
     expect(s.properties.routing).toBeUndefined();
   });
 
+  test("repo describes the command gate spec", () => {
+    const json = JSON.stringify(schemaFor("repo"));
+    expect(json).toContain('"always"');
+    expect(json).toContain('"timeout_ms"');
+  });
+
   test("workspace has repos; brief has acceptance", () => {
     expect((schemaFor("workspace") as Obj).properties.repos).toBeDefined();
     expect((schemaFor("brief") as Obj).properties.acceptance).toBeDefined();

@@ -96,12 +96,83 @@ export const ProjectCommands = z
   .strict();
 export type ProjectCommands = z.infer<typeof ProjectCommands>;
 
+/** Names of the built-in unit gates; a custom gate cannot reuse one. */
+export const RESERVED_GATE_NAMES: readonly string[] = [
+  "tests",
+  "typecheck",
+  "lint",
+  "diff_scope",
+  "locked_paths",
+  "touched_vs_diff",
+];
+
+/** One custom command gate as written in a layer: a command string, or an object. */
+export const GateSpec = z.union([
+  z.string().min(1),
+  z
+    .object({
+      command: z.string().min(1).optional(),
+      timeout_ms: z.int().positive().optional(),
+      always: z.boolean().optional(),
+    })
+    .strict()
+    .refine((g) => !(g.always && g.command === undefined), {
+      message: "always needs a command",
+    }),
+]);
+export type GateSpec = z.infer<typeof GateSpec>;
+
+/** A custom gate once resolved: `always` is explicit; no `command` means "declared, not runnable". */
+export const ProjectGate = z
+  .object({
+    command: z.string().min(1).optional(),
+    timeout_ms: z.int().positive().optional(),
+    always: z.boolean(),
+  })
+  .strict();
+export type ProjectGate = z.infer<typeof ProjectGate>;
+
+/** The loader's normalization: list names, command strings and objects all become `ProjectGate`s. */
+export function normalizeGates(
+  gates: string[] | Record<string, GateSpec> | undefined,
+): Record<string, ProjectGate> | undefined {
+  if (gates === undefined) return undefined;
+  const out: Record<string, ProjectGate> = {};
+  if (Array.isArray(gates)) {
+    for (const name of gates) out[name] = { always: false };
+    return out;
+  }
+  for (const [name, spec] of Object.entries(gates)) {
+    out[name] =
+      typeof spec === "string"
+        ? { command: spec, always: false }
+        : { ...spec, always: spec.always ?? false };
+  }
+  return out;
+}
+
+/** A layer's `gates`: the old list of names or a map of name to spec; reserved names are errors. */
+const LayerGates = z
+  .union([z.array(z.string().min(1)), z.record(z.string().min(1), GateSpec)])
+  .superRefine((gates, ctx) => {
+    const names = Array.isArray(gates) ? gates : Object.keys(gates);
+    names.forEach((name, i) => {
+      if (RESERVED_GATE_NAMES.includes(name)) {
+        ctx.addIssue({
+          code: "custom",
+          path: [Array.isArray(gates) ? i : name],
+          message: `${name} is a built-in gate and cannot be redefined`,
+        });
+      }
+    });
+  });
+
 /** Per project settings, owned by the project's repo (`<repo>/.heph/config.yaml`). */
 export const ProjectSettings = z
   .object({
     commands: ProjectCommands,
     image: z.string().min(1).optional(),
-    gates: z.array(z.string().min(1)).optional(),
+    gates: z.record(z.string(), ProjectGate).optional(),
   })
   .strict();
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
@@ -165,7 +236,7 @@ export const ProjectLayer = z
   .object({
     commands: ProjectCommands.optional(),
     image: z.string().min(1).optional(),
-    gates: z.array(z.string().min(1)).optional(),
+    gates: LayerGates.optional(),
   })
   .strict();
 export type ProjectLayer = z.infer<typeof ProjectLayer>;
