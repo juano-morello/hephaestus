@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadHomeConfig } from "../src/config.ts";
@@ -106,6 +106,48 @@ describe("heph ui", () => {
       await d.stop();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("a foreign listener serving the root element gets no token and heph ui refuses", async () => {
+    const { ws, home } = setup();
+    await daemonWithUi(home);
+    const seen: { url: string; auth: string | null }[] = [];
+    const token = "f".repeat(43);
+    const foreign = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req) => {
+        seen.push({ url: req.url, auth: req.headers.get("authorization") });
+        return new Response(PAGE);
+      },
+    });
+    try {
+      writeFileSync(join(home, "ui.json"), JSON.stringify({ port: foreign.port, token }), {
+        mode: 0o600,
+      });
+      const r = await heph(ws, home, ["ui", "--no-open"]);
+      expect(r.ok).toBe(false);
+      expect(r.error?.message).toBe(
+        `the dashboard listener on port ${foreign.port} is not this node's daemon (a stale ui.json?); restart it with heph daemon, or run heph doctor`,
+      );
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((s) => s.auth === null && !s.url.includes(token))).toBe(true);
+      expect(JSON.stringify(r)).not.toContain("#t=");
+    } finally {
+      await foreign.stop(true);
+    }
+  });
+
+  test("a ui.json open to group or others is not trusted by heph ui", async () => {
+    const { ws, home } = setup();
+    await daemonWithUi(home);
+    const file = join(home, "ui.json");
+    const { token } = JSON.parse(readFileSync(file, "utf8")) as { token: string };
+    chmodSync(file, 0o644);
+    const r = await heph(ws, home, ["ui", "--no-open"]);
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toContain("heph doctor");
+    expect(JSON.stringify(r)).not.toContain(token);
   });
 
   test("opens the url only on a TTY without --no-open, with the platform's opener", async () => {

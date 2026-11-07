@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -16,6 +17,8 @@ import { loadHomeConfig } from "../src/config.ts";
 import { daemonAt, startDaemon } from "../src/daemon.ts";
 import { openHost } from "../src/host.ts";
 import {
+  challengeAnswer,
+  proveListener,
   readUiFile,
   startUiServer,
   UI_METHODS,
@@ -286,6 +289,85 @@ describe("ui server", () => {
     const again = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("x") });
     await again.stop(true);
     expect(readdirSync(home)).toEqual(["ui.json"]);
+  });
+});
+
+describe("challenge", () => {
+  const nonce = "n".repeat(20);
+  const get = (ui: { port: number }, q: string, headers: Record<string, string> = {}) =>
+    fetch(`http://127.0.0.1:${ui.port}/challenge${q}`, { headers });
+
+  test("challengeAnswer is the HMAC-SHA256 of the nonce under the token", () => {
+    const expected = createHmac("sha256", "tok".repeat(12)).update("heph-ui-v1:abc").digest("hex");
+    expect(challengeAnswer("tok".repeat(12), "abc")).toBe(expected);
+  });
+
+  test("answers a good nonce without a bearer token", async () => {
+    const ui = await start();
+    const r = await get(ui, `?nonce=${nonce}`);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ hmac: challengeAnswer(ui.token, nonce) });
+    expect(JSON.stringify(await (await get(ui, `?nonce=${nonce}`)).text())).not.toContain(ui.token);
+  });
+
+  test("bad nonces are 400 and a wrong Host is 403", async () => {
+    const ui = await start();
+    for (const q of ["?nonce=abc", `?nonce=${"x".repeat(200)}`, "", `?nonce=${"a/b".repeat(8)}`])
+      expect((await get(ui, q)).status).toBe(400);
+    expect((await get(ui, `?nonce=${nonce}`, { host: "evil.example" })).status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  test("proveListener: true for the real listener, false for foreign ones", async () => {
+    const ui = await start();
+    expect(await proveListener({ port: ui.port, token: ui.token })).toBe(true);
+    expect(await proveListener({ port: ui.port, token: "z".repeat(43) })).toBe(false);
+    const wrong = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req) =>
+        new URL(req.url).pathname === "/challenge"
+          ? Response.json({ hmac: "00".repeat(32) })
+          : new Response('<div id="root">'),
+    });
+    const missing = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("nope", { status: 404 }),
+    });
+    try {
+      expect(await proveListener({ port: wrong.port as number, token: ui.token })).toBe(false);
+      expect(await proveListener({ port: missing.port as number, token: ui.token })).toBe(false);
+    } finally {
+      await wrong.stop(true);
+      await missing.stop(true);
+    }
+  });
+
+  test("a ui.json owned by someone else or open to others is not trusted", async () => {
+    const old = "o".repeat(43);
+    writeFileSync(uiFileOf(home), JSON.stringify({ port: 1, token: old }), { mode: 0o600 });
+    const getuid = process.getuid;
+    try {
+      process.getuid = () => (getuid?.() ?? 0) + 1;
+      const ui = await start();
+      expect(ui.token).not.toBe(old);
+    } finally {
+      process.getuid = getuid;
+    }
+  });
+
+  test("write methods stay 404 with a valid token, new reads need one", async () => {
+    const ui = await start();
+    expect((await api(ui, "hint", { args: [] })).status).toBe(404);
+    expect((await api(ui, "cancel", { args: [] })).status).toBe(404);
+    expect((await api(ui, "approvePlan", { args: [] })).status).toBe(404);
+  });
+
+  test("the ui.json temp file is created exclusively with a random name", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src", "ui-server.ts"), "utf8");
+    expect(src).toContain('flag: "wx"');
+    expect(src).toContain("randomBytes(6)");
   });
 });
 

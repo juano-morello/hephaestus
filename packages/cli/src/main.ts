@@ -32,7 +32,7 @@ import { explainText } from "./output.ts";
 import { listRoleFiles, type RoleFile } from "./role-files.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
 import { isSchemaName, SCHEMA_NAMES, schemaFor } from "./schema.ts";
-import { readUiFile, type UiAssets } from "./ui-server.ts";
+import { proveListener, readTrustedUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { parseWaitFlag, type Wait } from "./wait-flag.ts";
 import { watchRun } from "./watch.ts";
@@ -645,7 +645,7 @@ const COMMANDS: Record<string, Command<unknown>> = {
   ui: command({
     run: async (ctx) => {
       const home = homeOf(ctx);
-      const ui = readUiFile(home);
+      const ui = readTrustedUiFile(home);
       // ui.json outlives the daemon, so a live daemon and the dashboard itself answering are both
       // needed: the page must be 200 and ours, not just any listener (or a 404 with no bundle).
       const live =
@@ -660,6 +660,12 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ));
       if (!ui || !live)
         throw new Error("the dashboard is not running: no daemon is serving it (run heph doctor)");
+      // The page can be anyone's; only the real listener can answer for the token, which goes
+      // into the URL only after this passes.
+      if (!(await proveListener({ port: ui.port, token: ui.token })))
+        throw new Error(
+          `the dashboard listener on port ${ui.port} is not this node's daemon (a stale ui.json?); restart it with heph daemon, or run heph doctor`,
+        );
       const url = `http://127.0.0.1:${ui.port}/#t=${ui.token}`;
       let opened = false;
       if (!ctx.flags.noOpen && (ctx.tty ?? process.stdout.isTTY)) {
