@@ -10,6 +10,7 @@ import {
   scopePaths,
   sizeLimits,
   testPrecedesImplement,
+  testScopeNarrow,
   testsPassable,
 } from "../src/gates/plan.ts";
 import { DEFAULT_LIMITS, type GateContext } from "../src/gates/types.ts";
@@ -57,6 +58,7 @@ describe("runPlanGates", () => {
       "complexity_sanity",
       "size_limits",
       "scope_paths",
+      "test_scope_narrow",
     ]);
   });
 });
@@ -600,6 +602,88 @@ describe("scope_paths", () => {
         "T1: internal/game/boot.go is in a directory that does not exist (internal/game/)",
         "T1: net/**/*.go matches no files and net/ does not exist",
       ],
+    });
+  });
+});
+
+describe("test_scope_narrow", () => {
+  const names = (n: number) =>
+    Array.from({ length: n }, (_, i) => `inventory/${"abcdefghijklmn"[i]}_test.go`);
+  const testTask = (scope: string[], kind: "test" | "implement" = "test") =>
+    plan([task("T1", { kind, scope })]);
+
+  test("a wildcard matching existing files fails with the files listed", () => {
+    const r = testScopeNarrow(
+      testTask(["inventory/*_test.go"]),
+      ctx({ files: { server: names(3) } }),
+    );
+    expect(r).toEqual({
+      gate: "test_scope_narrow",
+      verdict: "fail",
+      reason: "test scopes lock existing files by wildcard",
+      evidence: [
+        "T1: inventory/*_test.go matches 3 existing files (inventory/a_test.go, inventory/b_test.go, inventory/c_test.go); list the files you change literally and declare new ones in creates",
+      ],
+    });
+  });
+
+  test("more than 5 matches show 5 and +N more", () => {
+    const r = testScopeNarrow(
+      testTask(["inventory/*_test.go"]),
+      ctx({ files: { server: names(14) } }),
+    );
+    expect(r.evidence).toEqual([
+      "T1: inventory/*_test.go matches 14 existing files (inventory/a_test.go, inventory/b_test.go, inventory/c_test.go, inventory/d_test.go, inventory/e_test.go, +9 more); list the files you change literally and declare new ones in creates",
+    ]);
+    const s = testScopeNarrow(
+      testTask(["inventory/*_test.go"]),
+      ctx({ files: { server: names(7) } }),
+    );
+    expect(s.evidence[0]).toContain("matches 7 existing files (");
+    expect(s.evidence[0]).toContain("+2 more)");
+  });
+
+  test("one match uses the singular", () => {
+    const r = testScopeNarrow(
+      testTask(["inventory/*_test.go"]),
+      ctx({ files: { server: names(1) } }),
+    );
+    expect(r.evidence[0]).toStartWith(
+      "T1: inventory/*_test.go matches 1 existing file (inventory/a_test.go);",
+    );
+  });
+
+  test("a wildcard in a directory without existing files passes", () => {
+    const r = testScopeNarrow(
+      testTask(["internal/new/*_test.go"]),
+      ctx({ files: { server: names(3) } }),
+    );
+    expect(r).toMatchObject({
+      verdict: "pass",
+      reason: "test scopes match no existing files by wildcard",
+    });
+  });
+
+  test("a literal existing file passes", () => {
+    const r = testScopeNarrow(
+      testTask(["inventory/a_test.go"]),
+      ctx({ files: { server: names(3) } }),
+    );
+    expect(r.verdict).toBe("pass");
+  });
+
+  test("a non-test task with the same glob passes", () => {
+    const r = testScopeNarrow(
+      testTask(["inventory/*_test.go"], "implement"),
+      ctx({ files: { server: names(3) } }),
+    );
+    expect(r.verdict).toBe("pass");
+  });
+
+  test("is skipped without a file list", () => {
+    expect(testScopeNarrow(testTask(["inventory/*_test.go"]), ctx())).toMatchObject({
+      verdict: "pass",
+      reason: "skipped: no file list",
     });
   });
 });

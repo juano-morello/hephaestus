@@ -40,3 +40,13 @@ test("planner prompt tells the planner to declare new files in creates", async (
   const json = /## Example[\s\S]*?```json\n([\s\S]*?)\n```/.exec(text)?.[1] as string;
   expect(JSON.parse(json).tasks[3].creates).toEqual(["internal/ability/cooldown.go"]);
 });
+
+test("planner prompt tells test tasks to list test files literally", async () => {
+  const text = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
+  expect(text).toContain("A test task lists its test files literally, new ones also in `creates`");
+  expect(text).toContain("wildcards that match existing files are rejected");
+  const json = /## Example[\s\S]*?```json\n([\s\S]*?)\n```/.exec(text)?.[1] as string;
+  const t3 = JSON.parse(json).tasks.find((t: { id: string }) => t.id === "T3");
+  expect(t3.scope).toEqual(["internal/ability/cooldown_test.go"]);
+  expect(t3.creates).toEqual(["internal/ability/cooldown_test.go"]);
+});
