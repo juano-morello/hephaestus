@@ -117,6 +117,8 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    List every file you expect to add in `creates` (literal paths, no globs):
    scope paths that do not exist and are not in `creates` are rejected, so name a file the
    repo map shows or declare a new one.
+   A test task lists its test files literally, new ones also in `creates`; a wildcard in a test
+   task is only for a directory that has no existing files (wildcards that match existing files are rejected).
    Generated directories appear only in codegen task scopes.
 10. **Respect the Brief.** `decisions` are settled: do not reopen them or plan alternatives.
     Never plan work listed in `out_of_scope`. Every task obeys `constraints`.
@@ -202,7 +204,7 @@ the proto change passes buf (AC4, `check: { gate: "buf" }`). Workspace has proje
       "produces": ["gen:server/CooldownStarted"], "spec": "Run make proto. Do not edit generated files by hand." },
     { "id": "T3", "title": "Tests for cooldowns", "kind": "test", "project": "server",
       "lane": "contained", "complexity": "standard", "complexity_reason": "timing cases with a fake clock",
-      "scope": ["internal/ability/*_test.go"], "covers": ["AC1", "AC2", "AC3"],
+      "scope": ["internal/ability/cooldown_test.go"], "creates": ["internal/ability/cooldown_test.go"], "covers": ["AC1", "AC2", "AC3"],
       "consumes": ["gen:server/CooldownStarted"], "produces": ["test:Cooldown"],
       "spec": "Using a fake clock and net.FakeSession: casting twice within cooldown_ms rejects the second cast (AC1); casting after cooldown_ms succeeds (AC2); a successful cast sends one CooldownStarted to the caster (AC3). Tests must fail before implementation." },
     { "id": "T4", "title": "Implement cooldowns", "kind": "implement", "project": "server",

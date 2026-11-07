@@ -331,6 +331,42 @@ export function scopePaths(plan: Plan, ctx: GateContext): GateResult {
     : { gate: "scope_paths", verdict: "pass", reason: "scopes match the repo", evidence: notes };
 }
 
+/**
+ * A test task's outputs are locked for later implement tasks, so a wildcard scope entry that
+ * matches existing files would lock all of them. Existing test files must be listed literally;
+ * wildcards are for directories that have no files yet. Needs `ctx.files`.
+ */
+export function testScopeNarrow(plan: Plan, ctx: GateContext): GateResult {
+  if (!ctx.files)
+    return {
+      gate: "test_scope_narrow",
+      verdict: "pass",
+      reason: "skipped: no file list",
+      evidence: [],
+    };
+  const evidence: string[] = [];
+  for (const t of plan.tasks) {
+    if (t.kind !== "test") continue;
+    const files = ctx.files[t.project] ?? [];
+    for (const g of t.scope) {
+      if (!WILDCARD.test(g)) continue;
+      const hit = matches(g, files).sort();
+      if (!hit.length) continue;
+      const shown = hit.slice(0, 5).join(", ");
+      const more = hit.length > 5 ? `, +${hit.length - 5} more` : "";
+      evidence.push(
+        `${t.id}: ${g} matches ${hit.length} existing file${hit.length === 1 ? "" : "s"} (${shown}${more}); list the files you change literally and declare new ones in creates`,
+      );
+    }
+  }
+  return result(
+    "test_scope_narrow",
+    evidence,
+    "test scopes match no existing files by wildcard",
+    "test scopes lock existing files by wildcard",
+  );
+}
+
 export function migrationIrreversible(plan: Plan): GateResult {
   const evidence = plan.tasks
     .filter((t) => t.kind === "migration" && t.lane !== "irreversible")
@@ -421,5 +457,6 @@ export function runPlanGates(plan: Plan, ctx: GateContext): GateResult[] {
     complexitySanity(plan, ctx),
     sizeLimits(plan, ctx),
     scopePaths(plan, ctx),
+    testScopeNarrow(plan, ctx),
   ];
 }

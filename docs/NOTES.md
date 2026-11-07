@@ -433,7 +433,8 @@ Fixed since the first cut and no longer listed: shared watch classification, ins
 ## Deferred (urges noted, not built)
 
 - JSON Schema generation from the zod schemas for editor autocomplete (section 3).
-- An execution gate that runs locked tests before the implement task and requires them to be red.
+- Correction: an execution gate requiring locked tests to be red already exists in effect: test units require red (a test unit whose tests already pass is returned and then escalated). The remaining gap is "Known limits" 1, a right-reason red (a syntax error also counts as red), which needs per-stack test-output parsing and is not built. Decided not now.
+- Narrowing the Return's scope to the failing files ("Known limits" 7). Decided not now: not worth building until seen in real runs.
 - A `heph plan` CLI surface around the same evaluation.
 
 ## Handoff wait (2026-11-06)
@@ -453,8 +454,17 @@ Design: `docs/superpowers/specs/2026-11-06-planner-paths-design.md`. Closes stre
 
 - **`creates` on tasks.** Optional literal paths a task adds. `scope_paths` now fails a literal scope path that does not exist and is not in `creates`, with the closest existing names in the same directory (`closestNames`: names sharing the stem first, then edit distance); a `creates` path that already exists or is outside scope fails; a leading `./` fails. Test tasks lose their blanket exemption for literal paths (globs in a new directory still pass for them). Plans without `creates` stay schema-valid; their new files now fail the gate and go back through the one correction.
 - **Collapsed repo map** (`packages/workers/src/repo-map.ts`). A project over 200 files renders as a tree within the budget: directories the Brief mentions (path, last path segment of 3+ characters, or a file name unique in the project) or that the last failure's evidence names are listed in full; the rest are `dir/ (N files)`; leftover budget opens more levels, shallowest first. Small projects render as before. The CLI planner loop passes the Brief text and `pathsInEvidence(feedback)`.
-- **Not done:** rejecting over-wide test globs that lock unrelated existing tests (finding 5; heuristic, not seen in real runs), a planner file-listing tool, and the live before/after measurement (`plan-proto` on the stress fixtures, plan task 4).
+- **Not done:** (over-wide test globs, finding 5, are now rejected: see "Test scope gate") a planner file-listing tool, and the live before/after measurement (`plan-proto` on the stress fixtures, plan task 4).
 - Planner-gated test fixtures now declare `creates` (`cli/test/fixtures/deps.ts`, `lifecycle.test.ts`, `dashboard.test.ts`).
+
+## Test scope gate (2026-11-06)
+
+Closes stress test finding 5 (over-wide test globs). Test outputs are locked for later implement tasks, so a test task whose wildcard matches many existing test files locks all of them.
+
+- **`test_scope_narrow`** (`packages/core/src/gates/plan.ts`, after `scope_paths`). For a `test` task, a wildcard scope entry that matches one or more existing files in the task's project fails. A literal entry never fails (an existing test file the task changes is listed literally); non-test tasks are never checked. Without `ctx.files` the gate passes with `skipped: no file list`.
+- **Evidence**, one line per failing glob: `T1: inventory/*_test.go matches 14 existing files (inventory/a_test.go, ..., +9 more); list the files you change literally and declare new ones in creates`. Up to 5 matched files in sorted order, then `+N more`; `1 existing file` when one matches. The existing one-correction planner loop feeds it back.
+- **Prompt.** `planner.md` gains one rule: a test task lists its test files literally, new ones also in `creates`; a wildcard in a test task is only for a directory with no existing files. The worked example's T3 now uses the literal `internal/ability/cooldown_test.go` with `creates`.
+- **Cost.** Planners often write `pkg/*_test.go` for new tests in a package that already has tests, so first-try plan validity may drop a little (the correction usually fixes it). The live before/after measurement with `packages/workers/scripts/plan-proto.ts` on the stress-test fixtures needs model calls and was not run.
 
 ## Routing (2026-11-06)
 
