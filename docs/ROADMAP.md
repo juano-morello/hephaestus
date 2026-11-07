@@ -37,7 +37,7 @@ Out of scope for now (decided 2026-11-06): leases and heartbeats for cross-node 
 
 Each gets its own spec, plan and build.
 
-- **A. Planner quality.** Partly built. Built 2026-11-06 (NOTES "Planner paths"): the `creates` gate for guessed paths and the collapsed repo map. Built 2026-11-06 (NOTES "Test scope gate"): over-wide test globs are rejected (`test_scope_narrow`). Deliberately dropped for now: the red-first execution gate (test units already require red; only a right-reason red is missing, which needs per-stack test-output parsing) and narrowing the Return's scope to failing files (not worth building until seen in real runs). Remaining: `heph plan` CLI surface; `Criterion.projects`; a planner file-listing tool; the live before/after measurement of the planner-paths change.
+- **A. Planner quality.** Built (2026-11-06/07). Built: the `creates` gate for guessed paths and the collapsed repo map (NOTES "Planner paths"); over-wide test globs rejected, `test_scope_narrow` (NOTES "Test scope gate"); `Criterion.projects` (NOTES "Criterion.projects"). Deliberately dropped for now: the red-first execution gate (test units already require red; only a right-reason red is missing, which needs per-stack test-output parsing), narrowing the Return's scope to failing files (not worth building until seen in real runs), a planner file-listing tool (NOTES "Planner file-listing tool"), and a separate `heph plan` surface (`heph run --dry-run` covers the preview; `plan-proto` evaluates plan files by hand). Still to do, by you: the live before/after measurement of the planner gates (NOTES "Measuring the planner gates (runbook)"); it needs real model calls.
 - **B. Authoring surface.** Workflows, presets, `--dry-run`, custom gates from `.heph/gates/`, JSON Schema generation from the zod schemas, extra gates (coverage delta, requirement-to-check mapping, Godot project-imports-headless).
   - B, first half built (2026-11-07): `heph run --dry-run`, JSON Schema (`heph schema`, written by `heph init`) and append-only role prompt files. Still open: workflows, presets, custom gates from `.heph/gates/` and the extra gates.
 - **C. Routing and limits.** Built 2026-11-06 (NOTES "Routing"): start-tier router, escalation ladder with `top`, fallback provider with cooldown. Not built: remaining-budget tracking per provider, and fallback on provider outages (needs worker failure classes).
@@ -48,4 +48,4 @@ Each gets its own spec, plan and build.
 
 ## Order
 
-A was chosen first because it most directly affects run success, and it is only partly built (see above). C's routing work and D's handoff wait are built (2026-11-06). The next sub-project is still to be chosen.
+A, C and D are built, and B's first half too (2026-11-06/07). Next: B's gates half (custom gates from `.heph/gates/` and the extra gates), then E, F or G as chosen.
