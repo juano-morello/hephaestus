@@ -258,6 +258,10 @@ async function withRuntime<T>(
   }
   const show = progress && !ctx.flags.json ? (l: string) => ctx.stderr(l) : () => {};
   const daemon = ctx.deps ? undefined : await daemonAt(home);
+  if (daemon && ctx.flags.set.length)
+    throw new Error(
+      "--set only applies when heph runs in-process; stop the daemon, or set the value in a config file",
+    );
   if (daemon) return fn(remote({ call: (m, a) => daemon.call(m, a, cwd) }, show));
   const host = openHost({
     home,
