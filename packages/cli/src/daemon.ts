@@ -5,6 +5,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Host } from "./host.ts";
 import { createNodeHealth } from "./node-health.ts";
+import { mergeHealth } from "./nodes.ts";
 import { startUiServer, type UiAssets } from "./ui-server.ts";
 
 export const socketOf = (home: string) => join(home, "daemon.sock");
@@ -113,12 +114,12 @@ export async function startDaemon(
         cwd?: string;
       };
       try {
-        const data = (await host.api.call(method, args, cwd)) as Record<string, unknown> | null;
-        // `heph status` with no run: the runs, and which peers this daemon can reach.
-        const nodes = health.snapshot();
-        const withNodes =
-          method === "status" && !args[0] && Object.keys(nodes).length && data && !("run" in data);
-        return Response.json({ ok: true, data: withNodes ? { ...data, nodes } : data });
+        const data = await host.api.call(method, args, cwd);
+        // `heph status` with no run, and `heph nodes`: which peers this daemon can reach.
+        return Response.json({
+          ok: true,
+          data: mergeHealth(method, args, data, health.snapshot()),
+        });
       } catch (e) {
         return Response.json({
           ok: false,

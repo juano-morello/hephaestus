@@ -40,6 +40,7 @@ import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
+import { type NodesResult, nodesText } from "./nodes.ts";
 import { explainText, type Stats } from "./output.ts";
 import { listRoleFiles, type RoleFile } from "./role-files.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
@@ -106,6 +107,8 @@ type Flags = {
   out?: string;
   resume: boolean;
   failOnRegression: boolean;
+  /** heph nodes --probe: a live hello to each peer. */
+  probe: boolean;
   /** heph handoff --wait: seconds, or "attempt" for one attempt's time limit. */
   wait?: Wait;
 };
@@ -141,6 +144,7 @@ function remote(api: Api, follow: (line: string) => void) {
         o,
       ),
     stats: (o: { since?: string; list?: boolean }) => c<Stats>("stats", o),
+    nodes: (o: { probe?: boolean }) => c<NodesResult>("nodes", o),
     planShow: (id: string) => c<ReturnType<Runtime["planShow"]>>("planShow", id),
     dryRun: (id: string) => c<Awaited<ReturnType<Runtime["dryRun"]>>>("dryRun", id),
     revise: (id: string, text: string) =>
@@ -801,6 +805,11 @@ const COMMANDS: Record<string, Command<unknown>> = {
     render: (r) => `${r.url}\n`,
     usage: ["ui [--no-open]", "Open the read-only dashboard in your browser"],
   }),
+  nodes: command<NodesResult>({
+    run: (ctx) => withRuntime(ctx, (rt) => rt.nodes({ probe: ctx.flags.probe }), false, true),
+    render: nodesText,
+    usage: ["nodes [--probe]", "List the nodes this node knows and whether it can reach them"],
+  }),
   sync: command({
     run: (ctx) => withRuntime(ctx, (rt) => rt.sync()),
     render: (r) =>
@@ -998,6 +1007,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         out: { type: "string" },
         resume: { type: "boolean", default: false },
         "fail-on-regression": { type: "boolean", default: false },
+        probe: { type: "boolean", default: false },
         since: { type: "string" },
         list: { type: "boolean", default: false },
         version: { type: "boolean", default: false },
@@ -1032,6 +1042,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       runs: runsOf(values.runs),
       resume: values.resume ?? false,
       failOnRegression: values["fail-on-regression"] ?? false,
+      probe: values.probe ?? false,
       ...(values.suite ? { suite: values.suite } : {}),
       ...(values.label ? { label: values.label } : {}),
       ...(values.out ? { out: values.out } : {}),

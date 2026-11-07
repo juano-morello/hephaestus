@@ -23,6 +23,7 @@ import {
   type WorkspaceDescription,
 } from "@hephaestus/node";
 import { type HomeConfig, loadConfig } from "./config.ts";
+import type { NodeRow } from "./nodes.ts";
 import { type Deps, openRuntime, overviewOf, statsOf } from "./runtime.ts";
 import { hephVersion } from "./version.ts";
 
@@ -54,6 +55,8 @@ export type HostOptions = {
   overrides?: Record<string, unknown>;
   /** How long a read (status, explain, plan show) waits for the owner's sync: default 5 s. */
   readSyncMs?: number;
+  /** How long `heph nodes --probe` waits for a peer's hello: default 5 s. */
+  probeMs?: number;
   /** For a `heph peer` process: hand builds to this node's daemon when one is running. */
   localDaemon?: () => Promise<
     { call(method: string, args: unknown[]): Promise<unknown> } | undefined
@@ -350,6 +353,65 @@ export function openHost(o: HostOptions) {
     return me;
   };
 
+  /** A live hello to one peer, cut off after `probeMs` (default 5 s). */
+  const probe = async (node: string): Promise<NodeRow["probe"]> => {
+    const limit = o.probeMs ?? 5000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const h = await Promise.race([
+        withPeer(node, (t) => hello(ledger, t)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`did not answer within ${limit / 1000} s`)),
+            limit,
+          );
+        }),
+      ]);
+      return { ok: true, detail: `${h.node}${h.version ? `, heph ${h.version}` : ""}` };
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      return { ok: false, detail: (text.split("\n")[0] ?? "").slice(0, 240) };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Rows for `heph nodes`: this node and each configured peer. State comes from the daemon. */
+  const nodesOf = async (live: boolean): Promise<{ nodes: NodeRow[]; daemon: boolean }> => {
+    const owned = new Map<string, number>();
+    for (const r of ledger.runs()) owned.set(r.owner_node, (owned.get(r.owner_node) ?? 0) + 1);
+    const peers = Object.entries(o.config.nodes);
+    const probes = live
+      ? await Promise.all(peers.map(async ([name]) => [name, await probe(name)] as const))
+      : [];
+    const probed = new Map(probes);
+    return {
+      daemon: false,
+      nodes: [
+        {
+          name: me,
+          ssh: "local",
+          preferred: false,
+          labels: [],
+          state: "ok",
+          this_node: true,
+          runs_owned: owned.get(me) ?? 0,
+        },
+        ...peers.map(
+          ([name, p]): NodeRow => ({
+            name,
+            ssh: p.ssh,
+            preferred: p.preferred ?? false,
+            labels: p.labels ?? [],
+            state: "unknown",
+            runs_owned: owned.get(name) ?? 0,
+            ...(probed.get(name) ? { probe: probed.get(name) } : {}),
+          }),
+        ),
+      ],
+    };
+  };
+
   const api = {
     /** The single entry point: `heph <command>` maps to one method here, in-process or daemon. */
     async call(method: string, args: unknown[], cwd: string | undefined): Promise<unknown> {
@@ -422,6 +484,8 @@ export function openHost(o: HostOptions) {
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }
+        case "nodes":
+          return nodesOf(Boolean((args[0] as { probe?: boolean } | undefined)?.probe));
         case "overview":
           return overviewOf(ledger);
         case "stats":
