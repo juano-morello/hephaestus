@@ -235,6 +235,59 @@ export const PlanDetail = z
   .strict();
 export type PlanDetail = z.infer<typeof PlanDetail>;
 
+const Tokens = {
+  input: z.int().nonnegative(),
+  output: z.int().nonnegative(),
+  cache_read: z.int().nonnegative(),
+  cache_write: z.int().nonnegative(),
+};
+
+/** The run page's charts: attempts per unit, tokens by model and role, escalation and stall counts. */
+export const RunCharts = z
+  .object({
+    schema: z.literal(1),
+    run_id: z.string(),
+    units: z.array(
+      z
+        .object({
+          unit_id: z.string(),
+          attempts: z.array(
+            z
+              .object({
+                attempt: z.int(),
+                outcome: z.string().optional(),
+                tier: z.string().optional(),
+                model: z.string().optional(),
+                role: z.string().optional(),
+                input: z.int().nonnegative(),
+                output: z.int().nonnegative(),
+                duration_ms: z.int().optional(),
+              })
+              .strict(),
+          ),
+        })
+        .strict(),
+    ),
+    tokens: z.array(z.object({ model: z.string(), role: z.string(), ...Tokens }).strict()),
+    escalations: z.int().nonnegative(),
+    stalls: z.int().nonnegative(),
+    stale: z.string().optional(),
+  })
+  .strict();
+export type RunCharts = z.infer<typeof RunCharts>;
+
+/** The runs page's strip: across every run on this node. */
+export const Overview = z
+  .object({
+    schema: z.literal(1),
+    runs: z.array(z.object({ status: z.string(), count: z.int().positive() }).strict()),
+    tokens: z.array(z.object({ model: z.string(), ...Tokens }).strict()),
+    escalations: z.int().nonnegative(),
+    stalls: z.int().nonnegative(),
+  })
+  .strict();
+export type Overview = z.infer<typeof Overview>;
+
 const DiffFile = z
   .object({
     path: z.string(),

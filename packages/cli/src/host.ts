@@ -23,7 +23,7 @@ import {
   type WorkspaceDescription,
 } from "@hephaestus/node";
 import { type HomeConfig, loadConfig } from "./config.ts";
-import { type Deps, openRuntime } from "./runtime.ts";
+import { type Deps, openRuntime, overviewOf } from "./runtime.ts";
 import { hephVersion } from "./version.ts";
 
 /** Run commands that change the run: only its owner may carry them out. */
@@ -422,9 +422,12 @@ export function openHost(o: HostOptions) {
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }
+        case "overview":
+          return overviewOf(ledger);
         case "dashboard":
         case "planDetail":
-        case "diffSummary": {
+        case "diffSummary":
+        case "runCharts": {
           const runId = args[0] as string;
           const fresh = await refresh(runId);
           const { rt } = await runtimeFor(cwd ?? workspaceOfOrHome(runId));
@@ -433,7 +436,9 @@ export function openHost(o: HostOptions) {
               ? rt.dashboard(runId)
               : method === "planDetail"
                 ? rt.planDetail(runId)
-                : rt.diffSummary(runId)),
+                : method === "diffSummary"
+                  ? rt.diffSummary(runId)
+                  : rt.runCharts(runId)),
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }

@@ -59,7 +59,7 @@ const workers = () => import("@hephaestus/workers");
 import type { LoadedConfig } from "./config.ts";
 import { summarizeDiff } from "./diff-summary.ts";
 import { lockRun } from "./lock.ts";
-import type { DiffSummary, PlanDetail } from "./output.ts";
+import type { DiffSummary, Overview, PlanDetail, RunCharts } from "./output.ts";
 import { listRoleFiles, roleInstructions } from "./role-files.ts";
 import { attentionLine } from "./watch.ts";
 
@@ -115,6 +115,38 @@ const summary = (plan: Plan): TaskSummary[] =>
     scope: t.scope,
     covers: t.covers,
   }));
+
+const STOPS: ("unit.escalated" | "unit.stalled")[] = ["unit.escalated", "unit.stalled"];
+const countStops = (events: { event: { type: string } }[]) => ({
+  escalations: events.filter((s) => s.event.type === "unit.escalated").length,
+  stalls: events.filter((s) => s.event.type === "unit.stalled").length,
+});
+
+/** Runs by status, tokens by model, and escalation and stall counts across every run in a ledger. */
+export function overviewOf(ledger: Ledger): Overview {
+  const status = new Map<string, number>();
+  const tokens = new Map<string, Overview["tokens"][number]>();
+  for (const r of ledger.runs()) {
+    status.set(r.status, (status.get(r.status) ?? 0) + 1);
+    for (const a of ledger.attempts(r.run_id)) {
+      const model = a.model ?? "";
+      const t = tokens.get(model) ?? { model, input: 0, output: 0, cache_read: 0, cache_write: 0 };
+      t.input += a.input ?? 0;
+      t.output += a.output ?? 0;
+      t.cache_read += a.cache_read ?? 0;
+      t.cache_write += a.cache_write ?? 0;
+      tokens.set(model, t);
+    }
+  }
+  return {
+    schema: 1,
+    runs: [...status]
+      .sort(([x], [y]) => x.localeCompare(y))
+      .map(([s, count]) => ({ status: s, count })),
+    tokens: [...tokens.values()].sort((x, y) => x.model.localeCompare(y.model)),
+    ...countStops(ledger.read({ types: STOPS })),
+  };
+}
 
 export function newRunId(now = new Date()): string {
   const day = now.toISOString().slice(0, 10).replaceAll("-", "");
@@ -693,6 +725,56 @@ export function openRuntime(opts: {
         })),
       };
     },
+
+    /** Attempts per unit, tokens by model and role, and escalation and stall counts of one run. */
+    runCharts(runId: string): RunCharts {
+      runRow(runId);
+      const byUnit = new Map<string, RunCharts["units"][number]["attempts"]>();
+      const tokens = new Map<string, RunCharts["tokens"][number]>();
+      for (const a of ledger.attempts(runId)) {
+        const input = a.input ?? 0;
+        const output = a.output ?? 0;
+        const list = byUnit.get(a.unit_id) ?? [];
+        list.push({
+          attempt: a.attempt,
+          ...(a.outcome ? { outcome: a.outcome } : {}),
+          ...(a.tier ? { tier: a.tier } : {}),
+          ...(a.model ? { model: a.model } : {}),
+          ...(a.role ? { role: a.role } : {}),
+          input,
+          output,
+          ...(a.duration_ms !== null ? { duration_ms: a.duration_ms } : {}),
+        });
+        byUnit.set(a.unit_id, list);
+        const key = `${a.model ?? ""}\u0000${a.role ?? ""}`;
+        const t = tokens.get(key) ?? {
+          model: a.model ?? "",
+          role: a.role ?? "",
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+        };
+        t.input += input;
+        t.output += output;
+        t.cache_read += a.cache_read ?? 0;
+        t.cache_write += a.cache_write ?? 0;
+        tokens.set(key, t);
+      }
+      const counts = countStops(ledger.read({ run_id: runId, types: STOPS }));
+      return {
+        schema: 1,
+        run_id: runId,
+        units: [...byUnit].map(([unit_id, attempts]) => ({ unit_id, attempts })),
+        tokens: [...tokens.values()].sort(
+          (x, y) => x.model.localeCompare(y.model) || x.role.localeCompare(y.role),
+        ),
+        ...counts,
+      };
+    },
+
+    /** Runs by status, tokens by model, and escalation and stall counts across every run here. */
+    overview: (): Overview => overviewOf(ledger),
 
     /** `heph run --dry-run`: what a build would do. Reads only; no event, lock or worktree. */
     async dryRun(runId: string): Promise<Preview> {

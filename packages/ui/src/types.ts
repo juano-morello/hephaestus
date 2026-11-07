@@ -105,3 +105,48 @@ export type PlanDetail = {
   }[];
   stale?: string;
 };
+
+/** Mirror of `RunCharts` in packages/cli/src/output.ts. */
+export type RunCharts = {
+  schema: 1;
+  run_id: string;
+  units: {
+    unit_id: string;
+    attempts: {
+      attempt: number;
+      outcome?: string;
+      tier?: string;
+      model?: string;
+      role?: string;
+      input: number;
+      output: number;
+      duration_ms?: number;
+    }[];
+  }[];
+  tokens: {
+    model: string;
+    role: string;
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+  }[];
+  escalations: number;
+  stalls: number;
+  stale?: string;
+};
+
+/** Mirror of `Overview` in packages/cli/src/output.ts. */
+export type Overview = {
+  schema: 1;
+  runs: { status: string; count: number }[];
+  tokens: {
+    model: string;
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+  }[];
+  escalations: number;
+  stalls: number;
+};

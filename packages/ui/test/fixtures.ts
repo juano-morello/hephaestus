@@ -340,3 +340,102 @@ export const planDetailEmpty: PlanDetail = {
 };
 
 export const planDetailFixtures = { planDetailFull, planDetailEmpty };
+
+import type { Overview, RunCharts } from "../src/types.ts";
+
+export const runChartsFull: RunCharts = {
+  schema: 1,
+  run_id: "r-live",
+  units: [
+    {
+      unit_id: "T1",
+      attempts: [
+        {
+          attempt: 1,
+          outcome: "green",
+          tier: "standard",
+          model: "sonnet",
+          role: "tester",
+          input: 900,
+          output: 300,
+          duration_ms: 12000,
+        },
+      ],
+    },
+    {
+      unit_id: "T2",
+      attempts: [
+        {
+          attempt: 1,
+          outcome: "red",
+          tier: "standard",
+          model: "sonnet",
+          role: "implementer",
+          input: 1200,
+          output: 340,
+          duration_ms: 20000,
+        },
+        {
+          attempt: 2,
+          outcome: "blocked",
+          tier: "top",
+          model: "opus",
+          role: "implementer",
+          input: 800,
+          output: 100,
+        },
+        { attempt: 3, outcome: "error", model: "opus", role: "implementer", input: 0, output: 0 },
+        { attempt: 4, input: 0, output: 0 },
+      ],
+    },
+  ],
+  tokens: [
+    { model: "opus", role: "implementer", input: 800, output: 100, cache_read: 0, cache_write: 0 },
+    {
+      model: "sonnet",
+      role: "implementer",
+      input: 1200,
+      output: 340,
+      cache_read: 5000,
+      cache_write: 20,
+    },
+    { model: "sonnet", role: "tester", input: 900, output: 300, cache_read: 0, cache_write: 0 },
+  ],
+  escalations: 1,
+  stalls: 2,
+};
+
+export const runChartsEmpty: RunCharts = {
+  schema: 1,
+  run_id: "r-new",
+  units: [],
+  tokens: [],
+  escalations: 0,
+  stalls: 0,
+};
+
+export const overviewFull: Overview = {
+  schema: 1,
+  runs: [
+    { status: "finished", count: 4 },
+    { status: "paused", count: 1 },
+    { status: "running", count: 2 },
+  ],
+  tokens: [
+    { model: "opus", input: 5000, output: 900, cache_read: 0, cache_write: 0 },
+    { model: "sonnet", input: 120000, output: 34000, cache_read: 8000, cache_write: 50 },
+  ],
+  escalations: 3,
+  stalls: 1,
+};
+
+export const overviewEmpty: Overview = {
+  schema: 1,
+  runs: [],
+  tokens: [],
+  escalations: 0,
+  stalls: 0,
+};
+
+export const runChartsFixtures = { runChartsFull, runChartsEmpty };
+export const overviewFixtures = { overviewFull, overviewEmpty };
