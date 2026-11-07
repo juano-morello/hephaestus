@@ -191,6 +191,50 @@ export const Dashboard = z
   .strict();
 export type Dashboard = z.infer<typeof Dashboard>;
 
+const DiffFile = z
+  .object({
+    path: z.string(),
+    added: z.int().nonnegative(),
+    removed: z.int().nonnegative(),
+    binary: z.literal(true).optional(),
+    renamed_from: z.string().optional(),
+  })
+  .strict();
+
+/** What a run changed, per unit and project: file names and line counts, never diff text. */
+export const DiffSummary = z
+  .object({
+    schema: z.literal(1),
+    run_id: z.string(),
+    units: z.array(
+      z
+        .object({
+          unit_id: z.string(),
+          project: z.string(),
+          attempt: z.int().optional(),
+          status: z.enum(["ok", "unavailable"]),
+          partial: z.boolean().optional(),
+          files: z.array(DiffFile),
+          added: z.int().nonnegative(),
+          removed: z.int().nonnegative(),
+        })
+        .strict(),
+    ),
+    projects: z.array(
+      z
+        .object({
+          project: z.string(),
+          files: z.int().nonnegative(),
+          added: z.int().nonnegative(),
+          removed: z.int().nonnegative(),
+        })
+        .strict(),
+    ),
+    stale: z.string().optional(),
+  })
+  .strict();
+export type DiffSummary = z.infer<typeof DiffSummary>;
+
 export const Explain = z
   .object({
     run_id: z.string(),

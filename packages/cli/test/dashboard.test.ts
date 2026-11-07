@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type SpawnInput, type SpawnOutput, Stopped, type Worker } from "@hephaestus/engine";
 import { type PlannerInput, type PlannerSession, runPlanner } from "@hephaestus/workers";
 import { loadConfig } from "../src/config.ts";
 import { type Io, run } from "../src/main.ts";
-import { Dashboard } from "../src/output.ts";
+import { Dashboard, DiffSummary } from "../src/output.ts";
 import { type Deps, openRuntime } from "../src/runtime.ts";
 
 let root: string;
@@ -225,5 +225,62 @@ describe("dashboard", () => {
     expect(d.units.find((u) => u.unit_id === "T1")).toMatchObject({ in_plan: true });
     expect(Dashboard.parse(d)).toBeDefined();
     rt.close();
+  });
+});
+
+describe("diffSummary", () => {
+  const built = async (id: string, w = worker()) => {
+    await setup();
+    const deps: Deps = { planner: planner([PLAN]), worker: w };
+    await create(id, deps);
+    await heph(["approve", "plan", id], deps);
+    await heph(["run", id], deps);
+  };
+
+  test("accepted units list their files and totals, projects sum them, no diff text", async () => {
+    await built("V1");
+    const rt = await rtOpen();
+    const d = rt.diffSummary("V1");
+    expect(d.units.map((u) => u.unit_id)).toEqual(["T1", "T2"]);
+    expect(d.units[0]).toMatchObject({ project: "calc", status: "ok", attempt: 1, added: 1 });
+    expect(d.units[0]?.files.map((f) => f.path)).toEqual(["test_add.sh"]);
+    expect(d.units[1]?.files).toEqual([{ path: "add.sh", added: 1, removed: 0 }]);
+    expect(d.projects).toEqual([{ project: "calc", files: 2, added: 2, removed: 0 }]);
+    const text = JSON.stringify(d);
+    expect(text).not.toContain("echo $(($1 + $2))");
+    expect(text).not.toContain("sh add.sh 2 3");
+    expect(DiffSummary.parse(d)).toBeDefined();
+    rt.close();
+  });
+
+  test("a unit whose diff blob is missing is unavailable, the rest still show", async () => {
+    await built("V2");
+    const dir = join(home, "blobs");
+    for (const f of readdirSync(dir))
+      if (readFileSync(join(dir, f), "utf8").includes("echo $(($1 + $2))")) rmSync(join(dir, f));
+    const rt = await rtOpen();
+    const d = rt.diffSummary("V2");
+    expect(d.units.find((u) => u.unit_id === "T2")).toMatchObject({
+      status: "unavailable",
+      files: [],
+      added: 0,
+      removed: 0,
+    });
+    expect(d.units.find((u) => u.unit_id === "T1")?.status).toBe("ok");
+    expect(DiffSummary.parse(d)).toBeDefined();
+    rt.close();
+  });
+
+  test("a run with no accepted unit, or no plan, has no units", async () => {
+    await setup();
+    await create("V3", { planner: planner([PLAN]) });
+    const rt = await rtOpen();
+    expect(rt.diffSummary("V3")).toMatchObject({ units: [], projects: [] });
+    rt.close();
+    const esc = JSON.stringify({ schema: 1, escalate: ["AC1 contradicts decision 1"] });
+    await create("V4", { planner: planner([esc]) });
+    const rt2 = await rtOpen();
+    expect(DiffSummary.parse(rt2.diffSummary("V4")).units).toEqual([]);
+    rt2.close();
   });
 });

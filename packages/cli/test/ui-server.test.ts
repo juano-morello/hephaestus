@@ -102,8 +102,17 @@ describe("ui server", () => {
     expect(calls).toEqual([]);
   });
 
-  test("only the four read methods are routable", async () => {
-    expect([...UI_METHODS]).toEqual(["status", "explain", "planShow", "dashboard"]);
+  test("only the read methods are routable", async () => {
+    expect([...UI_METHODS]).toEqual([
+      "status",
+      "explain",
+      "planShow",
+      "dashboard",
+      "planDetail",
+      "diffSummary",
+      "runCharts",
+      "overview",
+    ]);
     const ui = await start();
     for (const m of "newRun revise run hint cancel approve merge handoff adopt sync".split(" "))
       expect((await api(ui, m, { args: [] })).status).toBe(404);
@@ -359,6 +368,11 @@ describe("challenge", () => {
 
   test("write methods stay 404 with a valid token, new reads need one", async () => {
     const ui = await start();
+    for (const m of ["planDetail", "diffSummary", "runCharts", "overview"]) {
+      expect((await api(ui, m, { args: ["r-1"] })).status).toBe(200);
+      const bare = await fetch(`http://127.0.0.1:${ui.port}/api/${m}`, { method: "POST" });
+      expect(bare.status).toBe(401);
+    }
     expect((await api(ui, "hint", { args: [] })).status).toBe(404);
     expect((await api(ui, "cancel", { args: [] })).status).toBe(404);
     expect((await api(ui, "approvePlan", { args: [] })).status).toBe(404);

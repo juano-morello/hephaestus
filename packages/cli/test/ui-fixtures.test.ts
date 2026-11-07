@@ -1,12 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { dashboardFixtures } from "../../ui/test/fixtures.ts";
-import { Dashboard } from "../src/output.ts";
+import { dashboardFixtures, diffSummaryFixtures } from "../../ui/test/fixtures.ts";
+import { Dashboard, DiffSummary } from "../src/output.ts";
 
-describe("dashboard fixtures used by the UI tests", () => {
-  for (const [name, fixture] of Object.entries(dashboardFixtures)) {
-    test(`${name} parses with the real Dashboard schema`, () => {
-      const r = Dashboard.safeParse(fixture);
-      expect(r.success, r.success ? "" : JSON.stringify(r.error.issues)).toBe(true);
-    });
-  }
-});
+const covers = (
+  name: string,
+  schema: { safeParse(x: unknown): { success: boolean } },
+  fixtures: object,
+) => {
+  describe(`${name} fixtures used by the UI tests`, () => {
+    for (const [key, fixture] of Object.entries(fixtures)) {
+      test(`${key} parses with the real ${name} schema`, () => {
+        const r = schema.safeParse(fixture) as { success: boolean; error?: { issues: unknown } };
+        expect(r.success, r.success ? "" : JSON.stringify(r.error?.issues)).toBe(true);
+      });
+    }
+  });
+};
+
+covers("Dashboard", Dashboard, dashboardFixtures);
+covers("DiffSummary", DiffSummary, diffSummaryFixtures);

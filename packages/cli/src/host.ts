@@ -422,12 +422,13 @@ export function openHost(o: HostOptions) {
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }
-        case "dashboard": {
+        case "dashboard":
+        case "diffSummary": {
           const runId = args[0] as string;
           const fresh = await refresh(runId);
           const { rt } = await runtimeFor(cwd ?? workspaceOfOrHome(runId));
           return {
-            ...rt.dashboard(runId),
+            ...(method === "dashboard" ? rt.dashboard(runId) : rt.diffSummary(runId)),
             ...(fresh ? {} : { stale: `possibly stale: ${ownerOf(runId)} is unreachable` }),
           };
         }

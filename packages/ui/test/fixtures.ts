@@ -227,3 +227,51 @@ export const dashboardFixtures = {
   droppedUnitRun,
   bigRun,
 };
+
+// ---- read-view payloads (shape mirrors planDetail, diffSummary, runCharts, overview) ----
+
+import type { DiffSummary } from "../src/types.ts";
+
+export const diffSummaryOk: DiffSummary = {
+  schema: 1,
+  run_id: "r-live",
+  units: [
+    {
+      unit_id: "T1",
+      project: "calc",
+      attempt: 1,
+      status: "ok",
+      files: [
+        { path: "test_add.sh", added: 3, removed: 1 },
+        { path: "lib/new-name.sh", added: 2, removed: 0, renamed_from: "lib/old-name.sh" },
+        { path: "logo.png", added: 0, removed: 0, binary: true },
+      ],
+      added: 5,
+      removed: 1,
+    },
+    {
+      unit_id: "T2",
+      project: "calc",
+      attempt: 2,
+      status: "ok",
+      partial: true,
+      files: [{ path: "add.sh", added: 1, removed: 0 }],
+      added: 1,
+      removed: 0,
+    },
+    { unit_id: "T3", project: "docs", status: "unavailable", files: [], added: 0, removed: 0 },
+  ],
+  projects: [
+    { project: "calc", files: 4, added: 6, removed: 1 },
+    { project: "docs", files: 0, added: 0, removed: 0 },
+  ],
+};
+
+export const diffSummaryEmpty: DiffSummary = {
+  schema: 1,
+  run_id: "r-new",
+  units: [],
+  projects: [],
+};
+
+export const diffSummaryFixtures = { diffSummaryOk, diffSummaryEmpty };

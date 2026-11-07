@@ -7,7 +7,16 @@ import { chmodSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } 
 import { join } from "node:path";
 
 /** The only api methods the listener forwards; everything that writes stays off the network. */
-export const UI_METHODS = ["status", "explain", "planShow", "dashboard"] as const;
+export const UI_METHODS = [
+  "status",
+  "explain",
+  "planShow",
+  "dashboard",
+  "planDetail",
+  "diffSummary",
+  "runCharts",
+  "overview",
+] as const;
 export const DEFAULT_UI_PORT = 7878;
 const MAX_BODY = 1024 * 1024;
 

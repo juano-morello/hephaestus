@@ -57,7 +57,9 @@ import type { PlannerInput, PlannerResult } from "@hephaestus/workers";
 const workers = () => import("@hephaestus/workers");
 
 import type { LoadedConfig } from "./config.ts";
+import { summarizeDiff } from "./diff-summary.ts";
 import { lockRun } from "./lock.ts";
+import type { DiffSummary } from "./output.ts";
 import { listRoleFiles, roleInstructions } from "./role-files.ts";
 import { attentionLine } from "./watch.ts";
 
@@ -855,6 +857,66 @@ export function openRuntime(opts: {
         ...(snap.stack_on ? { stack_on: snap.stack_on } : {}),
         usage: snap.usage,
       };
+    },
+
+    /**
+     * What each accepted unit of the latest plan changed: files and line counts from the attempt's
+     * diff blob. The diff text itself never leaves here.
+     */
+    diffSummary(runId: string): DiffSummary {
+      runRow(runId);
+      const events = ledger
+        .read({
+          run_id: runId,
+          types: ["run.plan_ready", "unit.accepted", "unit.attempt.finished"],
+        })
+        .map((s) => s.event);
+      const planned = events.findLastIndex((e) => e.type === "run.plan_ready");
+      if (planned < 0) return { schema: 1, run_id: runId, units: [], projects: [] };
+      const tasks = ((events[planned] as LedgerEvent).data as { plan: Plan }).plan.tasks;
+      const accepted = new Map<string, number | undefined>();
+      for (const e of events.slice(planned + 1))
+        if (e.type === "unit.accepted" && e.unit_id) accepted.set(e.unit_id, e.attempt);
+      const units: DiffSummary["units"] = [];
+      for (const t of tasks) {
+        if (!accepted.has(t.id)) continue;
+        const attempt = accepted.get(t.id);
+        const finished = events.findLast(
+          (e) => e.type === "unit.attempt.finished" && e.unit_id === t.id && e.attempt === attempt,
+        );
+        const sha = finished?.blobs?.diff;
+        let summary: ReturnType<typeof summarizeDiff> | undefined;
+        if (sha) {
+          try {
+            summary = summarizeDiff(ledger.blobs.getText(sha));
+          } catch {}
+        }
+        const files = summary?.files ?? [];
+        units.push({
+          unit_id: t.id,
+          project: t.project,
+          ...(attempt !== undefined ? { attempt } : {}),
+          status: summary ? "ok" : "unavailable",
+          ...(summary?.partial ? { partial: true } : {}),
+          files,
+          added: files.reduce((n, f) => n + f.added, 0),
+          removed: files.reduce((n, f) => n + f.removed, 0),
+        });
+      }
+      const projects = new Map<string, DiffSummary["projects"][number]>();
+      for (const u of units) {
+        const p = projects.get(u.project) ?? {
+          project: u.project,
+          files: 0,
+          added: 0,
+          removed: 0,
+        };
+        p.files += u.files.length;
+        p.added += u.added;
+        p.removed += u.removed;
+        projects.set(u.project, p);
+      }
+      return { schema: 1, run_id: runId, units, projects: [...projects.values()] };
     },
 
     explain(runId: string, unit?: string) {

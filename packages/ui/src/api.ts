@@ -1,4 +1,12 @@
-export type ApiMethod = "status" | "explain" | "planShow" | "dashboard";
+export type ApiMethod =
+  | "status"
+  | "explain"
+  | "planShow"
+  | "dashboard"
+  | "planDetail"
+  | "diffSummary"
+  | "runCharts"
+  | "overview";
 
 export class ApiError extends Error {
   readonly kind: "unauthorized" | "unreachable" | "daemon";

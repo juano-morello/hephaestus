@@ -46,3 +46,29 @@ export type Dashboard = {
   usage: { provider: string; model: string; [k: string]: unknown }[];
   stale?: string;
 };
+
+/** Mirror of `DiffSummary` in packages/cli/src/output.ts: file names and counts, never diff text. */
+export type DiffFile = {
+  path: string;
+  added: number;
+  removed: number;
+  binary?: true;
+  renamed_from?: string;
+};
+
+export type DiffSummary = {
+  schema: 1;
+  run_id: string;
+  units: {
+    unit_id: string;
+    project: string;
+    attempt?: number;
+    status: "ok" | "unavailable";
+    partial?: boolean;
+    files: DiffFile[];
+    added: number;
+    removed: number;
+  }[];
+  projects: { project: string; files: number; added: number; removed: number }[];
+  stale?: string;
+};
