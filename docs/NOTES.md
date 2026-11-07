@@ -428,7 +428,7 @@ Fixed since the first cut and no longer listed: shared watch classification, ins
 15. **Decided 2026-11-03:** keep gates `pass | fail`; a Return is always red.
 16. **Pushback: the planner needs an honest exit.** SPEC section 8 gives workers `blocked`, but the planner can only return a Plan, so a contradictory or uncheckable Brief always becomes a plan that passes the gates (0/15 escalations on the messy briefs). With a one-section prompt change and an `escalate` output, it escalated 9/9 with correct reasons and did not escalate on realistic briefs. Proposal: `PlannerOutput = Plan | { schema: 1, escalate: string[] }`, where `escalate` goes back to the submitting agent like a brief gate failure, and SPEC section 14's "honest failure rate on should-escalate tasks" measures it. **Decided 2026-11-03: adopted**, written into SPEC section 8 (`PlannerOutput`, Escalation as the honest exit) and section 14 (`expect: escalate` golden tasks, false escalation rate). The prompt has a "When not to plan" section, `evaluatePlannerOutput` reports `escalate` outside the failure histogram, and the script counts escalations. **Also decided 2026-11-03:** section 6 gets `run.plan_escalated (reasons)`, and section 19 step 0 now has two targets: ~70% first-try validity on plannable Briefs, and should-escalate Briefs escalate while plannable ones do not.
 17. **Optional fields written as `null`.** Planner output with `"context_budget": null` fails schema parsing. Proposal: the engine drops `null` optional fields before parsing (same spirit as stamping `brief_hash`). Small, but it is a schema rule the spec does not state. **Decided 2026-11-03: drop them.** `evaluatePlannerOutput` removes null-valued object fields at any depth before parsing (nulls inside arrays still fail), so an unknown key with a null value such as `covers_note` also disappears. Written into SPEC section 8.
-18. **Criteria that span projects.** A criterion like "the server refuses and the client shows the message" can be covered by a test in one project only. Option: `Criterion.projects?: string[]`, with `criteria_covered` requiring a covering test task in each listed project. Not needed yet (the planner split it correctly 5/5), so this is noted, not proposed. **Decided 2026-11-03: not yet.** Revisit if a run covers a cross-project criterion in one project only.
+18. **Criteria that span projects.** A criterion like "the server refuses and the client shows the message" can be covered by a test in one project only. Option: `Criterion.projects?: string[]`, with `criteria_covered` requiring a covering test task in each listed project. Not needed yet (the planner split it correctly 5/5), so this is noted, not proposed. **Decided 2026-11-03: not yet.** Revisit if a run covers a cross-project criterion in one project only. **Built 2026-11-06:** optional `Criterion.projects`, enforced by the brief gate and `criteria_covered`; see "Criterion.projects (2026-11-06)".
 
 ## Deferred (urges noted, not built)
 
@@ -455,6 +455,48 @@ Design: `docs/superpowers/specs/2026-11-06-planner-paths-design.md`. Closes stre
 - **Collapsed repo map** (`packages/workers/src/repo-map.ts`). A project over 200 files renders as a tree within the budget: directories the Brief mentions (path, last path segment of 3+ characters, or a file name unique in the project) or that the last failure's evidence names are listed in full; the rest are `dir/ (N files)`; leftover budget opens more levels, shallowest first. Small projects render as before. The CLI planner loop passes the Brief text and `pathsInEvidence(feedback)`.
 - **Not done:** rejecting over-wide test globs that lock unrelated existing tests (finding 5; heuristic, not seen in real runs), a planner file-listing tool, and the live before/after measurement (`plan-proto` on the stress fixtures, plan task 4).
 - Planner-gated test fixtures now declare `creates` (`cli/test/fixtures/deps.ts`, `lifecycle.test.ts`, `dashboard.test.ts`).
+
+## Criterion.projects (2026-11-06)
+
+Closes interpretation 18 (criteria that span projects).
+
+- **Rule.** A criterion may set `projects: [<project>, ...]`: it then needs a covering test task in each listed project. Without `projects` (or with an empty array, treated as absent) any test task covers it, as before.
+- **Gate evidence.** Brief gate, one string per problem: `AC2: projects names "x", which is not in the workspace`; `AC2: projects lists "client" twice`; `AC2: projects applies to criteria checked by tests; a gate check (check.gate) is per project already`. Plan gate (`criteria_covered`), one line per project lacking a `kind: "test"` task in that project whose `covers` includes the id: `AC2: no test task in project client covers it`. The criterion-without-`projects` evidence (`AC2: no test task covers it`) and every other check in that gate are unchanged.
+- **Where enforced.** `packages/core/src/gates/brief.ts` (next to `known_paths`), `criteriaCovered` in `packages/core/src/gates/plan.ts`. Schema: `packages/core/src/schemas/brief.ts` (still `.strict()`). The MCP `heph_new` description embeds the generated JSON Schema, so it shows the field; its list of brief-gate rejections names the three new ones. Planner prompt rule 2 gains one sentence.
+- **Backward compatible.** The field is optional; existing Briefs, their hashes and plans are unchanged (an absent field is not serialized).
+- **Chat-host docs.** The Claude Code skill and Codex `AGENTS.md` (kept identical by a test) gain one rule: set `projects` on a criterion that needs tests in more than one project.
+
+## Measuring the planner gates (runbook)
+
+Compares the planner before and after the `creates` gate, the collapsed repo map and `test_scope_narrow`. It needs real model calls through OMP, which fail inside the agent sandbox (readonly database), so the user runs it. The stress-test fixtures are private: `~/Workspaces/heph-evals/legendsao/` (`briefs/`, `repo-maps/`, `workspace.yaml`, `gates.yaml`). Plannable briefs: `client-music-gate`, `event-npc-refs`, `minimap-teleport`, `nobility-busy-984`, `timerai-quarantine`; should-escalate: the three `messy-*`. `<repo>` is the real game checkout the workspace repos point at.
+
+1. **Before** (commit `dc2adf2`), in a temporary worktree:
+
+```bash
+W=$(mktemp -d) && git worktree add "$W/before" dc2adf2 && (cd "$W/before" && bun install)
+```
+
+```bash
+cd "$W/before" && for b in ~/Workspaces/heph-evals/legendsao/briefs/*.yaml; do bun run packages/workers/scripts/plan-proto.ts --brief "$b" --workspace ~/Workspaces/heph-evals/legendsao/workspace.yaml --runs 5 --correct --workspace-root <repo> --out "$W/out-before/$(basename "$b" .yaml)"; done
+```
+
+2. **After**, from current `main`:
+
+```bash
+for b in ~/Workspaces/heph-evals/legendsao/briefs/*.yaml; do bun run packages/workers/scripts/plan-proto.ts --brief "$b" --workspace ~/Workspaces/heph-evals/legendsao/workspace.yaml --runs 5 --correct --workspace-root <repo> --out ~/heph-measure/out-after/$(basename "$b" .yaml); done
+```
+
+3. Remove the temporary worktree: `git worktree remove --force "$W/before"`.
+
+`--repo-maps` and `--gates` default to `repo-maps/` and `gates.yaml` next to the workspace file, which is what the private suite has. The old commit's `plan-proto` has no `test_scope_narrow` or `creates`; that is the point.
+
+**Compare** (per brief and in total, plannable briefs only unless noted): first-try validity; second-try validity on first-try failures (report n); counts of `scope_paths`, `test_scope_narrow` and `criteria_covered` gate failures across first answers; whether any guessed existing file or over-wide test glob survived, by reading the plans in `--out` (a path the gate accepted that does not exist in the repo, or a test glob matching unrelated existing tests); escalation on the `messy-*` briefs.
+
+**Success:** first-try validity on plannable briefs stays near the earlier ~97%; second-try validity on first-try failures is at least 60%; every guessed existing file or over-wide test glob a run produces is failed by a gate. If a guess survives, that is the evidence for reopening the file-listing tool below.
+
+## Planner file-listing tool (decided not now, 2026-11-06)
+
+The planner is a single prompt with no tools. Guessed paths are already covered by the `creates` gate, the collapsed repo map and the one correction pass. Revisit only if a real run (the runbook above) shows guessed paths surviving the gate.
 
 ## Routing (2026-11-06)
 

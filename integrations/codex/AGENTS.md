@@ -57,6 +57,8 @@ Rules that keep plans valid:
   the code. Properties only a tool can verify (lint passes, a schema check) go in
   `constraints`, or set `check: { gate: <name> }` on the criterion when that gate is
   configured for the project.
+- **Set `projects` on a criterion that needs tests in more than one project** (for example
+  `projects: [server, client]`): the plan must then have a covering test task in each.
 - **Say where tests live** when the project's test command doesn't run every test file (for
   example `sh test_add.sh`): add a decision such as "Tests for X go in test_add.sh, run by
   sh test_add.sh". Otherwise the planner may write tests the command never runs.

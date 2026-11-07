@@ -22,6 +22,13 @@ test("planner prompt example is a valid plan", async () => {
   expect(results.find((r) => r.gate === "complexity_sanity")?.evidence).toEqual([]);
 });
 
+test("planner prompt says a criterion with projects needs a test task in each project", async () => {
+  const text = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
+  expect(text).toContain(
+    "A criterion with `projects` needs a `test` task in each listed project that lists its id in `covers`.",
+  );
+});
+
 test("planner prompt carries the self-consistency rules", async () => {
   const text = await Bun.file(join(import.meta.dir, "..", "prompts", "planner.md")).text();
   expect(text).toContain("Test assertions follow the dependency order");

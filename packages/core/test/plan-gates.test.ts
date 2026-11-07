@@ -136,6 +136,56 @@ describe("criteria_covered", () => {
     expect(result.evidence).toEqual(["AC2: no test task covers it"]);
   });
 
+  describe("criteria with projects", () => {
+    const multi = brief({
+      acceptance: [{ id: "AC1", text: "a", kind: "behavior", projects: ["server", "client"] }],
+    });
+    const t = (id: string, project: string, covers: string[]) =>
+      task(id, { kind: "test", project, scope: [`${id}/**/*.x`], covers });
+
+    test("fails with one evidence line per project lacking a covering test", () => {
+      const p = plan([t("T1", "server", ["AC1"])]);
+      const result = criteriaCovered(p, ctx({ brief: multi }));
+      expect(result.verdict).toBe("fail");
+      expect(result.evidence).toEqual(["AC1: no test task in project client covers it"]);
+    });
+
+    test("a test task in the wrong project does not count", () => {
+      const p = plan([t("T1", "server", ["AC1"]), t("T2", "proto", ["AC1"])]);
+      const result = criteriaCovered(p, ctx({ brief: multi }));
+      expect(result.evidence).toEqual(["AC1: no test task in project client covers it"]);
+    });
+
+    test("an implement task in the project does not count", () => {
+      const p = plan([
+        t("T1", "server", ["AC1"]),
+        task("T2", { kind: "implement", project: "client", covers: ["AC1"] }),
+      ]);
+      const result = criteriaCovered(p, ctx({ brief: multi }));
+      expect(result.evidence).toEqual(["AC1: no test task in project client covers it"]);
+    });
+
+    test("passes when covered in every listed project", () => {
+      const p = plan([t("T1", "server", ["AC1"]), t("T2", "client", ["AC1"])]);
+      expect(criteriaCovered(p, ctx({ brief: multi })).verdict).toBe("pass");
+    });
+
+    test("a criterion without projects is covered by any test task", () => {
+      const p = plan([t("T1", "client", ["AC1"])]);
+      expect(criteriaCovered(p, ctx()).verdict).toBe("pass");
+      expect(criteriaCovered(plan([]), ctx()).evidence).toEqual(["AC1: no test task covers it"]);
+    });
+
+    test("an empty projects array behaves as absent", () => {
+      const b = brief({
+        acceptance: [{ id: "AC1", text: "a", kind: "behavior", projects: [] }],
+      });
+      expect(criteriaCovered(plan([t("T1", "client", ["AC1"])]), ctx({ brief: b })).verdict).toBe(
+        "pass",
+      );
+    });
+  });
+
   describe("gate-checked criteria", () => {
     const gated = brief({
       acceptance: [

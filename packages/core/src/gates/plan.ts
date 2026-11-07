@@ -29,7 +29,13 @@ export function criteriaCovered(plan: Plan, ctx: GateContext): GateResult {
   const evidence: string[] = [];
   for (const c of ctx.brief.acceptance) {
     if (!c.check) {
-      if (!tests.some((t) => t.covers.includes(c.id))) {
+      if (c.projects?.length) {
+        for (const p of new Set(c.projects)) {
+          if (!tests.some((t) => t.project === p && t.covers.includes(c.id))) {
+            evidence.push(`${c.id}: no test task in project ${p} covers it`);
+          }
+        }
+      } else if (!tests.some((t) => t.covers.includes(c.id))) {
         evidence.push(`${c.id}: no test task covers it`);
       }
       continue;
