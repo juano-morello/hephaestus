@@ -669,3 +669,21 @@ Design: `docs/superpowers/specs/2026-11-07-custom-gates-design.md`. Before this,
 - **Config hash.** The specs live in `EngineConfig.customGates` (omitted when a project has none), so a changed command changes the hash. No ledger event, schema or projection changes.
 - **Dry run.** `heph run --dry-run` per-unit `gates` is now the six built-ins plus what `customGatesFor` selects for that unit, instead of every project gate name. `previewRun` takes `criteria` instead of `projectGates`.
 - **Deferred:** TS gate files (running repo code in the engine process is unsafe), coverage delta, `{files}` in custom commands, lane-based gates, a Godot stack in `heph init`.
+
+### Recipes for custom command gates (untested examples)
+
+Written when B was closed (2026-11-07), as starting points for the gates the SPEC used to list as built-ins. None has been run under a real sandbox here; adjust them to your repo, and remember that in container mode the network is off and the command sees only the unit's project directory. Each gate is defined in `<repo>/.heph/config.yaml` and, unless it is `always`, runs on the unit that covers a criterion with `check: { gate: <name> }` (so the Brief's criterion names the gate and the planner puts the criterion in `covers` of the task whose output it checks).
+
+- **buf (schema lint and breaking changes).** `gates: { buf: { command: "buf lint && buf breaking --against '.git#branch=main'", timeout_ms: 120000 } }`. The `breaking` half needs `buf` to find the target branch from the unit's worktree; if it cannot, use `buf lint` alone and keep the breaking check in the integration gate.
+- **Godot project imports headless.** `gates: { godot_imports: "godot --headless --path . --import" }` (Godot 4); a non-zero exit or a script error in the output fails the gate. Name it in a criterion such as "the project imports without errors".
+- **Coverage floor.** `gates: { coverage: "sh scripts/coverage-check.sh" }` where the script runs the tests with coverage, extracts the total percentage, and exits non-zero when it is below the number committed in `coverage-baseline.txt`. This is a floor against a committed number, not the SPEC's "delta against a baseline run"; raise the number in the same commit that earns it.
+- **A rule every unit must obey.** `gates: { no_console: { command: "! grep -rn 'console\\.log' src/", always: true } }` runs on every unit of the project, test units included.
+
+## Closing B (2026-11-07)
+
+B (authoring surface) is closed. Built: `--dry-run`, JSON Schema (`heph schema`, `heph init`), append-only role prompt files, and custom command gates with execution-time criterion checks. Decided not now, with what would reopen each:
+
+- **Workflows** (`.heph/workflows/*.yaml`, configurable node graphs). The run flow (plan, build, merge) is hard-coded and nothing in real runs needs another shape; node types such as reviewer panels or human checkpoints are a project of their own (new node semantics, resume and idempotency for each). Reopen when a concrete second flow is wanted.
+- **Presets** (`extends: ...`). Nothing has asked for one and `heph init` already fills per-stack commands. A local `extends: <path>` is small if it is ever wanted; a shared preset library needs a format and a home first.
+- **Coverage delta as a built-in.** It needs per-stack coverage parsing and a baseline run of the suite on the base tip (roughly doubling gate time). The coverage-floor recipe above covers the common case as a custom gate. Reopen if a delta against a measured baseline is needed.
+- **TS gate files in `.heph/gates/`.** Repo code would run in the engine process, which holds git push, merge and secrets (SPEC section 12 puts gates in the sandbox). Reopen only with a sandboxed way to run them.

@@ -222,7 +222,7 @@ The old list of names (`gates: [buf]`) still loads as "declared, no command". Th
 
 - Schema-validated config with editor autocomplete; errors point at the exact line. Built: `heph schema <home|workspace|repo|brief>` prints the JSON Schema, and `heph init` writes the schemas to `.heph/schemas/` and a YAML-language-server modeline at the top of each generated file.
 - `heph init` detects stack and fills commands.
-- Presets: `extends: hephaestus/presets/go-tdd`.
+- Presets: `extends: hephaestus/presets/go-tdd`. Not built (decided not now 2026-11-07, see NOTES "Closing B"); neither are workflow files.
 - Prompts as files: `.heph/roles/<role>.md`, overridable per project. Built, append-only: `~/.heph/roles/<role>.md` then `<repo>/.heph/roles/<role>.md` (the planner: `<workspace>/.heph/roles/planner.md`) are appended to the built-in prompt under `## Project instructions`; 16 KB each. Presets stay unbuilt.
 - `heph config explain` prints resolved config with the source of every value.
 - `--dry-run` renders graph, briefs and resolved roles without spawning. Built as `heph run <run> --dry-run`: per unit the router's start tier, resolved route, timeout, locking test units and gates, plus the parallel waves and the role files in effect; workflows stay unbuilt.
@@ -563,7 +563,7 @@ Learned routing from ledger and eval data is v2.
 ## 11. Gates
 
 - Written as code, run in the same sandbox as the worker.
-- Built-ins: tests, typecheck, lint, diff-scope (vs plan scope + locked paths), touched-vs-diff, coverage delta, requirement-to-check mapping, plan gates, brief gate, project-imports-headless (Godot).
+- Built-ins: tests, typecheck, lint, diff-scope (vs plan scope + locked paths), touched-vs-diff, requirement-to-check mapping (built as a criterion's `check.gate`, enforced when the unit covering it is accepted), plan gates, brief gate. Coverage delta and project-imports-headless (Godot) are not built-ins (decided 2026-11-07): write them as custom command gates; recipes are in NOTES.md ("Recipes for custom command gates").
 - Integration gate per workspace, run at merge on the full changeset (e.g. headless Go server + scripted bot client).
 - Custom gates as TS files in `.heph/gates/`. Not built; see the next bullet for what is.
 - **Built (2026-11-07): custom command gates.** A project's `gates` in `<repo>/.heph/config.yaml` maps a name to a command (see section 5). The command runs in the same sandbox as the other command gates, on the units that cover a criterion with `check: { gate: <name> }` (never on test units) and, for `always: true` gates, on every unit of that project. It passes on exit 0 and its evidence is `exit N` plus the tail of the output. They are commands rather than TS files because a repo's TS would run in the engine process, which holds git push and the secrets, while gates belong in the sandbox (section 12). A TS `defineGate` stays unbuilt until there is a safe way to run it; coverage delta likewise.
