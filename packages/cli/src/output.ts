@@ -70,6 +70,41 @@ export const RunResult = z
   })
   .strict();
 
+const Route = z.object({ model: z.string(), effort: z.string().optional() }).strict();
+const Layer = z.enum(["home", "repo", "workspace"]);
+
+/** `heph run --dry-run`: the engine's Preview. */
+export const DryRun = z
+  .object({
+    dry_run: z.literal(true),
+    run_id: z.string(),
+    parallel: z.number(),
+    waves: z.array(z.array(z.string())),
+    units: z.array(
+      z
+        .object({
+          id: z.string(),
+          project: z.string(),
+          kind: z.string(),
+          lane: z.string(),
+          planner_tier: z.string(),
+          start_tier: z.string(),
+          score: z.number(),
+          reasons: z.array(z.string()),
+          role: z.string(),
+          route: Route,
+          top: Route.optional(),
+          fallback: Route.optional(),
+          attempt_timeout_ms: z.number().optional(),
+          locked_by: z.array(z.string()),
+          gates: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    prompts: z.array(z.object({ role: z.string(), path: z.string(), layer: Layer }).strict()),
+  })
+  .strict();
+
 const RunRow = z.object({ run_id: z.string(), status: RunStatus }).passthrough();
 
 export const StatusList = z.object({ runs: z.array(RunRow) }).strict();
@@ -282,15 +317,20 @@ export const MergeResult = z
 export const OUTPUT = {
   init: z.object({ workspaceDir: z.string(), written: z.array(z.string()) }).passthrough(),
   "config explain": z
-    .object({ config: z.object({}).passthrough(), sources: z.record(z.string(), z.string()) })
+    .object({
+      config: z.object({}).passthrough(),
+      sources: z.record(z.string(), z.string()),
+      roles: z.array(z.object({ role: z.string(), path: z.string(), layer: Layer }).strict()),
+    })
     .strict(),
+  schema: z.record(z.string(), z.unknown()),
   new: PlanResult,
   "new feature": PlanResult,
   "plan show": PlanShow,
   "plan revise": PlanResult,
   "approve plan": Approved,
   "approve merge": MergeResult,
-  run: RunResult,
+  run: z.union([RunResult, DryRun]),
   status: z.union([StatusOne, StatusList]),
   explain: Explain,
   watch: z

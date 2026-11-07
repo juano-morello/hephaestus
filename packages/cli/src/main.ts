@@ -23,6 +23,7 @@ import { type DoctorReport, doctor, doctorText } from "./doctor.ts";
 
 export { findWorkspace };
 
+import type { Preview } from "@hephaestus/engine";
 import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
@@ -74,6 +75,7 @@ type Flags = {
   budget?: number;
   scope?: string[];
   now: boolean;
+  dryRun: boolean;
   home?: string;
   on?: string;
   stackOn?: string;
@@ -114,6 +116,7 @@ function remote(api: Api, follow: (line: string) => void) {
         o,
       ),
     planShow: (id: string) => c<ReturnType<Runtime["planShow"]>>("planShow", id),
+    dryRun: (id: string) => c<Awaited<ReturnType<Runtime["dryRun"]>>>("dryRun", id),
     revise: (id: string, text: string) =>
       c<Awaited<ReturnType<Runtime["revise"]>>>("revise", id, text),
     approvePlan: (id: string) => c<ReturnType<Runtime["approvePlan"]>>("approvePlan", id),
@@ -181,6 +184,25 @@ async function untilApproved(ctx: Ctx, rt: ReturnType<typeof remote>, id: string
     // Status of a run on another node syncs with it first, so this asks every 2 s, not faster.
     await Bun.sleep(2000);
   }
+}
+
+/** The human form of a dry run: one block per wave, one line per unit. */
+function dryRunText(p: Preview): string {
+  const byId = new Map(p.units.map((u) => [u.id, u]));
+  const model = (r: { model: string; effort?: string }) =>
+    `${r.model}${r.effort ? ` ${r.effort}` : ""}`;
+  const unit = (id: string) => {
+    const u = byId.get(id);
+    if (!u) return `  ${id}`;
+    return `  ${u.id} ${u.project} ${u.kind} ${u.lane}  ${u.role} -> ${model(u.route)} (start ${u.start_tier}, planner ${u.planner_tier}; ${u.reasons.join(", ")})${u.top ? `; top ${model(u.top)}` : ""}${u.fallback ? `; fallback ${model(u.fallback)}` : ""}${u.locked_by.length ? `; locked by ${u.locked_by.join(", ")}` : ""}`;
+  };
+  return `${[
+    `dry run of ${p.run_id}: ${p.units.length} units, up to ${p.parallel} in parallel (router sizes are estimates: files are read from the target branch)`,
+    ...p.waves.flatMap((w, i) => [`wave ${i + 1}:`, ...w.map(unit)]),
+    ...(p.prompts.length
+      ? ["prompts:", ...p.prompts.map((x) => `  ${x.role}: ${x.path} (${x.layer})`)]
+      : []),
+  ].join("\n")}\n`;
 }
 
 const line = (e: { type: string; data: unknown; unit_id?: string; attempt?: number }) =>
@@ -436,27 +458,30 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ctx,
         async (rt) => {
           const id = need(ctx.args, 0, "run id");
+          if (ctx.flags.dryRun) return rt.dryRun(id);
           await untilApproved(ctx, rt, id);
           return rt.build(id, { now: ctx.flags.now });
         },
         true,
       ),
     render: (r) =>
-      `${[
-        `run ${r.run_id}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`,
-        ...Object.entries(r.heads).map(
-          ([repo, sha]) => `  ${repo} heph/${r.run_id} at ${sha.slice(0, 7)}`,
-        ),
-        ...Object.entries("prs" in r && r.prs ? r.prs : {}).map(
-          ([repo, url]) => `  ${repo}: ${url}`,
-        ),
-        r.status === "staged" ? `next: review, then heph approve merge ${r.run_id}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n")}\n`,
+      "dry_run" in r
+        ? dryRunText(r)
+        : `${[
+            `run ${r.run_id}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`,
+            ...Object.entries(r.heads).map(
+              ([repo, sha]) => `  ${repo} heph/${r.run_id} at ${sha.slice(0, 7)}`,
+            ),
+            ...Object.entries("prs" in r && r.prs ? r.prs : {}).map(
+              ([repo, url]) => `  ${repo}: ${url}`,
+            ),
+            r.status === "staged" ? `next: review, then heph approve merge ${r.run_id}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")}\n`,
     usage: [
-      "run <run> [--now]",
-      "Build the plan, then stage it (pull requests where repos have a remote)",
+      "run <run> [--now] [--dry-run]",
+      "Build the plan, then stage it (pull requests where repos have a remote). --dry-run only shows models, tiers and parallel waves, and spends nothing",
     ],
   }),
   status: command({
@@ -816,6 +841,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         budget: { type: "string" },
         scope: { type: "string", multiple: true, default: [] },
         now: { type: "boolean", default: false },
+        "dry-run": { type: "boolean", default: false },
         home: { type: "string" },
         on: { type: "string" },
         "stack-on": { type: "string" },
@@ -845,6 +871,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       set: values.set ?? [],
       force: values.force ?? false,
       now: values.now ?? false,
+      dryRun: values["dry-run"] ?? false,
       tests: values.tests ?? false,
       noOpen: values["no-open"] ?? false,
       ...(waited.wait !== undefined ? { wait: waited.wait } : {}),

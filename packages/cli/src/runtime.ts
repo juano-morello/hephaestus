@@ -20,6 +20,7 @@ import {
   builtinGates,
   checkChangeset,
   configHash,
+  createGit,
   createRun,
   diagnose,
   dropJoinPins,
@@ -29,14 +30,17 @@ import {
   landChangeset,
   mergeChangeset,
   normalizePath,
+  type Preview,
   type PullRequests,
   pendingRestack,
+  previewRun,
   projectFiles,
   type RunPlanOptions,
   recordEscalation,
   recordPlan,
   restack,
   restackChildren,
+  routeSignals,
   STACKABLE,
   stallReason,
   unresolvedStack,
@@ -52,7 +56,7 @@ const workers = () => import("@hephaestus/workers");
 
 import type { LoadedConfig } from "./config.ts";
 import { lockRun } from "./lock.ts";
-import { roleInstructions } from "./role-files.ts";
+import { listRoleFiles, roleInstructions } from "./role-files.ts";
 import { attentionLine } from "./watch.ts";
 
 /** Injection points for tests; production uses OMP, the gh CLI and the configured sandboxes. */
@@ -632,6 +636,55 @@ export function openRuntime(opts: {
         tasks: summary(p),
         risks: p.risks,
       };
+    },
+
+    /** `heph run --dry-run`: what a build would do. Reads only; no event, lock or worktree. */
+    async dryRun(runId: string): Promise<Preview> {
+      const row = runRow(runId);
+      if (TERMINAL.has(row.status)) throw new Error(`run ${runId} is ${row.status}`);
+      if (
+        plannerInterrupted(runId) ||
+        !ledger.read({ run_id: runId, types: ["run.plan_ready"] }).length
+      )
+        throw new Error(`run ${runId} has no finished plan (heph plan revise ${runId})`);
+      const { plan } = latestPlan(runId);
+      const { workspaceRoot } = created(runId);
+      const repoDir = (repo: string) =>
+        resolve(workspaceRoot, config.workspace.repos[repo] as string);
+      // The router's sizes are read from each repo's target branch tip, as an estimate: the real
+      // build reads them after earlier units are accepted.
+      const refs = new Map<string, string>();
+      const refOf = async (repo: string) => {
+        const known = refs.get(repo);
+        if (known) return known;
+        const target = targets?.[repo] ?? "main";
+        const ref = (await createGit(repoDir(repo)).refSha(target)) ? target : "HEAD";
+        refs.set(repo, ref);
+        return ref;
+      };
+      return previewRun({
+        runId,
+        plan,
+        workspace,
+        config: engineConfig,
+        projectGates,
+        signals: async (task) => {
+          const project = workspace.projects[task.project];
+          if (!project) throw new Error(`task ${task.id}: unknown project ${task.project}`);
+          return routeSignals({
+            git: createGit(repoDir(project.repo)),
+            ref: await refOf(project.repo),
+            projectPath: project.path,
+            task,
+            plan,
+          });
+        },
+        prompts: listRoleFiles({
+          home: opts.home,
+          workspaceDir: workspaceRoot,
+          repoDirs: Object.values(config.workspace.repos).map((p) => resolve(workspaceRoot, p)),
+        }),
+      });
     },
 
     approvePlan(runId: string) {
