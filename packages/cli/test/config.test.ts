@@ -257,6 +257,35 @@ describe("loadConfig", () => {
     expect(sources["projects.server.gates.buf.timeout_ms"]).toBeUndefined();
   });
 
+  test("--set overrides of a gate are normalized and validated like a layer", async () => {
+    await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
+    await put(
+      join(ws, "server", ".heph", "config.yaml"),
+      "project:\n  gates: { buf: { command: buf lint, timeout_ms: 9000 } }\n",
+    );
+    const gates = async (overrides: Record<string, unknown>) =>
+      (await loadConfig({ workspaceDir: ws, home, overrides })).config.projects.server?.gates;
+    expect(await gates({ "projects.server.gates.buf.command": "buf lint -v" })).toEqual({
+      buf: { command: "buf lint -v", always: false },
+    });
+    expect(await gates({ "projects.server.gates.buf": "buf x" })).toEqual({
+      buf: { command: "buf x", always: false },
+    });
+    // Gates merge by name across layers, so a list adds to the layer's entries.
+    expect((await gates({ "projects.server.gates": ["a"] }))?.a).toEqual({ always: false });
+    const bad = async (overrides: Record<string, unknown>) =>
+      (await loadError({ workspaceDir: ws, home, overrides })).issues[0];
+    expect(await bad({ "projects.server.gates.buf.always": true })).toMatchObject({
+      file: "flag",
+      message: expect.stringContaining("always needs a command"),
+    });
+    expect(await bad({ "projects.server.gates.lint": "x" })).toMatchObject({
+      file: "flag",
+      key: "projects.server.gates.lint",
+      message: expect.stringContaining("built-in gate"),
+    });
+  });
+
   test("a reserved gate name is a config error naming the key and file", async () => {
     await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
     const file = join(ws, "server", ".heph", "config.yaml");

@@ -7,7 +7,7 @@ import {
   HomeConfigLayer,
   normalizeGates,
   type ProjectGate,
-  type ProjectLayer,
+  ProjectLayer,
   RepoConfigLayer,
   ResolvedConfig,
   WorkspaceConfig,
@@ -257,7 +257,7 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
   }
 
   if (opts.overrides && Object.keys(opts.overrides).length > 0) {
-    apply(merged, expand(opts.overrides), "flag", sources);
+    apply(merged, normalizeOverrides(expand(opts.overrides)), "flag", sources);
   }
 
   dropDefaultTops(merged, sources);
@@ -273,6 +273,34 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
     );
   }
   return { config: parsed.data, sources };
+}
+
+/**
+ * `--set projects.<p>.gates...` takes the same shapes as a repo layer (a list, a command string,
+ * an object per gate) and the same checks; an entry replaces the layer's whole.
+ */
+function normalizeOverrides(expanded: Obj): Obj {
+  if (!isObj(expanded.projects)) return expanded;
+  const projects: Obj = {};
+  for (const [name, project] of Object.entries(expanded.projects)) {
+    if (!isObj(project) || project.gates === undefined) {
+      projects[name] = project;
+      continue;
+    }
+    const parsed = ProjectLayer.shape.gates.safeParse(project.gates);
+    if (!parsed.success) {
+      const prefix = ["projects", name, "gates"];
+      throw new ConfigError(
+        flattenUnions(parsed.error.issues).map((issue) => ({
+          file: "flag",
+          key: [...prefix, ...issue.path.map(String)].join("."),
+          message: issue.message,
+        })),
+      );
+    }
+    projects[name] = { ...project, gates: normalizeGates(parsed.data) };
+  }
+  return { ...expanded, projects };
 }
 
 const TIER_ROUTES = ["trivial", "standard", "complex", "default"];
