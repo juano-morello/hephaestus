@@ -187,20 +187,37 @@ export function registerClaudeMcp(run: Runner, heph: string): { done: boolean; m
 const tomlString = (s: string) => JSON.stringify(s);
 
 /** How far a line opens (+) or closes (-) brackets, outside strings and comments. */
-function bracketDepth(line: string): number {
+type Multi = '"""' | "'''" | undefined;
+
+/**
+ * Scans one line of TOML from inside (`str`) or outside a multi-line string: the net change in
+ * bracket depth outside strings and comments, and whether a multi-line string is open at the end.
+ * Opening and closing a `"""` or `'''` string on one line leaves nothing open.
+ */
+function scanLine(line: string, str: Multi): { depth: number; str: Multi } {
   let d = 0;
   let quote: string | undefined;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (quote) {
+    if (str) {
+      if (c === "\\" && str === '"""') i++;
+      else if (line.startsWith(str, i)) {
+        str = undefined;
+        i += 2;
+      }
+    } else if (quote) {
       if (c === "\\" && quote === '"') i++;
       else if (c === quote) quote = undefined;
-    } else if (c === '"' || c === "'") quote = c;
-    else if (c === "#") break;
+    } else if (c === '"' || c === "'") {
+      if (line.startsWith(c.repeat(3), i)) {
+        str = c === '"' ? '"""' : "'''";
+        i += 2;
+      } else quote = c;
+    } else if (c === "#") break;
     else if (c === "[" || c === "{") d++;
     else if (c === "]" || c === "}") d--;
   }
-  return d;
+  return { depth: d, str };
 }
 
 /**
@@ -224,11 +241,15 @@ export function withHephMcp(toml: string | undefined, heph: string): string {
   let skippingTable = false;
   let depth = 0; // > 0 inside a multi-line value
   let skippingValue = false;
+  let str: Multi; // inside a multi-line string: its lines are values, never headers or keys
   for (const line of (toml ?? "").split(/\r?\n/)) {
-    if (depth > 0) {
-      depth += bracketDepth(line);
+    const inside = depth > 0 || str !== undefined;
+    const scanned = scanLine(line, str);
+    str = scanned.str;
+    if (inside) {
+      depth += scanned.depth;
       if (!(skippingTable || skippingValue)) kept.push(line);
-      if (depth <= 0) skippingValue = false;
+      if (depth <= 0 && !str) skippingValue = false;
       continue;
     }
     const header = line.match(/^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/);
@@ -238,13 +259,13 @@ export function withHephMcp(toml: string | undefined, heph: string): string {
       if (!skippingTable) kept.push(line);
       continue;
     }
-    depth = Math.max(0, bracketDepth(line));
+    depth = Math.max(0, scanned.depth);
     const key = line.replace(/\s+/g, "");
     skippingValue =
       (section === "mcp_servers" && /^"?heph"?[.=]/.test(key)) ||
       (section === "" && /^mcp_servers\."?heph"?[.=]/.test(key));
     if (!(skippingTable || skippingValue)) kept.push(line);
-    if (depth === 0) skippingValue = false;
+    if (depth === 0 && !str) skippingValue = false;
   }
   const rest = kept.join(eol).replace(/\s+$/, "");
   return rest === "" ? table : `${rest}${eol}${eol}${table}`;

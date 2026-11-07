@@ -280,6 +280,72 @@ describe("Codex config.toml", () => {
     });
   });
 
+  describe("multi-line strings", () => {
+    const headerCount = (s: string) =>
+      s.split("\n").filter((l) => l === "[mcp_servers.heph]").length;
+
+    test("a header-looking line inside a string is not a table; one is added once", () => {
+      const src = `notes = """\n[mcp_servers.heph]\ncommand = "/fake"\n"""\nmodel = "o3"\n`;
+      const out = withHephMcp(src, heph);
+      expect(out.startsWith(src.trimEnd())).toBe(true);
+      expect(headerCount(out.replace(src.trimEnd(), ""))).toBe(1);
+      const parsed = Bun.TOML.parse(out) as Record<string, unknown>;
+      expect(parsed.notes).toBe('[mcp_servers.heph]\ncommand = "/fake"\n');
+      expect(parsed.mcp_servers).toEqual({ heph: parsedHeph });
+    });
+
+    test("an unbalanced [ inside a string before the real table leaves one table", () => {
+      const src = `notes = """\nsee [this\n"""\n\n[mcp_servers.heph]\ncommand = "/old"\n\n[b]\ny = 2\n`;
+      const out = withHephMcp(src, heph);
+      expect(headerCount(out)).toBe(1);
+      expect(out).not.toContain("/old");
+      expect(Bun.TOML.parse(out)).toEqual({
+        notes: "see [this\n",
+        b: { y: 2 },
+        mcp_servers: { heph: parsedHeph },
+      });
+    });
+
+    test("an existing real table is updated, not duplicated, after a string with brackets", () => {
+      const src = `a = '''\n[b]\n[[c]]\n'''\n[mcp_servers.heph]\ncommand = "/old"\n`;
+      const out = withHephMcp(src, heph);
+      expect(headerCount(out)).toBe(1);
+      expect(Bun.TOML.parse(out)).toEqual({ a: "[b]\n[[c]]\n", mcp_servers: { heph: parsedHeph } });
+    });
+
+    test("a ''' literal string hides a heph table header too", () => {
+      const src = `x = '''\n[mcp_servers.heph]\n'''\n`;
+      const out = withHephMcp(src, heph);
+      expect(headerCount(out.replace(src.trimEnd(), ""))).toBe(1);
+      expect((Bun.TOML.parse(out) as { x: string }).x).toBe("[mcp_servers.heph]\n");
+    });
+
+    test("a one-line triple-quoted string does not start a string", () => {
+      const src = `a = """x"""\n[mcp_servers.heph]\ncommand = "/old"\n\n[b]\ny = 2\n`;
+      const out = withHephMcp(src, heph);
+      expect(Bun.TOML.parse(out)).toEqual({
+        a: "x",
+        b: { y: 2 },
+        mcp_servers: { heph: parsedHeph },
+      });
+    });
+
+    test("a multi-line string inside the heph table is skipped whole", () => {
+      const src = `[mcp_servers.heph]\ncommand = "/old"\nnote = """\n[b]\n"""\n\n[c]\nz = 1\n`;
+      const out = withHephMcp(src, heph);
+      expect(Bun.TOML.parse(out)).toEqual({ c: { z: 1 }, mcp_servers: { heph: parsedHeph } });
+    });
+
+    test("a multi-line string closing before more array items keeps the array whole", () => {
+      const src = `xs = [\n  """a\n[mcp_servers.heph]""",\n  "b",\n]\n`;
+      const out = withHephMcp(src, heph);
+      expect(Bun.TOML.parse(out)).toEqual({
+        xs: ["a\n[mcp_servers.heph]", "b"],
+        mcp_servers: { heph: parsedHeph },
+      });
+    });
+  });
+
   test("CRLF input keeps CRLF line endings", () => {
     const crlf = `model = "o3"\r\n\r\n[mcp_servers.heph]\r\ncommand = "/old"\r\n`;
     const out = withHephMcp(crlf, heph);
