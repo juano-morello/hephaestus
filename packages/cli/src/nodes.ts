@@ -74,6 +74,10 @@ export function nodesText(r: NodesResult): string {
       .trimEnd(),
   );
   if (r.nodes.some((n) => n.state === "unknown"))
-    lines.push("state is unknown without a daemon (start heph daemon, or use --probe)");
+    lines.push(
+      r.daemon
+        ? "state is unknown where the daemon has not synced with some nodes yet (use --probe)"
+        : "state is unknown without a daemon (start heph daemon, or use --probe)",
+    );
   return `${lines.join("\n")}\n`;
 }

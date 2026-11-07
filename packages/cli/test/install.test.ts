@@ -330,6 +330,23 @@ describe("Codex config.toml", () => {
       });
     });
 
+    test("a string ending in four quotes inside an array keeps the depth right", () => {
+      for (const q of ['"""', "'''"]) {
+        const src =
+          `a = [${q}x${q}", "b"]\n\n[mcp_servers.heph]\ncommand = "/old"\n\n[b]\ny = 2\n`.replace(
+            `${q}", "b"]`,
+            `${q}${q[0]}, "b"]`,
+          );
+        const out = withHephMcp(src, heph);
+        expect(headerCount(out)).toBe(1);
+        expect(out).not.toContain("/old");
+        expect(Bun.TOML.parse(out)).toMatchObject({
+          b: { y: 2 },
+          mcp_servers: { heph: parsedHeph },
+        });
+      }
+    });
+
     test("a multi-line string inside the heph table is skipped whole", () => {
       const src = `[mcp_servers.heph]\ncommand = "/old"\nnote = """\n[b]\n"""\n\n[c]\nz = 1\n`;
       const out = withHephMcp(src, heph);

@@ -268,6 +268,20 @@ describe("the command", () => {
     expect(text).not.toContain("state is unknown");
   });
 
+  test("with a daemon running, the note does not tell you to start one", () => {
+    const row = (name: string, state: "ok" | "unknown"): NodeRow => ({
+      name,
+      ssh: name,
+      preferred: false,
+      labels: [],
+      state,
+      runs_owned: 0,
+    });
+    const text = nodesText({ daemon: true, nodes: [row("denver", "unknown"), row("oslo", "ok")] });
+    expect(text).not.toContain("start heph daemon");
+    expect(text).toContain("where the daemon has not synced with some nodes yet");
+  });
+
   test("heph help lists the command", async () => {
     const { out } = await heph(["help"]);
     expect(out).toContain("nodes [--probe]");

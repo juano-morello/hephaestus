@@ -157,7 +157,10 @@ export function openHost(o: HostOptions) {
     return row.owner_node;
   };
   /** Syncs with a peer still in flight for a read: present means unsettled. */
-  const readSyncs = new Map<string, { promise: Promise<boolean>; startedAt: number }>();
+  const readSyncs = new Map<
+    string,
+    { promise: Promise<boolean>; startedAt: number; close: () => Promise<void> }
+  >();
   const clock = o.now ?? Date.now;
   /**
    * Pulls the owner's latest events; false when it can't be reached, or does not finish within
@@ -174,15 +177,25 @@ export function openHost(o: HostOptions) {
     let entry = readSyncs.get(owner);
     if (entry) {
       const age = now - entry.startedAt;
-      if (age >= (o.readSyncWedgedMs ?? 30_000)) entry = undefined;
-      else if (age >= (o.readSyncJoinMs ?? 1000)) return false;
+      if (age >= (o.readSyncWedgedMs ?? 30_000)) {
+        // Closing the old connection ends its sync, so wedged ones do not pile up.
+        void entry.close().catch(() => {});
+        entry = undefined;
+      } else if (age >= (o.readSyncJoinMs ?? 1000)) return false;
     }
     if (!entry) {
-      const promise = withPeer(owner, (t) => syncWith(ledger, t)).then(
-        () => true,
-        () => false,
-      );
-      const started = { promise, startedAt: now };
+      let close: () => Promise<void> = async () => {};
+      const promise = (async () => {
+        const t = connect(owner);
+        close = () => t.close();
+        try {
+          await syncWith(ledger, t);
+          return true;
+        } finally {
+          await t.close().catch(() => {});
+        }
+      })().catch(() => false);
+      const started = { promise, startedAt: now, close: () => close() };
       readSyncs.set(owner, started);
       entry = started;
       void promise.finally(() => {

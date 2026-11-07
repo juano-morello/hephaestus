@@ -202,8 +202,10 @@ function scanLine(line: string, str: Multi): { depth: number; str: Multi } {
     if (str) {
       if (c === "\\" && str === '"""') i++;
       else if (line.startsWith(str, i)) {
-        str = undefined;
+        // Up to two more quotes belong to the string's end (`"""x""""` is `x"`).
         i += 2;
+        for (let extra = 0; extra < 2 && line[i + 1] === str[0]; extra++) i++;
+        str = undefined;
       }
     } else if (quote) {
       if (c === "\\" && quote === '"') i++;

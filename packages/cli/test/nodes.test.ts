@@ -342,6 +342,30 @@ describe("a run on another node", () => {
       }
     });
 
+    test("replacing a wedged sync closes its connection, so they do not pile up", async () => {
+      let closed = 0;
+      let n = 0;
+      const mbp = await open(() =>
+        ++n === 1
+          ? {
+              request: () => new Promise<never>(() => {}),
+              close: async () => {
+                closed++;
+              },
+            }
+          : hang(),
+      );
+      try {
+        await read(mbp);
+        expect(closed).toBe(0);
+        clock += 30_000;
+        await read(mbp);
+        expect(closed).toBe(1);
+      } finally {
+        await mbp.close();
+      }
+    });
+
     test("the wedged sync finishing late does not remove its replacement", async () => {
       const first = gated();
       const second = gated();
