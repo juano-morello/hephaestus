@@ -139,13 +139,8 @@ export function initWorkspace(dir: string, opts: { force?: boolean } = {}): Init
       },
     });
   }
-  if (!opts.force) {
-    for (const f of files.keys()) {
-      if (existsSync(f)) throw new Error(`${f} already exists (use --force to overwrite)`);
-    }
-  }
-  // Schemas are derived from the installed binary, so they are rewritten on every run that
-  // gets this far; only the YAML files obey the never-overwrite rule above.
+  // Schemas are derived from the installed binary, so they are rewritten on every run, even one
+  // refused below; only the YAML files obey the never-overwrite rule.
   const schemaDir = join(workspaceDir, ".heph", "schemas");
   const schemas = SCHEMA_NAMES.filter((n) => n !== "home").map((n) => {
     const f = join(schemaDir, `${n}.schema.json`);
@@ -153,6 +148,11 @@ export function initWorkspace(dir: string, opts: { force?: boolean } = {}): Init
     writeFileSync(f, `${JSON.stringify(schemaFor(n), null, 2)}\n`);
     return f;
   });
+  if (!opts.force) {
+    for (const f of files.keys()) {
+      if (existsSync(f)) throw new Error(`${f} already exists (use --force to overwrite)`);
+    }
+  }
   for (const [f, { data, schema: name }] of files) {
     const schema = join(schemaDir, `${name}.schema.json`);
     const modeline = `# yaml-language-server: $schema=${relative(dirname(f), schema).split(sep).join("/")}\n`;

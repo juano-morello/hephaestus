@@ -188,8 +188,8 @@ describe("initWorkspace schemas and modelines", () => {
     writeFileSync(join(root, ".heph", "workspace.yaml"), "# mine\n");
     rmSync(schemaFile(root, "brief"));
     expect(() => initWorkspace(root)).toThrow("already exists (use --force to overwrite)");
-    // A refused run writes nothing, schemas included.
-    expect(existsSync(schemaFile(root, "brief"))).toBe(false);
+    // A refused run still refreshes the schemas (they are derived files), never the YAML.
+    expect(existsSync(schemaFile(root, "brief"))).toBe(true);
     expect(readFileSync(join(root, ".heph", "workspace.yaml"), "utf8")).toBe("# mine\n");
     initWorkspace(root, { force: true });
     expect(existsSync(schemaFile(root, "brief"))).toBe(true);

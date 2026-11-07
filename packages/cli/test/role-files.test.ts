@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listRoleFiles, ROLE_FILE_LIMIT, roleInstructions } from "../src/role-files.ts";
@@ -51,6 +51,11 @@ describe("roleInstructions", () => {
     await mkdir(join(repo, ".heph", "roles", "implementer.md"));
     expect(() => ask()).toThrow("can't read role file");
     expect(() => ask()).toThrow(join(repo, ".heph", "roles", "implementer.md"));
+  });
+
+  test("a dangling symlink is an error, not a missing file", async () => {
+    await symlink(join(root, "moved.md"), join(repo, ".heph", "roles", "implementer.md"));
+    expect(() => ask()).toThrow("can't read role file");
   });
 
   test("a file over 16 KB is an error", async () => {

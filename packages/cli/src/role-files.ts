@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** A role file larger than this is an error: it is prompt text, not a document. */
@@ -15,7 +15,14 @@ function readRoleFile(path: string): string | undefined {
   try {
     size = statSync(path).size;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      // A link whose target moved is a broken file, not a missing one.
+      let link = false;
+      try {
+        link = lstatSync(path).isSymbolicLink();
+      } catch {}
+      if (!link) return undefined;
+    }
     throw new Error(`can't read role file ${path}: ${(e as Error).message}`);
   }
   if (size > ROLE_FILE_LIMIT) throw new Error(`role file ${path} is over 16 KB`);
