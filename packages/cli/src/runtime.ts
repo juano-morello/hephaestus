@@ -664,7 +664,7 @@ export function openRuntime(opts: {
       )
         throw new Error(`run ${runId} has no finished plan (heph plan revise ${runId})`);
       const { plan } = latestPlan(runId);
-      const { workspaceRoot } = created(runId);
+      const { workspaceRoot, brief } = created(runId);
       const repoDir = (repo: string) =>
         resolve(workspaceRoot, config.workspace.repos[repo] as string);
       // The router's sizes are read from each repo's target branch tip, as an estimate: the real
@@ -683,7 +683,7 @@ export function openRuntime(opts: {
         plan,
         workspace,
         config: engineConfig,
-        projectGates,
+        criteria: brief.acceptance,
         signals: async (task) => {
           const project = workspace.projects[task.project];
           if (!project) throw new Error(`task ${task.id}: unknown project ${task.project}`);

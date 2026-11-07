@@ -1,10 +1,10 @@
 import {
   type Complexity,
+  type Criterion,
   DEFAULT_LIMITS,
   deriveEdges,
   type Lane,
   type Plan,
-  type ProjectGates,
   type RouteSignals,
   reachability,
   readyUnits,
@@ -14,6 +14,7 @@ import {
   topoOrder,
   type Workspace,
 } from "@hephaestus/core";
+import { builtinGates } from "./builtin-gates.ts";
 import {
   type EngineConfig,
   fallbackRoute,
@@ -21,6 +22,7 @@ import {
   type Route,
   resolveRoute,
 } from "./config.ts";
+import { customGatesFor } from "./custom-gates.ts";
 
 export type PreviewUnit = {
   id: string;
@@ -62,7 +64,8 @@ export async function previewRun(o: {
   plan: Plan;
   workspace: Workspace;
   config: EngineConfig;
-  projectGates: ProjectGates;
+  /** The Brief's acceptance criteria: a criterion naming a gate selects it for covering units. */
+  criteria: Criterion[];
   signals: (task: Task) => Promise<RouteSignals>;
   prompts?: PreviewPrompt[];
 }): Promise<Preview> {
@@ -104,7 +107,12 @@ export async function previewRun(o: {
         .filter((t) => t.kind === "test" && t.project === task.project && t.id !== id)
         .filter((t) => reach.get(t.id)?.has(id))
         .map((t) => t.id),
-      gates: o.projectGates[task.project] ?? [],
+      gates: [
+        ...builtinGates().map((g) => g.name),
+        ...customGatesFor({ task, criteria: o.criteria, specs: config.customGates }).map(
+          (g) => g.name,
+        ),
+      ],
     });
   }
 

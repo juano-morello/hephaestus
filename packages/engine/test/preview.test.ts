@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Plan, RouteSignals, Task, Workspace } from "@hephaestus/core";
+import type { Criterion, Plan, RouteSignals, Task, Workspace } from "@hephaestus/core";
 import type { EngineConfig } from "../src/config.ts";
 import { previewRun } from "../src/preview.ts";
 import { config, crossRepoPlan } from "./workspace.ts";
@@ -32,7 +32,7 @@ const preview = (o: {
   plan?: Plan;
   config?: EngineConfig;
   signals?: RouteSignals;
-  projectGates?: Record<string, string[]>;
+  criteria?: Criterion[];
   prompts?: { role: string; path: string; layer: "home" | "repo" | "workspace" }[];
 }) =>
   previewRun({
@@ -40,7 +40,7 @@ const preview = (o: {
     plan: o.plan ?? crossRepoPlan(),
     workspace,
     config: o.config ?? config,
-    projectGates: o.projectGates ?? {},
+    criteria: o.criteria ?? [],
     signals: async () => o.signals ?? big,
     ...(o.prompts ? { prompts: o.prompts } : {}),
   });
@@ -137,13 +137,56 @@ describe("previewRun", () => {
     expect(byTier.units[0]?.attempt_timeout_ms).toBe(1000);
   });
 
-  test("gates come from projectGates, and prompts pass through", async () => {
+  test("prompts pass through", async () => {
     const prompts = [{ role: "planner", path: "/x/planner.md", layer: "home" as const }];
-    const p = await preview({ projectGates: { server: ["tests", "lint"] }, prompts });
-    const by = Object.fromEntries(p.units.map((u) => [u.id, u]));
-    expect(by.S1?.gates).toEqual(["tests", "lint"]);
-    expect(by.P1?.gates).toEqual([]);
+    const p = await preview({ prompts });
     expect(p.prompts).toEqual(prompts);
     expect((await preview({})).prompts).toEqual([]);
+  });
+
+  describe("gates", () => {
+    const builtin = ["diff_scope", "locked_paths", "touched_vs_diff", "tests", "typecheck", "lint"];
+    const buf: Criterion = {
+      id: "AC1",
+      text: "buf passes",
+      kind: "behavior",
+      check: { gate: "buf" },
+    };
+    const custom: EngineConfig = {
+      ...config,
+      customGates: {
+        server: {
+          buf: { command: "buf lint", always: false },
+          nc: { command: "./nc.sh", always: true },
+        },
+      },
+    };
+    const gatesOf = async (o: Parameters<typeof preview>[0]) =>
+      Object.fromEntries((await preview(o)).units.map((u) => [u.id, u.gates]));
+
+    test("an implement unit lists the six built-in gates", async () => {
+      expect((await gatesOf({})).S2).toEqual(builtin);
+    });
+
+    test("a unit covering a gate-checked criterion lists the gate last", async () => {
+      const by = await gatesOf({ config: custom, criteria: [buf] });
+      expect(by.S2).toEqual([...builtin, "buf", "nc"]);
+      expect(by.P1).toEqual(builtin);
+    });
+
+    test("an always gate is on every unit of its project, test units included", async () => {
+      const by = await gatesOf({ config: custom, criteria: [] });
+      expect(by.S1).toEqual([...builtin, "nc"]);
+      expect(by.S2).toEqual([...builtin, "nc"]);
+    });
+
+    test("a test unit lists no criterion-named gate", async () => {
+      const plan: Plan = {
+        ...crossRepoPlan(),
+        tasks: [task("T", "server", { kind: "test", covers: ["AC1"] })],
+      };
+      const by = await gatesOf({ plan, config: custom, criteria: [buf] });
+      expect(by.T).toEqual([...builtin, "nc"]);
+    });
   });
 });

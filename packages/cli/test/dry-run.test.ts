@@ -95,6 +95,22 @@ describe("heph run --dry-run", () => {
     expect((await heph(["status", "R1"])).env?.data.run.status).toBe("planned");
   });
 
+  test("each unit lists the gates it would run: the built-ins, then custom gates", async () => {
+    const builtin = ["diff_scope", "locked_paths", "touched_vs_diff", "tests", "typecheck", "lint"];
+    await planned();
+    const a = await heph(["run", "R1", "--dry-run"]);
+    expect(a.env?.data.units.map((u: { gates: string[] }) => u.gates)).toEqual([builtin, builtin]);
+    put(
+      join(ws, ".heph", "config.yaml"),
+      "project:\n  gates: { nc: { command: 'true', always: true }, buf: buf lint }\n",
+    );
+    const b = await heph(["run", "R1", "--dry-run"]);
+    expect(b.env?.ok).toBe(true);
+    // `buf` is declared but no criterion names it, so it is not part of any unit's run.
+    const withNc = [...builtin, "nc"];
+    expect(b.env?.data.units.map((u: { gates: string[] }) => u.gates)).toEqual([withNc, withNc]);
+  });
+
   test("the plain-text form names the run, the waves and the units", async () => {
     await planned();
     const r = await heph(["run", "R1", "--dry-run"], deps, false);
