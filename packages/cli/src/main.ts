@@ -28,6 +28,7 @@ import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
 import { explainText } from "./output.ts";
+import { listRoleFiles, type RoleFile } from "./role-files.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
 import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
@@ -659,16 +660,25 @@ const COMMANDS: Record<string, Command<unknown>> = {
       `ADOPTED ${a.run_id} from ${a.from}: this node now owns it. If ${a.from} comes back, it must not write this run.\n`,
     usage: ["adopt <run> [--force]", "Take over a run whose node is gone"],
   }),
-  "config explain": command<LoadedConfig>({
-    run: (ctx) =>
-      loadConfig({
-        workspaceDir: ctx.flags.workspace
-          ? resolve(ctx.cwd, ctx.flags.workspace)
-          : findWorkspace(ctx.cwd),
-        home: ctx.env.HEPH_HOME || join(homedir(), ".heph"),
-        overrides: parseSets(ctx.flags.set),
-      }),
-    render: (loaded) => `${explainConfig(loaded).join("\n")}\n`,
+  "config explain": command<LoadedConfig & { roles: RoleFile[] }>({
+    run: async (ctx) => {
+      const workspaceDir = ctx.flags.workspace
+        ? resolve(ctx.cwd, ctx.flags.workspace)
+        : findWorkspace(ctx.cwd);
+      const home = ctx.env.HEPH_HOME || join(homedir(), ".heph");
+      const loaded = await loadConfig({ workspaceDir, home, overrides: parseSets(ctx.flags.set) });
+      const roles = listRoleFiles({
+        home,
+        workspaceDir,
+        repoDirs: Object.values(loaded.config.workspace.repos).map((p) => resolve(workspaceDir, p)),
+      });
+      return { ...loaded, roles };
+    },
+    render: (loaded) =>
+      `${[
+        ...explainConfig(loaded),
+        ...loaded.roles.map((r) => `roles.${r.role} = ${r.path}  (${r.layer})`),
+      ].join("\n")}\n`,
     usage: ["config explain", "Every config value and where it comes from"],
   }),
   doctor: command<DoctorReport>({

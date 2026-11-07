@@ -181,6 +181,8 @@ export type OmpWorkerOptions = {
   /** After an abort, how long to wait for the session to wind down before giving up on it. */
   abortGraceMs?: number;
   modelPattern?: (model: string) => string;
+  /** Project text appended to a role's built-in prompt; may throw to fail the attempt. */
+  roleInstructions?: (role: string, project: string) => string | undefined;
   /** Injection point for tests; defaults to OMP's createAgentSession. */
   createSession?: (opts: CreateAgentSessionOptions) => Promise<{ session: OmpSession }>;
 };
@@ -214,7 +216,10 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
         const { handlers, result } = createToolHandlers(sb, {
           lockedPaths: input.brief.locked_paths,
         });
-        const systemPrompt = await loadRolePrompt(input.role);
+        const systemPrompt = await loadRolePrompt(
+          input.role,
+          opts.roleInstructions?.(input.role, input.brief.task.project),
+        );
         const promptHash = createHash("sha256")
           .update(systemPrompt)
           .update(JSON.stringify(TOOL_DESCRIPTIONS))

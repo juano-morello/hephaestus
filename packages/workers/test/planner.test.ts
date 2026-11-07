@@ -150,6 +150,18 @@ describe("renderPlannerPrompt", () => {
     expect(text).not.toContain("failed these checks");
   });
 
+  test("project instructions are appended after the rendered template", () => {
+    const plain = renderPlannerPrompt(template, input(planJson));
+    expect(renderPlannerPrompt(template, input(planJson, { projectInstructions: "  " }))).toBe(
+      plain,
+    );
+    const text = renderPlannerPrompt(
+      template,
+      input(planJson, { projectInstructions: "Prefer small tasks." }),
+    );
+    expect(text).toBe(`${plain}\n\n## Project instructions\n\nPrefer small tasks.`);
+  });
+
   test("a revision shows the previous plan and the instructions", () => {
     const previous = { schema: 1, brief_hash: "h", tasks: [task], risks: [] } as unknown as Plan;
     const text = renderPlannerPrompt(

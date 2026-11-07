@@ -48,6 +48,8 @@ export type PlannerInput = {
   /** A revision: the plan being revised and what the user wants changed. */
   previous?: Plan;
   instructions?: string;
+  /** Project text from the role files, appended after the rendered prompt. */
+  projectInstructions?: string;
   /** Plan gates the previous answer failed, fed back so the planner can fix them. */
   feedback?: GateResult[];
   /** The raw invalid answer the feedback is about, shown back to the planner (the correction edge). */
@@ -132,13 +134,16 @@ export function renderPlannerPrompt(template: string, input: PlannerInput): stri
         "Fix every one of them and return the corrected whole Plan (or an Escalation), not a diff.",
       ].join("\n")
     : "";
-  return template
+  const rendered = template
     .replace("{{brief}}", JSON.stringify(input.brief, null, 2))
     .replace("{{workspace}}", yaml(input.workspace))
     .replace("{{project_gates}}", yaml(input.projectGates))
     .replace("{{repo_maps}}", input.repoMap)
     .replace("{{revision}}", revision)
     .replace("{{feedback}}", feedback);
+  return input.projectInstructions?.trim()
+    ? `${rendered}\n\n## Project instructions\n\n${input.projectInstructions}`
+    : rendered;
 }
 
 /**

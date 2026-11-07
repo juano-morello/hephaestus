@@ -1,7 +1,7 @@
 // The runtime facade: every operation the CLI performs on this node's ledger. The 2.8 daemon
 // wraps the same functions; the CLI is then its client.
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   Brief,
   briefGate,
@@ -52,6 +52,7 @@ const workers = () => import("@hephaestus/workers");
 
 import type { LoadedConfig } from "./config.ts";
 import { lockRun } from "./lock.ts";
+import { roleInstructions } from "./role-files.ts";
 import { attentionLine } from "./watch.ts";
 
 /** Injection points for tests; production uses OMP, the gh CLI and the configured sandboxes. */
@@ -181,6 +182,17 @@ export function openRuntime(opts: {
         const { createOmpWorker } = await workers();
         return createOmpWorker({
           sandbox: (i) => sandboxFor(runId, i.brief.task.project, i.workdir),
+          // Read at each spawn, so an edit mid-run applies to later attempts.
+          roleInstructions: (role, project) => {
+            const repo = workspace.projects[project]?.repo;
+            const path = repo ? config.workspace.repos[repo] : undefined;
+            return roleInstructions({
+              home: opts.home,
+              dir: resolve(opts.workspaceDir, path ?? "."),
+              dirLayer: "repo",
+              role,
+            });
+          },
         }).spawn(input);
       },
     } satisfies Worker);
@@ -423,6 +435,13 @@ export function openRuntime(opts: {
     changesetId: string,
     extra: Partial<PlannerInput> = {},
   ): Promise<PlanResult> {
+    // A bad role file fails the plan before any ledger event or model call.
+    const projectInstructions = roleInstructions({
+      home: opts.home,
+      dir: workspaceRoot,
+      dirLayer: "workspace",
+      role: "planner",
+    });
     // A stacked run is planned against its ancestors' branches where they have one (design 3.1).
     const ancestors = resolvableStack(runId);
     const refs = await ancestorRefs({ workspace, workspaceRoot, ancestors });
@@ -451,6 +470,7 @@ export function openRuntime(opts: {
           });
         })(),
         route,
+        ...(projectInstructions ? { projectInstructions } : {}),
         ...extra,
         ...(feedback ? { feedback, ...(previousOutput ? { previousOutput } : {}) } : {}),
       });
