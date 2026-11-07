@@ -214,6 +214,14 @@ export function openRuntime(opts: {
     }
   };
 
+  /** Every role file in effect for a workspace; throws on an unreadable or oversized one. */
+  const roleFiles = (workspaceRoot: string) =>
+    listRoleFiles({
+      home: opts.home,
+      workspaceDir: workspaceRoot,
+      repoDirs: Object.values(config.workspace.repos).map((p) => resolve(workspaceRoot, p)),
+    });
+
   const runRow = (runId: string) => {
     const row = ledger.run(runId);
     if (!row) throw new Error(`no run ${runId}`);
@@ -679,11 +687,7 @@ export function openRuntime(opts: {
             plan,
           });
         },
-        prompts: listRoleFiles({
-          home: opts.home,
-          workspaceDir: workspaceRoot,
-          repoDirs: Object.values(config.workspace.repos).map((p) => resolve(workspaceRoot, p)),
-        }),
+        prompts: roleFiles(workspaceRoot),
       });
     },
 
@@ -723,6 +727,8 @@ export function openRuntime(opts: {
         throw new Error(`run ${runId} has no finished plan (heph plan revise ${runId})`);
       if (!approvedPlan(runId))
         throw new Error(`the latest plan of ${runId} is not approved (heph approve plan ${runId})`);
+      // A bad role file fails the build now, not as an error in the first attempt.
+      roleFiles(created(runId).workspaceRoot);
       return locked(runId, async () => {
         const waited = o.now ? undefined : await waitOutRateLimit(runId);
         const extra = waited ? { waited_until: waited } : {};

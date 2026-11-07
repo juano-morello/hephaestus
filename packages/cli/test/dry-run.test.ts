@@ -144,3 +144,39 @@ describe("heph run --dry-run", () => {
     expect(r.env?.error?.message).toContain("no run nope");
   });
 });
+
+describe("a bad role file", () => {
+  const bad = () => {
+    mkdirSync(join(home, "roles", "implementer.md"), { recursive: true });
+    return join(home, "roles", "implementer.md");
+  };
+
+  test("fails the build before any worker spawns", async () => {
+    await planned();
+    await heph(["approve", "plan", "R1"]);
+    const path = bad();
+    let spawned = 0;
+    const counting: Deps = {
+      ...deps,
+      worker: {
+        async spawn(input) {
+          spawned++;
+          return (deps.worker as NonNullable<Deps["worker"]>).spawn(input);
+        },
+      },
+    };
+    const r = await heph(["run", "R1"], counting);
+    expect(r.code).toBe(1);
+    expect(r.env?.error?.message).toContain("can't read role file");
+    expect(r.env?.error?.message).toContain(path);
+    expect(spawned).toBe(0);
+  });
+
+  test("fails the dry run with the same error", async () => {
+    await planned();
+    bad();
+    const r = await heph(["run", "R1", "--dry-run"]);
+    expect(r.code).toBe(1);
+    expect(r.env?.error?.message).toContain("can't read role file");
+  });
+});
