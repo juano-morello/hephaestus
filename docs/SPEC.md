@@ -817,10 +817,23 @@ Approval guarantee: the server never approves. Its method allowlist (`newRun`, `
 
 ### Dashboard and MCP Apps widgets
 
-- One views bundle served by the daemon, powering both `heph ui` (local web dashboard) and MCP Apps widgets inline in supporting hosts.
-- Hosts that don't render MCP Apps see the text result; the agent links to the dashboard.
-- Widget actions call the daemon API, never the model.
-- Widgets in order: run graph, plan review, gate results, changeset diff summary, ledger charts (attempts, escalations, tokens, provider usage vs limits), retro proposals.
+- The dashboard (`heph ui`) is the daemon's React bundle on a local HTTP port. MCP Apps widgets are a separate, much smaller thing: single-file HTML pages (inline script and CSS, no external resources, no framework) served by the stdio `heph mcp` server itself as `ui://heph/<name>` resources with MIME `text/html;profile=mcp-app`. MCP Apps (SEP-1865) do **not** need an HTTP transport or a separate auth design: the host fetches the page over the same stdio connection and the page talks to the host, not to heph, over `postMessage`.
+- Hosts that don't render MCP Apps see the text result and `structuredContent`, which a widget-enabled tool leaves unchanged; the agent links to the dashboard.
+- Widget actions, where there are any, go through the host: the page sends `tools/call` to the host, which calls the server's tool. That works only where the host declares `serverTools` in its `ui/initialize` result (the page's `hasServerTools`). Widgets are read-only today, and approval stays out of every widget (section 17, V1.5): no approve button, no approve tool.
+- Widgets in order: plan review (built), run graph and status (the run view, next, with capability-gated refresh), gate results, changeset diff summary, ledger charts, retro proposals.
+
+**As built (2026-11-07): the plan review widget.** `heph_plan_show` carries `_meta: { ui: { resourceUri: "ui://heph/plan" }, "ui/resourceUri": "ui://heph/plan" }` (the current key and the older flat one some hosts read), and the server registers the resource with `registerResource`. The page shows plan id, run id, an `approved` / `waiting for your approval` badge, the tasks as cards in build order (title, project, lane, complexity, files in scope, acceptance criteria covered), the risks, and a note that approval happens outside the chat (`heph approve plan <run>`). It renders from the tool result's `structuredContent` (the `PlanShow` schema), falling back to the result's text when that is absent or malformed. The plan text is model-written, so every string goes in through `textContent`. Colours come from the host's CSS variables (`hostContext.styles.variables`, applied to `:root`), with light and dark fallbacks. `PlanShow` has no `depends_on`, so the cards are joined in build order only, not by dependency edges.
+Source is `packages/cli/src/mcp/app/` (`host.ts`, the shared handshake with `hasServerTools`; `plan.ts`; `plan.html`); `bun run build:apps` (`packages/cli/scripts/build-apps.ts`) bundles it into the checked-in `generated.ts` the server imports, and a test fails when that file is out of sync (regenerate after editing the source or upgrading bun).
+
+**Host matrix (verified 2026-11-07 with a throwaway spike over stdio):**
+
+| Host | Renders the page | Page `tools/call` |
+|---|---|---|
+| Claude desktop app, Code tab | yes (iframe on `claudemcpcontent.com`) | no: fails `-32603 IPC not available for MCP tool call`; no `serverTools` capability |
+| Codex app | yes | yes (`serverTools` present) |
+| Terminal hosts | no: they keep the text result | n/a |
+
+The handshake: the page sends `ui/initialize` (`appInfo`, `appCapabilities`, `protocolVersion` `2026-01-26`); the host answers `protocolVersion`, `hostCapabilities`, `hostInfo` and `hostContext` (theme, `styles.variables`, dimensions, locale); the page sends `ui/notifications/initialized`; the host then pushes `ui/notifications/tool-input`, `ui/notifications/tool-result` (`content`, `structuredContent`) and later `ui/notifications/host-context-changed`. A page answers any host request (id and method) with an empty result.
 
 **As built (2026-11-05), first slice: read-only runs list and run page.** The daemon also serves HTTP on `127.0.0.1:7878` (another free port when that one is taken). The port and a token go to `$HEPH_HOME/ui.json` (`{ port, token }`, mode 0600, written atomically). The token is created once and survives daemon restarts. The listener refuses any `Host` header that is not `127.0.0.1:<port>` or `localhost:<port>`, requires `Authorization: Bearer <token>` on `POST /api/<method>`, and serves only a 4-method read allowlist: `status`, `explain`, `planShow` and the new `dashboard` (one call returning run, plan, unit statuses, attempts with gate results, pauses, stacked-on parent, usage, staleness). Every other method answers 404, so approve, hint and cancel are not on the network surface. The UI is a React bundle (packages/ui, built by `bun run build:ui`) embedded in the daemon binary and served from `/`. `heph ui [--no-open]` prints the URL, with the token in the URL fragment (`#t=...`, never sent to a server or logged), and opens the browser only when stdout is a TTY and `--no-open` is absent. The page polls (2 s while a run is running, else 10 s, idle while the tab is hidden); there is no push channel yet. Not built: approve/hint/cancel buttons, plan review, diff summary, ledger charts, retro, MCP Apps widgets, SSE, remote-node dashboards.
 
@@ -891,7 +904,7 @@ Small MMORPG across three projects: Go server, Godot client, web. Optional share
    7. Resume and idempotency
    8. Node model: coordinator/runner split, local fallback, sync, handoff
 3. **Then:** cross-node runners, routing tiers with escalation, MCP server, dashboard, MCP Apps widgets.
-   Built (2026-11-05): the dashboard, first slice (read-only runs list and run page, `heph ui`; see section 16). Not built: the rest of the widget list, MCP Apps widgets.
+   Built (2026-11-05): the dashboard, first slice (read-only runs list and run page, `heph ui`; see section 16). The plan review MCP App is built (2026-11-07, section 16). Not built: the rest of the widget list as MCP Apps.
    Built (2026-11-05): parallel fan-out (`limits.parallel`, drain, join) and stacking (`--stack-on`, restack, `pr_retarget`). Not built: multiple parents, optimistic joins, rate-limit throttling, cross-node runners.
 4. **v1.5:** approvals.
 5. **Later:** retro and constraint store, learned routing, additional worker backends.
@@ -908,4 +921,4 @@ If fewer than half of runs reach merge without manual rewriting, or work keeps b
 
 - OMP SDK/RPC surface stability across versions
 - npm scope: `@hephaestus` is taken; choose a publishable scope before publishing. GitHub: `juano-morello/hephaestus`
-- Exact MCP Apps rendering support in Claude Code and the Codex app
+- MCP Apps rendering support: resolved 2026-11-07 for the Claude desktop app (Code tab) and the Codex app, both render the page from the stdio server; only Codex lets the page call tools back (section 16). Not checked: Claude Code in a terminal (cannot render), other hosts.

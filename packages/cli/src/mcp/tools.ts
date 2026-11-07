@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Explain, OUTPUT, StatusOne } from "../output.ts";
 import type { WatchView } from "../watch.ts";
+import { PLAN_HTML } from "./app/generated.ts";
 import type { AllowedMethod } from "./guard.ts";
 import type { McpCtx } from "./server.ts";
 import {
@@ -150,15 +151,26 @@ const withoutUndefined = <T extends Record<string, unknown>>(o: T): Record<strin
 
 const { $schema: _dialect, ...briefJsonSchema } = z.toJSONSchema(Brief) as Record<string, unknown>;
 // Built from the real schema, so what the model is told cannot drift from what heph_new accepts.
+const PLAN_URI = "ui://heph/plan";
+const APP_MIME = "text/html;profile=mcp-app";
+
 const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; every list field is required except known_paths, but the brief gate rejects an empty acceptance, any open_questions left unresolved, duplicate criterion ids, a check gate not configured in any project, known_paths projects not in the workspace, and a criterion whose projects names a project not in the workspace, lists one twice, or also sets check). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
 
 export function registerTools(server: McpServer, ctx: McpCtx): void {
+  server.registerResource(
+    "plan-widget",
+    PLAN_URI,
+    { mimeType: APP_MIME, description: "The plan review widget (an MCP App)" },
+    async () => ({ contents: [{ uri: PLAN_URI, mimeType: APP_MIME, text: PLAN_HTML }] }),
+  );
   server.registerTool(
     "heph_plan_show",
     {
       description:
         "Show a heph run's plan: its tasks, build order and risks, and whether the user has approved it.",
       inputSchema: { run: z.string().min(1).describe("The run id, e.g. r1") },
+      // Hosts that render MCP Apps show the plan as a widget; the rest see the text result.
+      _meta: { ui: { resourceUri: PLAN_URI }, "ui/resourceUri": PLAN_URI },
     },
     ({ run }) =>
       toolResult(ctx, { method: "planShow", args: [run], command: "plan show" }, planShowText),

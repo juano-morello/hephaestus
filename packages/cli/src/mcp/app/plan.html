@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>heph plan</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1c;--muted:#6b6b6b;--card:#f6f6f4;--line:#dcdcd6;--ok:#1a7f37;--warn:#9a6700;color-scheme:light dark}
+:root[data-theme=dark]{--bg:#1f1f1e;--fg:#ececec;--muted:#a0a09a;--card:#2a2a28;--line:#3e3e3a;--ok:#3fb950;--warn:#d29922}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#1f1f1e;--fg:#ececec;--muted:#a0a09a;--card:#2a2a28;--line:#3e3e3a;--ok:#3fb950;--warn:#d29922}}
+body{margin:0;padding:14px;font:14px/1.45 var(--font-sans,system-ui,sans-serif);background:var(--color-background-primary,var(--bg));color:var(--color-text-primary,var(--fg))}
+.muted,.meta,.label,.note{color:var(--color-text-secondary,var(--muted))}
+.head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}
+.ids{font-weight:600;overflow-wrap:anywhere}
+.badge{padding:2px 10px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor}
+.badge.ok{color:var(--ok)}.badge.wait{color:var(--warn)}
+.h{font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin:14px 0 6px;color:var(--color-text-secondary,var(--muted))}
+.flow{list-style:none;margin:0;padding:0 0 0 14px;border-left:2px solid var(--color-border-primary,var(--line))}
+.task{position:relative;margin:0 0 10px 10px;padding:8px 10px;border:1px solid var(--color-border-primary,var(--line));border-radius:8px;background:var(--color-background-secondary,var(--card))}
+.task::before{content:"";position:absolute;left:-21px;top:14px;width:10px;height:10px;border-radius:50%;background:var(--color-border-primary,var(--line))}
+.task-top{display:flex;gap:8px;align-items:baseline}
+.task-n{opacity:.6}.task-id{font-family:ui-monospace,monospace;font-size:12px;opacity:.8}.task-title{font-weight:600;overflow-wrap:anywhere}
+.meta{font-size:12px;margin-top:2px}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-top:6px}
+ul{margin:2px 0 0;padding-left:18px}.item{overflow-wrap:anywhere}.scope .item{font-family:ui-monospace,monospace;font-size:12px}
+.fallback{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}
+.note{font-size:12px;margin-top:14px}
+</style></head>
+<body></body>
+<script>/*SCRIPT*/</script>
+</html>

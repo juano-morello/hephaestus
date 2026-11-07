@@ -1,7 +1,15 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-  "files": { "includes": ["**", "!**/out", "!**/node_modules", "!**/*.md"] },
+  "files": {
+    "includes": [
+      "**",
+      "!**/out",
+      "!**/node_modules",
+      "!**/*.md",
+      "!packages/cli/src/mcp/app/generated.ts"
+    ]
+  },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
   "linter": { "enabled": true },
   "css": { "parser": { "tailwindDirectives": true } },
