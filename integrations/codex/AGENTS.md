@@ -56,7 +56,8 @@ Rules that keep plans valid:
 - **Acceptance is testable behavior.** Each criterion becomes at least one test written before
   the code. Properties only a tool can verify (lint passes, a schema check) go in
   `constraints`, or set `check: { gate: <name> }` on the criterion when that gate is
-  configured for the project.
+  configured for the project. Define the gate as a command in the repo's `.heph/config.yaml`
+  (`gates: { buf: "buf lint" }`); heph runs it on the unit that covers the criterion.
 - **Set `projects` on a criterion that needs tests in more than one project** (for example
   `projects: [server, client]`): the plan must then have a covering test task in each.
 - **Say where tests live** when the project's test command doesn't run every test file (for

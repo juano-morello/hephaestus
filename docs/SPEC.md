@@ -206,6 +206,18 @@ export default defineGate("no_console", async ({ diff }) =>
     ? fail("console.log added") : pass());
 ```
 
+Custom command gates (built 2026-11-07) are a map in a repo's config; a string is the command, an object adds `timeout_ms` and `always` (run on every unit of the project; needs a `command`):
+
+```yaml
+# <repo>/.heph/config.yaml
+project:
+  gates:
+    buf: buf lint
+    imports: { command: godot --headless --import, timeout_ms: 120000, always: true }
+```
+
+The old list of names (`gates: [buf]`) still loads as "declared, no command". The six built-in names are reserved.
+
 ### Ergonomics
 
 - Schema-validated config with editor autocomplete; errors point at the exact line. Built: `heph schema <home|workspace|repo|brief>` prints the JSON Schema, and `heph init` writes the schemas to `.heph/schemas/` and a YAML-language-server modeline at the top of each generated file.
@@ -553,7 +565,8 @@ Learned routing from ledger and eval data is v2.
 - Written as code, run in the same sandbox as the worker.
 - Built-ins: tests, typecheck, lint, diff-scope (vs plan scope + locked paths), touched-vs-diff, coverage delta, requirement-to-check mapping, plan gates, brief gate, project-imports-headless (Godot).
 - Integration gate per workspace, run at merge on the full changeset (e.g. headless Go server + scripted bot client).
-- Custom gates as TS files in `.heph/gates/`.
+- Custom gates as TS files in `.heph/gates/`. Not built; see the next bullet for what is.
+- **Built (2026-11-07): custom command gates.** A project's `gates` in `<repo>/.heph/config.yaml` maps a name to a command (see section 5). The command runs in the same sandbox as the other command gates, on the units that cover a criterion with `check: { gate: <name> }` (never on test units) and, for `always: true` gates, on every unit of that project. It passes on exit 0 and its evidence is `exit N` plus the tail of the output. They are commands rather than TS files because a repo's TS would run in the engine process, which holds git push and the secrets, while gates belong in the sandbox (section 12). A TS `defineGate` stays unbuilt until there is a safe way to run it; coverage delta likewise.
 - Flaky gates are worse than none: gate flakiness is tracked in `gate_stats` and surfaced.
 
 ---

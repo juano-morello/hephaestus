@@ -191,7 +191,7 @@ Known limits:
 2. **`touched_vs_diff` is exact.** A worker that formats extra files fails it. The spec intends this; watch whether it is noisy in real runs.
 3. **Fixed 2026-11-03:** a typecheck or lint command containing `{files}` runs on the unit's changed project files (shell-quoted), so it also runs for test units; commands without `{files}` are still skipped for test units.
 4. **Fixed 2026-11-03:** a modified locked file is reported once, by `locked_paths`; `diff_scope` leaves it alone.
-5. Not built: coverage delta, project-imports-headless (Godot), requirement-to-check mapping at execution time, the integration gate at merge (2.5), custom gates from `.heph/gates/`.
+5. Not built: coverage delta, project-imports-headless as a built-in (a Godot command is now a custom command gate, see "Custom command gates (2026-11-07)"), the integration gate at merge (2.5), custom gates as TS files in `.heph/gates/`. Requirement-to-check mapping at execution time and command gates are built since (2026-11-07).
 
 **Live smoke on the built-ins (2026-11-03, sonnet, alpine container):** finished in 180 s, both units green on attempt 1, all 12 gate results recorded (T1: tests red as required; T2: tests green; typecheck and lint skipped as configured). 10.1k output tokens, 167k cache reads. The generated `test_add.sh` covered AC1-AC3 and `add.sh` validated its arguments.
 
@@ -240,7 +240,7 @@ How it works and what I interpreted:
 
 **Live smoke (2026-11-03, `dist/heph`, opus planner, container sandbox):** `init`, `new` (29 s, planned on the first answer), `plan show`, `approve plan`, `run` (114 s; both units green on attempt 1, every gate streamed, staged), `approve merge` (merged), `status` finished; `main` has `add.sh` and `test_add.sh`. The planner rated both tasks `trivial`, so the default routing used haiku.
 
-Not built: `--on local|devserver`, handoff/adopt/sync (2.8), `eval`, `retro`, `--dry-run`, presets, workflows, custom gates from `.heph/gates/`. `heph init` writes `.heph/` into the repo for a single-repo workspace and does not commit it.
+Not built: `--on local|devserver`, handoff/adopt/sync (2.8), `eval`, `retro`, `--dry-run`, presets, workflows, custom gates as TS files in `.heph/gates/` (command gates are built since, see "Custom command gates (2026-11-07)"). `heph init` writes `.heph/` into the repo for a single-repo workspace and does not commit it.
 
 ## Resume and idempotency (v0 step 2.7)
 
@@ -656,3 +656,16 @@ Built: `heph run <run> --dry-run`, `heph schema <name>` with schemas and modelin
 - `--dry-run` is read-only (no worker, event, worktree, lock or sandbox; no rate-limit wait) and owner-only through the host. Router sizes are estimates: files are read from each repo's target branch tip (`HEAD` when it has none), the real build reads them after earlier units are accepted. Waves are the scheduler's own `readyUnits` run to exhaustion with every unit accepted; `locked_by` lists same-project test units with a path to the unit.
 
 **Deferred:** presets, workflows, a prompt dump command (`heph prompt <role>`), a home-config schema in the installer, custom gates from `.heph/gates/`, a reviewer role prompt.
+
+## Custom command gates (2026-11-07)
+
+Design: `docs/superpowers/specs/2026-11-07-custom-gates-design.md`. Before this, `projects.<p>.gates: [buf]` fed only the plan-time checks and nothing ran a gate by that name, so a criterion with `check: { gate: buf }` was declared covered and never verified.
+
+- **Config.** `gates` is a map of name to a command string or `{ command?, timeout_ms?, always? }` (strict). `always` without a command is a config error. The old list of names still loads. The loader normalizes every layer to the resolved map `name -> { command?, timeout_ms?, always }` (`normalizeGates`), a list name becoming `{ always: false }`. Each entry replaces whole across layers (`projects.<p>.gates.<name>` is atomic in `isAtomic`), so redefining a gate never inherits a stale timeout. `heph config explain` shows `projects.server.gates.buf.command = ...  (file)`. Reserved names, rejected in both forms with the key and file: `tests`, `typecheck`, `lint`, `diff_scope`, `locked_paths`, `touched_vs_diff`. Union errors (list or map) are flattened in the loader so the message names the exact key.
+- **Selection** (`customGatesFor`, engine). A criterion-named gate runs on every task whose `covers` includes the criterion, except test units. `always` gates run on every unit of the task's own project, test units included. A name selected both ways runs once, in the criterion-named position; criterion-named gates come first, then `always` in key order.
+- **No command, loud.** A selected gate whose project has no entry or no command fails the attempt with one red result, `gate <name> has no command in project <project>`, instead of passing without the gate (so a names-only config that a criterion relies on now fails loudly).
+- **Run.** `namedCommandGate` runs the command in the gate sandbox: green on exit 0 (`<name> passed`), red otherwise with evidence `exit N` plus the tail (60 lines, 4000 characters). `timeout_ms` from the spec, else the usual gate timeout. No `{files}` substitution. They are ordinary unit gates: `localRunner` runs `extraGates(task)` after the built-ins, the sandbox opens when any of them needs one, the Return and `gate.result` events carry the gate name, and escalation and stall logic are unchanged.
+- **Not in the join or landing re-gate** (`REGATES` stays `tests`, `typecheck`, `lint`; the extra gates are not passed to the re-gate).
+- **Config hash.** The specs live in `EngineConfig.customGates` (omitted when a project has none), so a changed command changes the hash. No ledger event, schema or projection changes.
+- **Dry run.** `heph run --dry-run` per-unit `gates` is now the six built-ins plus what `customGatesFor` selects for that unit, instead of every project gate name. `previewRun` takes `criteria` instead of `projectGates`.
+- **Deferred:** TS gate files (running repo code in the engine process is unsafe), coverage delta, `{files}` in custom commands, lane-based gates, a Godot stack in `heph init`.
