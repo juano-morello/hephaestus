@@ -389,6 +389,32 @@ describe("heph config explain", () => {
     expect(text).toContain(`routing.implementer.fallback.model = openai/gpt-5  (${file})`);
   });
 
+  test("lists the role files in effect with their layer", async () => {
+    await put(join(ws, ".heph", "workspace.yaml"), WORKSPACE);
+    await put(join(home, "roles", "implementer.md"), "home rules");
+    await put(join(ws, "server", ".heph", "roles", "implementer.md"), "repo rules");
+    await put(join(ws, ".heph", "roles", "planner.md"), "plan rules");
+    const { out, ctx } = io();
+    expect(await run(["config", "explain"], ctx)).toBe(0);
+    const text = out.join("");
+    expect(text).toContain(`roles.implementer = ${join(home, "roles", "implementer.md")}  (home)`);
+    expect(text).toContain(
+      `roles.implementer = ${join(ws, "server", ".heph", "roles", "implementer.md")}  (repo)`,
+    );
+    expect(text).toContain(
+      `roles.planner = ${join(ws, ".heph", "roles", "planner.md")}  (workspace)`,
+    );
+    const json = io();
+    await run(["config", "explain", "--json"], json.ctx);
+    expect(JSON.parse(json.out.join("")).data.roles).toHaveLength(3);
+  });
+
+  test("no role lines without role files", async () => {
+    const { out, ctx } = io();
+    await run(["config", "explain"], ctx);
+    expect(out.join("")).not.toContain("roles.");
+  });
+
   test("--json wraps config and sources in the envelope", async () => {
     const { out, ctx } = io();
     expect(await run(["config", "explain", "--json"], ctx)).toBe(0);

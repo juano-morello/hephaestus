@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { LedgerEvent } from "@hephaestus/ledger";
 import {
@@ -23,12 +23,15 @@ import { type DoctorReport, doctor, doctorText } from "./doctor.ts";
 
 export { findWorkspace };
 
+import type { Preview } from "@hephaestus/engine";
 import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
 import { explainText } from "./output.ts";
+import { listRoleFiles, type RoleFile } from "./role-files.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
+import { isSchemaName, SCHEMA_NAMES, schemaFor } from "./schema.ts";
 import { readUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { parseWaitFlag, type Wait } from "./wait-flag.ts";
@@ -72,6 +75,7 @@ type Flags = {
   budget?: number;
   scope?: string[];
   now: boolean;
+  dryRun: boolean;
   home?: string;
   on?: string;
   stackOn?: string;
@@ -112,6 +116,7 @@ function remote(api: Api, follow: (line: string) => void) {
         o,
       ),
     planShow: (id: string) => c<ReturnType<Runtime["planShow"]>>("planShow", id),
+    dryRun: (id: string) => c<Awaited<ReturnType<Runtime["dryRun"]>>>("dryRun", id),
     revise: (id: string, text: string) =>
       c<Awaited<ReturnType<Runtime["revise"]>>>("revise", id, text),
     approvePlan: (id: string) => c<ReturnType<Runtime["approvePlan"]>>("approvePlan", id),
@@ -179,6 +184,25 @@ async function untilApproved(ctx: Ctx, rt: ReturnType<typeof remote>, id: string
     // Status of a run on another node syncs with it first, so this asks every 2 s, not faster.
     await Bun.sleep(2000);
   }
+}
+
+/** The human form of a dry run: one block per wave, one line per unit. */
+function dryRunText(p: Preview): string {
+  const byId = new Map(p.units.map((u) => [u.id, u]));
+  const model = (r: { model: string; effort?: string }) =>
+    `${r.model}${r.effort ? ` ${r.effort}` : ""}`;
+  const unit = (id: string) => {
+    const u = byId.get(id);
+    if (!u) return `  ${id}`;
+    return `  ${u.id} ${u.project} ${u.kind} ${u.lane}  ${u.role} -> ${model(u.route)} (start ${u.start_tier}, planner ${u.planner_tier}; ${u.reasons.join(", ")})${u.top ? `; top ${model(u.top)}` : ""}${u.fallback ? `; fallback ${model(u.fallback)}` : ""}${u.locked_by.length ? `; locked by ${u.locked_by.join(", ")}` : ""}`;
+  };
+  return `${[
+    `dry run of ${p.run_id}: ${p.units.length} units, up to ${p.parallel} in parallel (router sizes are estimates: files are read from the target branch)`,
+    ...p.waves.flatMap((w, i) => [`wave ${i + 1}:`, ...w.map(unit)]),
+    ...(p.prompts.length
+      ? ["prompts:", ...p.prompts.map((x) => `  ${x.role}: ${x.path} (${x.layer})`)]
+      : []),
+  ].join("\n")}\n`;
 }
 
 const line = (e: { type: string; data: unknown; unit_id?: string; attempt?: number }) =>
@@ -382,11 +406,25 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ),
         "wrote:",
         ...r.written.map((f) => `  ${f}`),
+        `schemas for editor autocomplete: ${dirname(r.schemas[0] ?? r.workspaceDir)} (commit or ignore them)`,
         "",
       ].join("\n"),
     usage: [
       "init [--force]",
       "Set up .heph/ in this workspace (finds projects and their commands)",
+    ],
+  }),
+  schema: command<Record<string, unknown>>({
+    run: async (ctx) => {
+      const name = ctx.args[0] ?? "";
+      if (!isSchemaName(name))
+        throw new Error(`unknown schema "${name}"; one of: ${SCHEMA_NAMES.join(", ")}`);
+      return schemaFor(name);
+    },
+    render: (s) => `${JSON.stringify(s, null, 2)}\n`,
+    usage: [
+      "schema <home|workspace|repo|brief>",
+      "Print the JSON Schema of a config file or the Brief",
     ],
   }),
   new: {
@@ -420,27 +458,30 @@ const COMMANDS: Record<string, Command<unknown>> = {
         ctx,
         async (rt) => {
           const id = need(ctx.args, 0, "run id");
+          if (ctx.flags.dryRun) return rt.dryRun(id);
           await untilApproved(ctx, rt, id);
           return rt.build(id, { now: ctx.flags.now });
         },
         true,
       ),
     render: (r) =>
-      `${[
-        `run ${r.run_id}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`,
-        ...Object.entries(r.heads).map(
-          ([repo, sha]) => `  ${repo} heph/${r.run_id} at ${sha.slice(0, 7)}`,
-        ),
-        ...Object.entries("prs" in r && r.prs ? r.prs : {}).map(
-          ([repo, url]) => `  ${repo}: ${url}`,
-        ),
-        r.status === "staged" ? `next: review, then heph approve merge ${r.run_id}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n")}\n`,
+      "dry_run" in r
+        ? dryRunText(r)
+        : `${[
+            `run ${r.run_id}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`,
+            ...Object.entries(r.heads).map(
+              ([repo, sha]) => `  ${repo} heph/${r.run_id} at ${sha.slice(0, 7)}`,
+            ),
+            ...Object.entries("prs" in r && r.prs ? r.prs : {}).map(
+              ([repo, url]) => `  ${repo}: ${url}`,
+            ),
+            r.status === "staged" ? `next: review, then heph approve merge ${r.run_id}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")}\n`,
     usage: [
-      "run <run> [--now]",
-      "Build the plan, then stage it (pull requests where repos have a remote)",
+      "run <run> [--now] [--dry-run]",
+      "Build the plan, then stage it (pull requests where repos have a remote). --dry-run only shows models, tiers and parallel waves, and spends nothing",
     ],
   }),
   status: command({
@@ -659,16 +700,25 @@ const COMMANDS: Record<string, Command<unknown>> = {
       `ADOPTED ${a.run_id} from ${a.from}: this node now owns it. If ${a.from} comes back, it must not write this run.\n`,
     usage: ["adopt <run> [--force]", "Take over a run whose node is gone"],
   }),
-  "config explain": command<LoadedConfig>({
-    run: (ctx) =>
-      loadConfig({
-        workspaceDir: ctx.flags.workspace
-          ? resolve(ctx.cwd, ctx.flags.workspace)
-          : findWorkspace(ctx.cwd),
-        home: ctx.env.HEPH_HOME || join(homedir(), ".heph"),
-        overrides: parseSets(ctx.flags.set),
-      }),
-    render: (loaded) => `${explainConfig(loaded).join("\n")}\n`,
+  "config explain": command<LoadedConfig & { roles: RoleFile[] }>({
+    run: async (ctx) => {
+      const workspaceDir = ctx.flags.workspace
+        ? resolve(ctx.cwd, ctx.flags.workspace)
+        : findWorkspace(ctx.cwd);
+      const home = ctx.env.HEPH_HOME || join(homedir(), ".heph");
+      const loaded = await loadConfig({ workspaceDir, home, overrides: parseSets(ctx.flags.set) });
+      const roles = listRoleFiles({
+        home,
+        workspaceDir,
+        repoDirs: Object.values(loaded.config.workspace.repos).map((p) => resolve(workspaceDir, p)),
+      });
+      return { ...loaded, roles };
+    },
+    render: (loaded) =>
+      `${[
+        ...explainConfig(loaded),
+        ...loaded.roles.map((r) => `roles.${r.role} = ${r.path}  (${r.layer})`),
+      ].join("\n")}\n`,
     usage: ["config explain", "Every config value and where it comes from"],
   }),
   doctor: command<DoctorReport>({
@@ -791,6 +841,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         budget: { type: "string" },
         scope: { type: "string", multiple: true, default: [] },
         now: { type: "boolean", default: false },
+        "dry-run": { type: "boolean", default: false },
         home: { type: "string" },
         on: { type: "string" },
         "stack-on": { type: "string" },
@@ -820,6 +871,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       set: values.set ?? [],
       force: values.force ?? false,
       now: values.now ?? false,
+      dryRun: values["dry-run"] ?? false,
       tests: values.tests ?? false,
       noOpen: values["no-open"] ?? false,
       ...(waited.wait !== undefined ? { wait: waited.wait } : {}),

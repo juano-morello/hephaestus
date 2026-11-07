@@ -104,6 +104,21 @@ describe("role prompts", () => {
 
   test("an unknown role is an error", async () => {
     await expect(loadRolePrompt("reviewer")).rejects.toThrow("no role prompt for reviewer");
+    await expect(loadRolePrompt("reviewer", "x")).rejects.toThrow("no role prompt for reviewer");
+  });
+
+  test("project instructions are appended after the built-in prompt", async () => {
+    const base = await loadRolePrompt("implementer");
+    expect(await loadRolePrompt("implementer", "Use tabs.")).toBe(
+      `${base}\n\n## Project instructions\n\nUse tabs.`,
+    );
+  });
+
+  test("empty or whitespace instructions leave the prompt unchanged", async () => {
+    const base = await loadRolePrompt("implementer");
+    expect(await loadRolePrompt("implementer", "  \n")).toBe(base);
+    expect(await loadRolePrompt("implementer", "")).toBe(base);
+    expect(await loadRolePrompt("implementer", undefined)).toBe(base);
   });
 });
 

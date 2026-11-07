@@ -96,6 +96,8 @@ New runs go to the node configured as `preferred` (the devserver) when it answer
 heph run <run>
 ```
 
+`heph run <run> --dry-run` previews the planned build (models, tiers, parallel waves) without spending tokens; useful before `heph run` on a large plan.
+
 Start it in the background as soon as the plan is shown. Until the user approves it prints
 `waiting for your approval` and waits; then it builds every unit and stages the change,
 printing one line per event from that point on. It can take many minutes. A revised plan needs

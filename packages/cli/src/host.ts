@@ -35,6 +35,7 @@ const OWNER_ONLY = new Set([
   "approveMerge",
   "mergeStatus",
   "build",
+  "dryRun",
 ]);
 /** What only the daemon can answer: it holds the build jobs. */
 const DAEMON_ONLY = new Set(["run", "follow", "resume"]);

@@ -13,9 +13,11 @@ const ROLE_PROMPTS: Record<(typeof ROLES)[number], string> = {
 };
 
 /** Embedded at build time, so the compiled binary needs no prompt files next to it. */
-export async function loadRolePrompt(role: string): Promise<string> {
+export async function loadRolePrompt(role: string, instructions?: string): Promise<string> {
   if (!(ROLES as readonly string[]).includes(role)) throw new Error(`no role prompt for ${role}`);
-  return ROLE_PROMPTS[role as (typeof ROLES)[number]];
+  const base = ROLE_PROMPTS[role as (typeof ROLES)[number]];
+  // Project files only ever add to the built-in prompt, never replace it.
+  return instructions?.trim() ? `${base}\n\n## Project instructions\n\n${instructions}` : base;
 }
 
 const fence = (text: string) => `\`\`\`\n${text.replace(/\n$/, "")}\n\`\`\``;

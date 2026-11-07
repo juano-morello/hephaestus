@@ -208,12 +208,12 @@ export default defineGate("no_console", async ({ diff }) =>
 
 ### Ergonomics
 
-- Schema-validated config with editor autocomplete; errors point at the exact line.
+- Schema-validated config with editor autocomplete; errors point at the exact line. Built: `heph schema <home|workspace|repo|brief>` prints the JSON Schema, and `heph init` writes the schemas to `.heph/schemas/` and a YAML-language-server modeline at the top of each generated file.
 - `heph init` detects stack and fills commands.
 - Presets: `extends: hephaestus/presets/go-tdd`.
-- Prompts as files: `.heph/roles/<role>.md`, overridable per project.
+- Prompts as files: `.heph/roles/<role>.md`, overridable per project. Built, append-only: `~/.heph/roles/<role>.md` then `<repo>/.heph/roles/<role>.md` (the planner: `<workspace>/.heph/roles/planner.md`) are appended to the built-in prompt under `## Project instructions`; 16 KB each. Presets stay unbuilt.
 - `heph config explain` prints resolved config with the source of every value.
-- `--dry-run` renders graph, briefs and resolved roles without spawning.
+- `--dry-run` renders graph, briefs and resolved roles without spawning. Built as `heph run <run> --dry-run`: per unit the router's start tier, resolved route, timeout, locking test units and gates, plus the parallel waves and the role files in effect; workflows stay unbuilt.
 - Config hash recorded on every run and attempt.
 - Learned constraints live in `.heph/constraints.yaml`, reviewed in git, never mixed into hand-written config.
 
@@ -728,7 +728,8 @@ As built in v0: `heph daemon` runs in the foreground (under systemd or launchd i
 heph new feature --brief brief.yaml [--on local|devserver] [--stack-on <run>] [--json]
 heph plan show <run>
 heph plan revise <run> "<instructions>"
-heph run <run>
+heph run <run> [--now] [--dry-run]
+heph schema <home|workspace|repo|brief>
 heph status [<run>]
 heph explain <run> [<unit>]
 heph hint <run> <unit> ["<text>"] [--scope <path>]... [--budget N]
