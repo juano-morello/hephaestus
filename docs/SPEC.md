@@ -315,7 +315,7 @@ nodes:
 ```
 
 - **Sync is event union.** Nodes exchange events and blobs (`heph sync` + background sync when peers see each other). ULIDs + append-only + single owner means no conflicts. Each node keeps a sync cursor per peer.
-- Any node can display any synced run; remote-owned runs are marked possibly stale. Only the owner advances a run.
+- Any node can display any synced run; remote-owned runs are marked possibly stale. Only the owner advances a run. A read syncs with the owner first, and reuses a sync already in flight only while it is under a second old; an older unfinished one makes the read answer possibly stale at once, and one over 30 s old is replaced.
 - **Git is the code transport.** Unit branches push to the shared remote when reachable; offline they stay local and push on reconnect. Merge runs on the owner. Unreachable remote at merge time: run waits at `merge.staged`.
 - Transport between nodes over the LAN or Tailscale.
 - v0 ships coordinator and runner as separate modules talking over an internal API, even when in one process.
@@ -761,6 +761,7 @@ heph cancel <run>
 heph handoff <run> <node> [--wait [seconds]]
 heph adopt <run> [--force]
 heph sync
+heph nodes [--probe]       (the nodes this node knows, whether the daemon can reach them, runs owned; --probe sends a live hello to each, 5 s limit)
 heph daemon
 heph peer                  (the far side of node-to-node traffic; run through ssh)
 heph eval --suite <dir> [--task <id>]... [--tag <t>]... [--runs N] [--label L] [--out <dir>] [--resume]

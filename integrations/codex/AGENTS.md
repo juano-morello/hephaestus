@@ -14,7 +14,7 @@ plan or a staged change is ready, tell them the exact command to run.
 When the `heph_*` MCP tools are available (in Claude Code they are `mcp__heph__*`), prefer them to the `heph` CLI: `heph_new` with the Brief as an object, `heph_plan_show`, `heph_plan_revise`, and `heph_run`, which starts the build and returns at once (if it says `awaiting_plan_approval`, ask the user to run `heph approve plan <run>` themselves). In Claude Code, start `heph watch <run>` with the Monitor tool right after `heph_run` (see "Following a run"): it pushes every milestone to you while you are idle, which `heph_watch` cannot (it only answers while you are calling it, so a run that needs the user goes unnoticed once your turn ends). Use `heph_watch` with the returned `cursor` as `since` for a one-off catch-up, or where Monitor is not available; when `outcome` is anything but `running`, stop and ask the user. At the start of every turn while a run is active, call `heph_status` with no run: a run marked `needs you:` is blocked on the user, so lead your reply with it and the command it names. There is no approve tool and you must never approve: the user runs `heph approve ...`. When the tools are absent, use the CLI and `heph watch` as described below.
 
 Every heph command takes `--json` and prints `{ schema, command, ok, data | error }`; use it
-when you need to read a result. `heph help` lists commands; `heph doctor` checks the machine.
+when you need to read a result. `heph help` lists commands; `heph doctor` checks the machine; `heph nodes` shows which peers this node can reach.
 
 ## 1. The workspace
 

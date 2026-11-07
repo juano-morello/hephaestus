@@ -286,7 +286,7 @@ How it works and what I interpreted:
 8. **Builds reached through `heph peer` require the owner's daemon**, since a build tied to an ssh session dies with it. Reading and quick commands work through `heph peer` without a daemon.
 9. **`heph run` through a daemon follows the job** by polling its events (1 s locally; each poll of a remote owner is one ssh round trip). Ctrl-C stops following, not the build.
 10. **The daemon is the rate-limit scheduler:** a job that ends rate limited starts again and waits out `retry_after` inside the build; at start the daemon also resumes runs left `running` by a killed process.
-11. **`--set` overrides apply only in-process.** A command that goes through a daemon uses the daemon's configuration.
+11. **`--set` overrides apply only in-process.** A command that goes through a daemon uses the daemon's configuration. Since 2026-11-08 `heph` refuses `--set` when a daemon would serve the command, instead of dropping it silently (see "Housekeeping (2026-11-08)").
 12. **OMP loads lazily** (only to plan or build), and a Linux binary ships OMP's native addon beside it (`build:heph:linux` writes `dist/linux-x64/`; `fetch-natives.ts` takes the addon from npm at the version OMP resolved, after checking the registry's sha512). The first Linux binary died at startup because a binary cross-compiled on macOS carries only the macOS addon, and OMP loads it at import.
 13. **`HEPH_DEPS_MODULE`** (a module exporting `deps`) injects a scripted planner and worker into heph processes that tests start (daemon tests, daemon chaos). It is a test hook only.
 
@@ -334,7 +334,7 @@ How it works and what I interpreted:
   - **`heph approve merge` prints its result as JSON** (`merge of L1: {"status":"merged"}`) in human output. Cosmetic, from 2.6.
 - **Cleanup:** both daemons stopped, `~/heph-test` on denver and the Mac's test home removed, no heph containers on either machine. You deleted the repo `juano-morello/heph-land-test`.
 
-Not built: leases and remote runners (waiting for in-flight attempts on handoff was built later, see "Handoff wait (2026-11-06)"), a `heph nodes` listing, installing the daemon as a service, auth beyond SSH, passing `--set` through the daemon.
+Not built: leases and remote runners (waiting for in-flight attempts on handoff was built later, see "Handoff wait (2026-11-06)"), auth beyond SSH, passing `--set` through the daemon (refused since 2026-11-08). Built since: `heph nodes` and installing the daemon as a launchd or systemd user service (`bun run install:heph`).
 
 ## Ready to use: install, doctor, the skill, and the first real repo (2026-11-04)
 
@@ -382,14 +382,12 @@ Feedback from using heph inside Claude Code: nothing told the agent what a backg
 
 ### MCP server: follow-ups and known issues (2026-11-05)
 
-Fixed since the first cut and no longer listed: shared watch classification, installer registration, the skill paragraph, bounded MCP daemon calls with transient-only retries, an overall bound per `heph_watch`/`heph_run` call, peer syncs inside reads bounded at about 5 s (one in flight per peer), `heph_watch` cancellation (in-flight calls aborted too), installer hardening (Codex `tool_timeout_sec`, `claude mcp` timeouts and scopes, TOML edge cases), empty-string inputs, `heph_run` on unapproved paused/built runs, the `serveStdio` wiring test, the e2e "starts nothing" check, and a plain `bun run build:heph` binary dying at start (it is now stamped with `HEPH_BUILD`, and `hephVersion` falls back to "unknown" when git cannot be spawned). What remains:
+Fixed since the first cut and no longer listed: shared watch classification, installer registration, the skill paragraph, bounded MCP daemon calls with transient-only retries, an overall bound per `heph_watch`/`heph_run` call, peer syncs inside reads bounded at about 5 s (one in flight per peer), `heph_watch` cancellation (in-flight calls aborted too), installer hardening (Codex `tool_timeout_sec`, `claude mcp` timeouts and scopes, TOML edge cases), empty-string inputs, `heph_run` on unapproved paused/built runs, the `serveStdio` wiring test, the e2e "starts nothing" check, and a plain `bun run build:heph` binary dying at start (it is now stamped with `HEPH_BUILD`, and `hephVersion` falls back to "unknown" when git cannot be spawned). What remains (the peer sync reuse cap and the `config.toml` multi-line strings were fixed 2026-11-08, see "Housekeeping (2026-11-08)"; everything below stays on purpose):
 
 - The CLI's `heph watch` (`watchRun`) still retries every daemon error, and the CLI's daemon calls have no timeout. Left as it was on purpose: a person at a terminal sees the retries and can press Ctrl-C, and `heph run`/`heph new` must wait out the planner. Only the MCP path, where a host times the tool out, needed bounds.
 - A `run` the MCP gives up on (its 10 s timeout, or `heph_run`'s 30 s budget) may still have started the build job on the daemon: the daemon is not told the caller left. Calling `heph_run` again then answers `already_running`, and the deadline error says so. Making `run` cancellable would need the daemon to undo a job it started; not worth it while the retry is safe.
 - An aborted or timed-out daemon call ends on the MCP side only: the daemon finishes the work it had started (a read, or a peer sync that keeps going in the background until ssh drops it). It does not change anything a read would not.
 - `registerClaudeMcp` reads `claude mcp get`'s human output (`Scope:`, `Command:`, `Args:` lines), whose format `claude mcp --help` does not state, and I could not see it for a stdio server without registering one. If the format changes, the worst case is a needless re-add, never a failed install.
-- The read-side peer sync reuse (`refresh` in `host.ts`) keeps an in-flight sync for as long as it has not settled. If a peer's ssh link stays alive while its `heph peer` is wedged, every later read answers `possibly stale` without reconnecting until the daemon restarts. Still better than before (such a read used to hang). A cap on how long an in-flight sync may be reused would fix it. A read that joins a sync already past its pull phase gets no stale flag though the last few seconds of events may be missing.
-- `withHephMcp` reads Codex's `config.toml` line by line, so a `"""`/`'''` multi-line string with an unbalanced `[` before the `[mcp_servers.heph]` table can leave a duplicate table. Rare; would need a real TOML parser to close.
 - Checked 2026-11-05: `claude mcp get <name>` prints `<name>:` and then indented `Scope:` and `Status:` lines (seen for a claude.ai connector), and exits 1 for an unknown server. The `Command:`/`Args:` lines of a stdio server are still assumed.
 - `heph mcp --json` prints one JSON line on stdout after the session closes. The host has hung up by then, so nothing reads it, and the stdout test sees only the JSON-RPC answers; it is the CLI's usual `--json` envelope, not worth a special case.
 
@@ -729,3 +727,15 @@ Sub-project F, the measuring tools. Spec `docs/superpowers/specs/2026-11-07-eval
 - Extra worker backends: a named backend someone wants.
 - A shared results store: results needed by more than one person or machine.
 - Parallel eval runs: a suite whose sequential wall time hurts (cost and rate limits are the other half of that question).
+
+## Housekeeping (2026-11-08)
+
+Sub-project G, five bounded pieces, no spec file.
+
+- **`heph nodes [--probe]`.** One row per configured peer plus this node: `name`, `ssh`, `preferred`, `labels`, `state` (`ok`, `down`, `unknown`), `since`, `last_ok_at`, `next_try_at`, `error`, `runs_owned` (runs whose `owner_node` is that node), and with `--probe` a `probe` of `{ ok, detail }`. State is the daemon's node health snapshot, merged in by the daemon's call wrapper (`mergeHealth`, `packages/cli/src/nodes.ts`); with no daemon every peer is `unknown` and the output says so. `--probe` sends a live `hello` to each peer through the host's peer plumbing, cut off after 5 s (`probeMs`). This node's row is always `ok` and marked `this_node`.
+- **`--set` with a daemon is refused** (`--set only applies when heph runs in-process; stop the daemon, or set the value in a config file`). In-process runs and `heph config explain --set` are unchanged. Interpretation 11 above.
+- **Peer sync reuse is capped** (`refresh` in `host.ts`). A read joins a sync in flight to the owner only while it is under `readSyncJoinMs` (default 1 s) old. An unsettled one between that and `readSyncWedgedMs` (default 30 s) makes the read answer `possibly stale` at once and start nothing. One at least that old is wedged: a fresh sync replaces it (the old one runs on; its cleanup removes the map entry only if it is still the registered one). `readSyncMs` (5 s) still bounds how long a joined read waits. The clock is injectable (`now`) for tests. Left as is: a read that joins a sync already past its pull phase gets no stale flag.
+- **`withHephMcp` knows multi-line strings.** The line scanner tracks `"""` and `'''` strings (a line with an odd number of the delimiter toggles; `"""x"""` does not) and ignores table headers, keys and brackets inside them. It still is not a TOML parser: an escaped `\"""` inside a basic string is honored, but other exotic forms (a string ending in four quotes) are not.
+- **Docs.** The stale "Not built" line, interpretation 11 and the MCP follow-ups list are updated; SPEC section 7 and 16, the ROADMAP and the skill (and its Codex copy) mention the new command.
+
+Stays deliberately: `heph watch` retries every error; a `heph_run` timeout leaves a retry-safe job; `registerClaudeMcp` assumes `claude mcp get`'s `Command:`/`Args:` lines; `heph mcp --json` prints one line nobody reads.
