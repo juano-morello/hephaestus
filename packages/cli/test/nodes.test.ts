@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PullRequests, Worker } from "@hephaestus/engine";
-import { localTransport } from "@hephaestus/node";
+import { localTransport, type Transport } from "@hephaestus/node";
 import { loadHomeConfig } from "../src/config.ts";
 import { type Host, openHost } from "../src/host.ts";
 import { type Io, run } from "../src/main.ts";
@@ -260,6 +260,108 @@ describe("a run on another node", () => {
     } finally {
       await mbp.close();
     }
+  });
+
+  describe("reusing a sync in flight", () => {
+    let clock: number;
+    let connects: number;
+    const hang = (): Transport => ({
+      request: () => new Promise<never>(() => {}),
+      close: async () => {},
+    });
+    /** A peer that accepts and waits; `release` makes its sync fail. */
+    const gated = () => {
+      let release: () => void = () => {};
+      const t: Transport = {
+        request: () =>
+          new Promise<never>((_, reject) => {
+            release = () => reject(new Error("gone"));
+          }),
+        close: async () => {},
+      };
+      return { t, release: () => release() };
+    };
+    const open = async (connect: () => Transport) => {
+      await heph(["init", "--force"]);
+      await heph(["new", "--brief", join(root, "brief.yaml"), "--run-id", "R7"]);
+      clock = 1_000_000;
+      connects = 0;
+      return openHost({
+        home: homeA,
+        config: await loadHomeConfig(homeA),
+        deps,
+        readSyncMs: 200,
+        now: () => clock,
+        connect: () => {
+          connects++;
+          return connect();
+        },
+      });
+    };
+    const read = async (mbp: Host) =>
+      (await mbp.api.call("status", ["R7"], ws)) as Record<string, unknown>;
+
+    test("a read within the join window joins the sync in flight", async () => {
+      const mbp = await open(hang);
+      try {
+        expect((await read(mbp)).stale).toBeDefined();
+        clock += 900;
+        expect((await read(mbp)).stale).toBeDefined();
+        expect(connects).toBe(1);
+      } finally {
+        await mbp.close();
+      }
+    });
+
+    test("between the join window and the wedged threshold a read answers stale at once and connects to nothing", async () => {
+      const mbp = await open(hang);
+      try {
+        await read(mbp);
+        clock += 1500;
+        const t0 = Date.now();
+        const r = await read(mbp);
+        expect(Date.now() - t0).toBeLessThan(100);
+        expect(r.stale).toBe("possibly stale: denver is unreachable");
+        expect(connects).toBe(1);
+      } finally {
+        await mbp.close();
+      }
+    });
+
+    test("a sync still unsettled after the wedged threshold is replaced; its replacement can answer", async () => {
+      let n = 0;
+      const mbp = await open(() => (++n === 1 ? hang() : localTransport(denver.peerMethods())));
+      try {
+        await read(mbp);
+        clock += 30_000;
+        const r = await read(mbp);
+        expect(connects).toBe(2);
+        expect(r.stale).toBeUndefined();
+      } finally {
+        await mbp.close();
+      }
+    });
+
+    test("the wedged sync finishing late does not remove its replacement", async () => {
+      const first = gated();
+      const second = gated();
+      let n = 0;
+      const mbp = await open(() => (++n === 1 ? first.t : second.t));
+      try {
+        await read(mbp);
+        clock += 30_000;
+        await read(mbp);
+        expect(connects).toBe(2);
+        first.release();
+        await Bun.sleep(20);
+        clock += 100;
+        await read(mbp);
+        // Still joins the second sync: the first one's cleanup left it registered.
+        expect(connects).toBe(2);
+      } finally {
+        await mbp.close();
+      }
+    });
   });
 });
 

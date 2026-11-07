@@ -55,6 +55,12 @@ export type HostOptions = {
   overrides?: Record<string, unknown>;
   /** How long a read (status, explain, plan show) waits for the owner's sync: default 5 s. */
   readSyncMs?: number;
+  /** A read joins a peer sync already in flight only while it is this young: default 1 s. */
+  readSyncJoinMs?: number;
+  /** A sync still unsettled after this long is wedged, and the next read starts a new one: 30 s. */
+  readSyncWedgedMs?: number;
+  /** Tests: the clock the two bounds above are measured on. */
+  now?: () => number;
   /** How long `heph nodes --probe` waits for a peer's hello: default 5 s. */
   probeMs?: number;
   /** For a `heph peer` process: hand builds to this node's daemon when one is running. */
@@ -150,25 +156,36 @@ export function openHost(o: HostOptions) {
     if (!row) throw new Error(`no run ${runId} on ${me} (heph sync?)`);
     return row.owner_node;
   };
-  /** Syncs with a peer still in flight for a read, so retried reads share one. */
-  const readSyncs = new Map<string, Promise<boolean>>();
+  /** Syncs with a peer still in flight for a read: present means unsettled. */
+  const readSyncs = new Map<string, { promise: Promise<boolean>; startedAt: number }>();
+  const clock = o.now ?? Date.now;
   /**
    * Pulls the owner's latest events; false when it can't be reached, or does not finish within
    * `readSyncMs` (a peer that accepts and hangs): the read then answers as possibly stale
-   * instead of waiting for ssh to give up. The sync itself goes on, and the next read reuses it.
+   * instead of waiting for ssh to give up. A read joins a sync in flight only while it is under
+   * `readSyncJoinMs` old; an older one that is not yet `readSyncWedgedMs` old is probably about
+   * to give up, so the read answers stale at once and starts nothing; one older than that is
+   * wedged and is replaced (it keeps running, and its cleanup leaves the replacement alone).
    */
   const refresh = async (runId: string): Promise<boolean> => {
     const owner = ownerOf(runId);
     if (owner === me) return true;
-    let sync = readSyncs.get(owner);
-    if (!sync) {
-      sync = withPeer(owner, (t) => syncWith(ledger, t)).then(
+    const now = clock();
+    let entry = readSyncs.get(owner);
+    if (entry) {
+      const age = now - entry.startedAt;
+      if (age >= (o.readSyncWedgedMs ?? 30_000)) entry = undefined;
+      else if (age >= (o.readSyncJoinMs ?? 1000)) return false;
+    }
+    if (!entry) {
+      const promise = withPeer(owner, (t) => syncWith(ledger, t)).then(
         () => true,
         () => false,
       );
-      readSyncs.set(owner, sync);
-      const started = sync;
-      void started.finally(() => {
+      const started = { promise, startedAt: now };
+      readSyncs.set(owner, started);
+      entry = started;
+      void promise.finally(() => {
         if (readSyncs.get(owner) === started) readSyncs.delete(owner);
       });
     }
@@ -177,7 +194,7 @@ export function openHost(o: HostOptions) {
       timer = setTimeout(() => done(false), o.readSyncMs ?? 5000);
     });
     try {
-      return await Promise.race([sync, late]);
+      return await Promise.race([entry.promise, late]);
     } finally {
       clearTimeout(timer);
     }
