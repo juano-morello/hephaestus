@@ -110,7 +110,7 @@ export function UnitGraph({ layout, statuses, selected, onSelect, titles = {} }:
           );
         })}
         {layout.nodes.map((n) => {
-          const status = statuses[n.id] ?? "pending";
+          const status = Object.hasOwn(statuses, n.id) ? (statuses[n.id] as string) : "pending";
           const look = lookOf(status);
           const isSel = selected === n.id;
           const title = titles[n.id];

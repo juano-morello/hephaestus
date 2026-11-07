@@ -6,12 +6,16 @@ import type { Dashboard } from "../src/types.ts";
 import { Run } from "../src/views/run.tsx";
 import {
   bigRun,
+  diffSummaryOk,
   droppedUnitRun,
   noPlanRun,
   parallelRun,
+  planDetailFull,
+  runChartsFull,
   stackedChild,
   stalledRun,
 } from "./fixtures.ts";
+import { stubApi } from "./stub-api.ts";
 
 afterEach(cleanup);
 
@@ -162,8 +166,9 @@ describe("Run poll updates", () => {
     await screen.findByLabelText("Unit graph");
     fireEvent.click(node("T2"));
     const sel = () =>
-      screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")
-        ?.textContent;
+      within(screen.getByRole("tablist", { name: "Attempts" }))
+        .getAllByRole("tab")
+        .find((t) => t.getAttribute("aria-selected") === "true")?.textContent;
     expect(sel()).toBe("Attempt 1");
     await wait(2100);
     expect(sel()).toBe("Attempt 2");
@@ -171,7 +176,9 @@ describe("Run poll updates", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Attempt 1" }), { button: 0 });
     expect(sel()).toBe("Attempt 1");
     await wait(2100);
-    expect(screen.getAllByRole("tab").length).toBe(3);
+    expect(
+      within(screen.getByRole("tablist", { name: "Attempts" })).getAllByRole("tab").length,
+    ).toBe(3);
     expect(sel()).toBe("Attempt 1");
   });
 });
@@ -410,5 +417,60 @@ describe("reduced motion", () => {
     render(<Run id="r-par" api={fakeApi(parallelRun)} />);
     await screen.findByLabelText("Unit graph");
     expect(pulse()).toBe("off");
+  });
+});
+
+describe("Run tabs", () => {
+  const answers = {
+    dashboard: parallelRun,
+    planDetail: planDetailFull,
+    diffSummary: diffSummaryOk,
+    runCharts: runChartsFull,
+  };
+  const open = (name: string) =>
+    fireEvent.mouseDown(screen.getByRole("tab", { name }), { button: 0, ctrlKey: false });
+
+  test("Graph is the default of four tabs and nothing else is fetched yet", async () => {
+    const api = stubApi(answers);
+    render(<Run id="r-par" api={api} />);
+    await screen.findByLabelText("Unit graph");
+    const names = screen.getAllByRole("tab").map((t) => t.textContent);
+    expect(names).toEqual(["Graph", "Plan", "Changes", "Charts"]);
+    expect(screen.getByRole("tab", { name: "Graph" }).getAttribute("aria-selected")).toBe("true");
+    expect(api.calls.map((c) => c[0])).toEqual(["dashboard"]);
+  });
+
+  test("each tab fetches its data when first opened", async () => {
+    const api = stubApi(answers);
+    render(<Run id="r-par" api={api} />);
+    await screen.findByLabelText("Unit graph");
+    open("Plan");
+    await screen.findByText("Write the tests");
+    expect(api.calls.some((c) => c[0] === "planDetail" && c[1] === "r-par")).toBe(true);
+    expect(api.calls.some((c) => c[0] === "diffSummary")).toBe(false);
+    open("Changes");
+    await screen.findByText("test_add.sh");
+    expect(api.calls.some((c) => c[0] === "diffSummary")).toBe(true);
+    expect(api.calls.some((c) => c[0] === "runCharts")).toBe(false);
+    open("Charts");
+    await screen.findByLabelText(/attempts of T2/i);
+    expect(screen.queryByLabelText("Unit graph")).toBeNull();
+    open("Graph");
+    await screen.findByLabelText("Unit graph");
+  });
+
+  test("a unit id like constructor reads as pending, not an inherited key", async () => {
+    const odd: Dashboard = {
+      ...parallelRun,
+      plan: {
+        units: [{ id: "constructor", title: "odd", kind: "test", project: "p", depends_on: [] }],
+      },
+      units: [],
+    };
+    render(<Run id="r-odd" api={stubApi({ dashboard: odd })} />);
+    await screen.findByLabelText("Unit graph");
+    expect(node("constructor").getAttribute("data-status")).toBe("pending");
+    fireEvent.click(node("constructor"));
+    expect(document.body.textContent).toContain("pending");
   });
 });

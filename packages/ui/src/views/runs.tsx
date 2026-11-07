@@ -2,6 +2,7 @@ import * as ScrollArea from "@radix-ui/react-scroll-area";
 import { type Api, ApiError } from "../api.ts";
 import { ErrorBanner, runHref } from "../app.tsx";
 import { HighlightRow } from "../components/animate-ui/highlight-row.tsx";
+import { OverviewStrip } from "../components/overview-strip.tsx";
 import { StatusBadge } from "../components/status-badge.tsx";
 import { usePoll } from "../use-poll.ts";
 
@@ -40,6 +41,7 @@ export function Runs({ api }: { api: Api }) {
           {failure.message}
         </p>
       )}
+      {runs && <OverviewStrip api={api} />}
       {loading && !runs && !failure && <p className="text-muted">Loading…</p>}
       {runs && runs.length === 0 && <p className="text-muted">No runs yet.</p>}
       {runs && runs.length > 0 && (

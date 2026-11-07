@@ -1,13 +1,24 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area";
+import * as Tabs from "@radix-ui/react-tabs";
 import { useEffect, useMemo, useState } from "react";
 import { type Api, ApiError } from "../api.ts";
 import { ErrorBanner, runHref } from "../app.tsx";
+import { Changes } from "../components/changes.tsx";
+import { Charts } from "../components/charts.tsx";
+import { PlanReview } from "../components/plan-review.tsx";
 import { StatusBadge } from "../components/status-badge.tsx";
 import { UnitGraph } from "../components/unit-graph.tsx";
 import { type PanelUnit, UnitPanel } from "../components/unit-panel.tsx";
 import { layoutGraph } from "../graph-layout.ts";
 import type { Dashboard } from "../types.ts";
 import { usePoll } from "../use-poll.ts";
+
+const TABS = [
+  ["graph", "Graph"],
+  ["plan", "Plan"],
+  ["changes", "Changes"],
+  ["charts", "Charts"],
+] as const;
 
 const BACK = (
   <a className="text-accent underline" href="#/">
@@ -112,10 +123,13 @@ export function Run({ id, api }: { id: string; api: Api }) {
   const statuses = Object.fromEntries(data.units.map((u) => [u.unit_id, u.status]));
   const titles = Object.fromEntries(data.plan.units.map((u) => [u.id, u.title]));
   const dropped = data.units.filter((u) => !u.in_plan);
+  const live = data.run.status === "running";
+  const status = (id: string) =>
+    Object.hasOwn(statuses, id) ? (statuses[id] as string) : "pending";
   const planned = data.plan.units.find((u) => u.id === selected);
   const droppedSel = dropped.find((u) => u.unit_id === selected);
   const panelUnit: PanelUnit | undefined = planned
-    ? { ...planned, status: statuses[planned.id] ?? "pending", in_plan: true }
+    ? { ...planned, status: status(planned.id), in_plan: true }
     : droppedSel
       ? { id: droppedSel.unit_id, status: droppedSel.status, in_plan: false }
       : undefined;
@@ -124,58 +138,82 @@ export function Run({ id, api }: { id: string; api: Api }) {
     <div>
       <ErrorBanner error={failure} />
       <Header d={data} />
-      <div className="flex flex-col gap-4 lg:flex-row">
-        <div className="min-w-0 flex-1">
-          {data.plan.units.length === 0 ? (
-            <p className="text-muted">No plan yet.</p>
-          ) : (
-            <ScrollArea.Root className="w-full overflow-hidden rounded border border-line">
-              <ScrollArea.Viewport className="w-full">
-                <UnitGraph
-                  layout={layout}
-                  statuses={statuses}
-                  titles={titles}
-                  selected={selected}
-                  onSelect={setSelected}
-                />
-              </ScrollArea.Viewport>
-              <ScrollArea.Scrollbar orientation="horizontal" className="h-2 bg-surface-2">
-                <ScrollArea.Thumb className="rounded bg-line" />
-              </ScrollArea.Scrollbar>
-            </ScrollArea.Root>
-          )}
-          {dropped.length > 0 && (
-            <div className="mt-3">
-              <h2 className="text-sm font-semibold">Not in current plan</h2>
-              <ul className="mt-1 flex flex-wrap gap-2">
-                {dropped.map((u) => (
-                  <li key={u.unit_id}>
-                    <button
-                      type="button"
-                      aria-pressed={selected === u.unit_id}
-                      onClick={() => setSelected(u.unit_id)}
-                      className="cursor-pointer rounded border border-dashed border-line px-2 py-1 text-sm aria-pressed:border-accent aria-pressed:border-solid"
-                    >
-                      {u.unit_id} <span className="text-muted">({u.status})</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+      <Tabs.Root defaultValue="graph">
+        <Tabs.List aria-label="Run views" className="mb-4 flex gap-1 border-b border-line">
+          {TABS.map(([value, label]) => (
+            <Tabs.Trigger
+              key={value}
+              value={value}
+              className="cursor-pointer border-b-2 border-transparent px-3 py-2 text-sm data-[state=active]:border-accent data-[state=active]:font-semibold"
+            >
+              {label}
+            </Tabs.Trigger>
+          ))}
+        </Tabs.List>
+        <Tabs.Content value="graph">
+          <div className="flex flex-col gap-4 lg:flex-row">
+            <div className="min-w-0 flex-1">
+              {data.plan.units.length === 0 ? (
+                <p className="text-muted">No plan yet.</p>
+              ) : (
+                <ScrollArea.Root className="w-full overflow-hidden rounded border border-line">
+                  <ScrollArea.Viewport className="w-full">
+                    <UnitGraph
+                      layout={layout}
+                      statuses={statuses}
+                      titles={titles}
+                      selected={selected}
+                      onSelect={setSelected}
+                    />
+                  </ScrollArea.Viewport>
+                  <ScrollArea.Scrollbar orientation="horizontal" className="h-2 bg-surface-2">
+                    <ScrollArea.Thumb className="rounded bg-line" />
+                  </ScrollArea.Scrollbar>
+                </ScrollArea.Root>
+              )}
+              {dropped.length > 0 && (
+                <div className="mt-3">
+                  <h2 className="text-sm font-semibold">Not in current plan</h2>
+                  <ul className="mt-1 flex flex-wrap gap-2">
+                    {dropped.map((u) => (
+                      <li key={u.unit_id}>
+                        <button
+                          type="button"
+                          aria-pressed={selected === u.unit_id}
+                          onClick={() => setSelected(u.unit_id)}
+                          className="cursor-pointer rounded border border-dashed border-line px-2 py-1 text-sm aria-pressed:border-accent aria-pressed:border-solid"
+                        >
+                          {u.unit_id} <span className="text-muted">({u.status})</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        <div className="min-w-0 lg:w-96">
-          {panelUnit ? (
-            <UnitPanel
-              key={panelUnit.id}
-              unit={panelUnit}
-              attempts={data.attempts.filter((a) => a.unit_id === panelUnit.id)}
-            />
-          ) : (
-            <p className="text-sm text-muted">Select a unit to see its attempts.</p>
-          )}
-        </div>
-      </div>
+            <div className="min-w-0 lg:w-96">
+              {panelUnit ? (
+                <UnitPanel
+                  key={panelUnit.id}
+                  unit={panelUnit}
+                  attempts={data.attempts.filter((a) => a.unit_id === panelUnit.id)}
+                />
+              ) : (
+                <p className="text-sm text-muted">Select a unit to see its attempts.</p>
+              )}
+            </div>
+          </div>
+        </Tabs.Content>
+        <Tabs.Content value="plan">
+          <PlanReview id={id} api={api} live={live} />
+        </Tabs.Content>
+        <Tabs.Content value="changes">
+          <Changes id={id} api={api} live={live} />
+        </Tabs.Content>
+        <Tabs.Content value="charts">
+          <Charts id={id} api={api} live={live} />
+        </Tabs.Content>
+      </Tabs.Root>
     </div>
   );
 }

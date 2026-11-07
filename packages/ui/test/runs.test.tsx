@@ -4,7 +4,8 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { type Api, ApiError } from "../src/api.ts";
 import { StatusBadge } from "../src/components/status-badge.tsx";
 import { Runs } from "../src/views/runs.tsx";
-import { type StatusListFixture, statusList } from "./fixtures.ts";
+import { overviewFull, type StatusListFixture, statusList } from "./fixtures.ts";
+import { stubApi } from "./stub-api.ts";
 
 afterEach(cleanup);
 
@@ -150,5 +151,21 @@ describe("StatusBadge lookup", () => {
       expect(container.querySelector("span")?.className).toContain("text-muted");
       unmount();
     }
+  });
+});
+
+describe("Runs overview strip", () => {
+  test("shows the overview above the table when it answers", async () => {
+    const api = stubApi({ status: statusList, overview: overviewFull });
+    render(<Runs api={api} />);
+    await screen.findByLabelText("Overview");
+    expect(api.calls.map((c) => c[0])).toContain("overview");
+    expect(screen.getByRole("table")).toBeTruthy();
+  });
+
+  test("the runs table still shows when overview fails, and no strip", async () => {
+    render(<Runs api={stubApi({ status: statusList, overview: new ApiError("daemon", "x") })} />);
+    await screen.findByRole("table");
+    expect(screen.queryByLabelText("Overview")).toBeNull();
   });
 });
