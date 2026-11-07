@@ -207,3 +207,19 @@ export function renderComparison(c: Comparison): string {
     c.regressed ? "REGRESSED" : "no regression",
   ].join("\n")}\n`;
 }
+
+/** The overall rates and metric means of a summary, one line each. */
+export function renderSummary(s: Summary): string {
+  const o = s.overall;
+  return `${[
+    `${s.label}: ${s.runs} runs, ${s.errors} errors`,
+    `solved_rate  ${num(o.solved_rate)}  (spread ${num(o.solved_spread)})`,
+    `first_pass_valid_rate  ${num(o.first_pass_valid_rate)}`,
+    `false_escalation_rate  ${num(o.false_escalation_rate)}`,
+    `honest_escalation_rate  ${num(o.honest_escalation_rate)}`,
+    ...METRIC_KEYS.map(
+      (k) =>
+        `${k}  mean ${num(o.metrics[k].mean)}  min ${num(o.metrics[k].min)}  max ${num(o.metrics[k].max)}`,
+    ),
+  ].join("\n")}\n`;
+}

@@ -29,6 +29,9 @@ describe("usage", () => {
       expect(text).toContain("  approve merge <run>");
       expect(text).toContain("--stack-on <run>");
       expect(text).toContain("  doctor");
+      expect(text).toContain("  stats [--since");
+      expect(text).toContain("  eval --suite <dir>");
+      expect(text).toContain("  eval compare <labelA> <labelB>");
       // Node plumbing stays out of the list.
       expect(text).not.toContain("  peer");
     });

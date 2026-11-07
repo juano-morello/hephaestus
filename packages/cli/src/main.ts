@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { loadSuite } from "@hephaestus/core";
 import type { LedgerEvent } from "@hephaestus/ledger";
 import {
   type Hello,
@@ -20,6 +21,17 @@ import {
   loadHomeConfig,
 } from "./config.ts";
 import { type DoctorReport, doctor, doctorText } from "./doctor.ts";
+import {
+  type Comparison,
+  compareLabels,
+  type EvalRunResult,
+  readResults,
+  renderComparison,
+  renderSummary,
+  type Summary,
+  summarize,
+} from "./eval/results.ts";
+import { runEval } from "./eval/run.ts";
 
 export { findWorkspace };
 
@@ -85,6 +97,15 @@ type Flags = {
   /** heph stats: the window (`28d` or a date) and whether to list every run. */
   since?: string;
   list: boolean;
+  /** heph eval and heph eval compare. */
+  suite?: string;
+  task: string[];
+  tag: string[];
+  runs: number;
+  label?: string;
+  out?: string;
+  resume: boolean;
+  failOnRegression: boolean;
   /** heph handoff --wait: seconds, or "attempt" for one attempt's time limit. */
   wait?: Wait;
 };
@@ -519,6 +540,75 @@ const COMMANDS: Record<string, Command<unknown>> = {
       "How many runs reached merge cleanly (SPEC's kill criterion), from this node's ledger",
     ],
   }),
+  /** Runs in this process, not through the daemon: it opens its own runtimes and ledgers. */
+  eval: command<EvalOutput>({
+    run: async (ctx) => {
+      if (!ctx.flags.suite) throw new Error("--suite <dir> is required");
+      const suite = await loadSuite(resolve(ctx.cwd, ctx.flags.suite));
+      const home = homeOf(ctx);
+      const out = ctx.flags.out ? resolve(ctx.cwd, ctx.flags.out) : join(suite.dir, "results");
+      const label =
+        ctx.flags.label ??
+        `eval-${new Date()
+          .toISOString()
+          .replace(/\.\d+Z$/, "Z")
+          .replace(/[-:]/g, "")}`;
+      const r = await runEval({
+        suite,
+        taskIds: ctx.flags.task,
+        tags: ctx.flags.tag,
+        runs: ctx.flags.runs,
+        label,
+        out,
+        resume: ctx.flags.resume,
+        evalHome: join(home, "eval"),
+        realHome: home,
+        ...(ctx.deps ? { deps: ctx.deps } : {}),
+        log: (l) => ctx.stderr(`${l}\n`),
+      });
+      return { label, out, skipped: r.skipped, results: r.results, summary: r.summary };
+    },
+    render: (r) =>
+      `${[
+        ...r.skipped.map((s) => `${s.id}: skipped (${s.reason})`),
+        ...r.results.map(
+          (x) =>
+            `${x.task} run ${x.run}: ${x.status}${x.failures.map((f) => `\n  ${f}`).join("")}${x.error ? `\n  ${x.error}` : ""}`,
+        ),
+        renderSummary(r.summary).trimEnd(),
+        `results: ${join(r.out, r.label)}`,
+      ].join("\n")}\n`,
+    usage: [
+      "eval --suite <dir> [--task <id>]... [--tag <t>]... [--runs N] [--label L] [--out <dir>] [--resume]",
+      "Run a golden-task suite in throwaway workspaces, check the hidden oracle, record the metrics",
+    ],
+  }),
+  "eval compare": command<EvalComparison>({
+    run: async (ctx) => {
+      const a = need(ctx.args, 0, "label A");
+      const b = need(ctx.args, 1, "label B");
+      if (!ctx.flags.out && !ctx.flags.suite)
+        throw new Error("--suite <dir> or --out <dir> is required");
+      const out = ctx.flags.out
+        ? resolve(ctx.cwd, ctx.flags.out)
+        : join(resolve(ctx.cwd, ctx.flags.suite as string), "results");
+      const summaries = [a, b].map((label) => {
+        const results = readResults(out, label);
+        if (!results.length) throw new Error(`no results for label ${label} in ${out}`);
+        return summarize(results, label);
+      }) as [Summary, Summary];
+      return {
+        ...compareLabels(...summaries),
+        fail_on_regression: ctx.flags.failOnRegression,
+      };
+    },
+    render: (c) => renderComparison(c),
+    exitCode: (c) => (c.fail_on_regression && c.regressed ? 1 : 0),
+    usage: [
+      "eval compare <labelA> <labelB> [--suite <dir>] [--out <dir>] [--fail-on-regression]",
+      "Compare two labelled eval runs; --fail-on-regression exits 1 when B is worse beyond the run-to-run spread",
+    ],
+  }),
   watch: command({
     run: (ctx) =>
       withRuntime(ctx, (rt) =>
@@ -823,6 +913,22 @@ function usageText(): string {
   ].join("\n");
 }
 
+/** `--runs N`: a positive integer, 1 when not given. */
+function runsOf(text: string | undefined): number {
+  if (text === undefined) return 1;
+  if (!/^\d+$/.test(text) || Number(text) < 1) throw new Error("--runs takes a positive integer");
+  return Number(text);
+}
+
+type EvalOutput = {
+  label: string;
+  out: string;
+  skipped: { id: string; reason: string }[];
+  results: EvalRunResult[];
+  summary: Summary;
+};
+type EvalComparison = Comparison & { fail_on_regression: boolean };
+
 /** `--set key=value`; the value is parsed as YAML, so numbers and booleans keep their type. */
 function parseSets(sets: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -884,6 +990,14 @@ export async function run(argv: string[], io: Io): Promise<number> {
         help: { type: "boolean", short: "h", default: false },
         tests: { type: "boolean", default: false },
         "no-open": { type: "boolean", default: false },
+        suite: { type: "string" },
+        task: { type: "string", multiple: true, default: [] },
+        tag: { type: "string", multiple: true, default: [] },
+        runs: { type: "string" },
+        label: { type: "string" },
+        out: { type: "string" },
+        resume: { type: "boolean", default: false },
+        "fail-on-regression": { type: "boolean", default: false },
         since: { type: "string" },
         list: { type: "boolean", default: false },
         version: { type: "boolean", default: false },
@@ -913,6 +1027,14 @@ export async function run(argv: string[], io: Io): Promise<number> {
       tests: values.tests ?? false,
       noOpen: values["no-open"] ?? false,
       list: values.list ?? false,
+      task: values.task ?? [],
+      tag: values.tag ?? [],
+      runs: runsOf(values.runs),
+      resume: values.resume ?? false,
+      failOnRegression: values["fail-on-regression"] ?? false,
+      ...(values.suite ? { suite: values.suite } : {}),
+      ...(values.label ? { label: values.label } : {}),
+      ...(values.out ? { out: values.out } : {}),
       ...(values.since ? { since: values.since } : {}),
       ...(waited.wait !== undefined ? { wait: waited.wait } : {}),
       ...(values.home ? { home: values.home } : {}),

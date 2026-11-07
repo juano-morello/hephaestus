@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ResolvedConfig, Suite, SuiteTask } from "@hephaestus/core";
 import { runBranch } from "@hephaestus/engine";
-import { openSandbox, type Sandbox } from "@hephaestus/sandbox";
+import { openSandbox, type Sandbox, type SandboxSpec } from "@hephaestus/sandbox";
 import { loadConfig } from "../config.ts";
 import { type Deps, openRuntime, type Runtime } from "../runtime.ts";
 import { extractMetrics } from "./metrics.ts";
@@ -29,17 +29,20 @@ export type OracleSandbox = (
   project: string,
 ) => Promise<Sandbox>;
 
-const defaultSandbox: OracleSandbox = (config, hostDir, project) =>
-  openSandbox(
-    config.sandbox.mode === "native"
-      ? { mode: "native", hostDir }
-      : {
-          mode: "container",
-          hostDir,
-          image: config.projects[project]?.image ?? config.sandbox.image,
-          runtime: config.sandbox.runtime,
-        },
-  );
+/** The node's sandbox kind, opened with `Deps.sandbox` when a test injects one. */
+const defaultSandbox =
+  (open: (spec: SandboxSpec) => Promise<Sandbox> = openSandbox): OracleSandbox =>
+  (config, hostDir, project) =>
+    open(
+      config.sandbox.mode === "native"
+        ? { mode: "native", hostDir }
+        : {
+            mode: "container",
+            hostDir,
+            image: config.projects[project]?.image ?? config.sandbox.image,
+            runtime: config.sandbox.runtime,
+          },
+    );
 
 /** A label or task id becomes a directory name: nothing that leaves its parent. */
 const segment = (what: string, s: string) => {
@@ -133,7 +136,7 @@ export async function runEvalTask(o: {
       await cloneLocal(src, dst, has ? { branch } : {});
       checkouts[repo] = dst;
     }
-    const open = o.sandboxOf ?? defaultSandbox;
+    const open = o.sandboxOf ?? defaultSandbox(o.deps?.sandbox);
     const verdict = await checkOracle({
       oracle,
       taskDir: o.entry.file.replace(/[/\\][^/\\]*$/, ""),
