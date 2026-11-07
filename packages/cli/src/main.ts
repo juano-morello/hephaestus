@@ -28,10 +28,11 @@ import { daemonAt, startDaemon } from "./daemon.ts";
 import { openHost } from "./host.ts";
 import { type InitResult, initWorkspace } from "./init.ts";
 import { serveStdio } from "./mcp/serve.ts";
-import { explainText } from "./output.ts";
+import { explainText, type Stats } from "./output.ts";
 import { listRoleFiles, type RoleFile } from "./role-files.ts";
 import { type Deps, describe, describeForLog, type Runtime } from "./runtime.ts";
 import { isSchemaName, SCHEMA_NAMES, schemaFor } from "./schema.ts";
+import { statsText } from "./stats.ts";
 import { proveListener, readTrustedUiFile, type UiAssets } from "./ui-server.ts";
 import { hephVersion as heph_version } from "./version.ts";
 import { parseWaitFlag, type Wait } from "./wait-flag.ts";
@@ -81,6 +82,9 @@ type Flags = {
   stackOn?: string;
   tests: boolean;
   noOpen: boolean;
+  /** heph stats: the window (`28d` or a date) and whether to list every run. */
+  since?: string;
+  list: boolean;
   /** heph handoff --wait: seconds, or "attempt" for one attempt's time limit. */
   wait?: Wait;
 };
@@ -115,6 +119,7 @@ function remote(api: Api, follow: (line: string) => void) {
         brief,
         o,
       ),
+    stats: (o: { since?: string; list?: boolean }) => c<Stats>("stats", o),
     planShow: (id: string) => c<ReturnType<Runtime["planShow"]>>("planShow", id),
     dryRun: (id: string) => c<Awaited<ReturnType<Runtime["dryRun"]>>>("dryRun", id),
     revise: (id: string, text: string) =>
@@ -216,9 +221,16 @@ async function withRuntime<T>(
   ctx: Ctx,
   fn: (rt: ReturnType<typeof remote>) => Promise<T> | T,
   progress = false,
+  /** A command about the whole node (heph stats) needs no workspace. */
+  workspaceOptional = false,
 ): Promise<T> {
   const home = homeOf(ctx);
-  const cwd = workspaceOf(ctx);
+  let cwd: string | undefined;
+  try {
+    cwd = workspaceOf(ctx);
+  } catch (e) {
+    if (!workspaceOptional) throw e;
+  }
   const show = progress && !ctx.flags.json ? (l: string) => ctx.stderr(l) : () => {};
   const daemon = ctx.deps ? undefined : await daemonAt(home);
   if (daemon) return fn(remote({ call: (m, a) => daemon.call(m, a, cwd) }, show));
@@ -488,6 +500,24 @@ const COMMANDS: Record<string, Command<unknown>> = {
     run: (ctx) => withRuntime(ctx, (rt) => rt.status(ctx.args[0])),
     render: (s) => statusText(s),
     usage: ["status [<run>]", "List runs, or show one"],
+  }),
+  stats: command<Stats>({
+    run: (ctx) =>
+      withRuntime(
+        ctx,
+        (rt) =>
+          rt.stats({
+            ...(ctx.flags.since ? { since: ctx.flags.since } : {}),
+            ...(ctx.flags.list ? { list: true } : {}),
+          }),
+        false,
+        true,
+      ),
+    render: statsText,
+    usage: [
+      "stats [--since 28d|<date>] [--list]",
+      "How many runs reached merge cleanly (SPEC's kill criterion), from this node's ledger",
+    ],
   }),
   watch: command({
     run: (ctx) =>
@@ -854,6 +884,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
         help: { type: "boolean", short: "h", default: false },
         tests: { type: "boolean", default: false },
         "no-open": { type: "boolean", default: false },
+        since: { type: "string" },
+        list: { type: "boolean", default: false },
         version: { type: "boolean", default: false },
       },
     });
@@ -880,6 +912,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
       dryRun: values["dry-run"] ?? false,
       tests: values.tests ?? false,
       noOpen: values["no-open"] ?? false,
+      list: values.list ?? false,
+      ...(values.since ? { since: values.since } : {}),
       ...(waited.wait !== undefined ? { wait: waited.wait } : {}),
       ...(values.home ? { home: values.home } : {}),
       ...(values.on ? { on: values.on } : {}),

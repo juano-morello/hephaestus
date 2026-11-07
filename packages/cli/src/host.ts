@@ -23,7 +23,7 @@ import {
   type WorkspaceDescription,
 } from "@hephaestus/node";
 import { type HomeConfig, loadConfig } from "./config.ts";
-import { type Deps, openRuntime, overviewOf } from "./runtime.ts";
+import { type Deps, openRuntime, overviewOf, statsOf } from "./runtime.ts";
 import { hephVersion } from "./version.ts";
 
 /** Run commands that change the run: only its owner may carry them out. */
@@ -424,6 +424,8 @@ export function openHost(o: HostOptions) {
         }
         case "overview":
           return overviewOf(ledger);
+        case "stats":
+          return statsOf(ledger, args[0] as { since?: string; list?: boolean } | undefined);
         case "dashboard":
         case "planDetail":
         case "diffSummary":

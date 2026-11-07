@@ -59,8 +59,9 @@ const workers = () => import("@hephaestus/workers");
 import type { LoadedConfig } from "./config.ts";
 import { summarizeDiff } from "./diff-summary.ts";
 import { lockRun } from "./lock.ts";
-import type { DiffSummary, Overview, PlanDetail, RunCharts } from "./output.ts";
+import type { DiffSummary, Overview, PlanDetail, RunCharts, Stats } from "./output.ts";
 import { listRoleFiles, roleInstructions } from "./role-files.ts";
+import { buildStats, parseSince } from "./stats.ts";
 import { attentionLine } from "./watch.ts";
 
 /** Injection points for tests; production uses OMP, the gh CLI and the configured sandboxes. */
@@ -146,6 +147,16 @@ export function overviewOf(ledger: Ledger): Overview {
     tokens: [...tokens.values()].sort((x, y) => x.model.localeCompare(y.model)),
     ...countStops(ledger.read({ types: STOPS })),
   };
+}
+
+/** The kill-criteria report over every run in a ledger (default window 28 days). */
+export function statsOf(ledger: Ledger, o: { since?: string; list?: boolean } = {}): Stats {
+  return buildStats({
+    runs: ledger.runs(),
+    eventsOf: (runId) => ledger.read({ run_id: runId }).map((s) => s.event),
+    since: parseSince(o.since ?? "28d"),
+    ...(o.list ? { list: true } : {}),
+  });
 }
 
 export function newRunId(now = new Date()): string {
@@ -775,6 +786,9 @@ export function openRuntime(opts: {
 
     /** Runs by status, tokens by model, and escalation and stall counts across every run here. */
     overview: (): Overview => overviewOf(ledger),
+
+    /** `heph stats`: the kill-criteria report over this node's runs (default window 28 days). */
+    stats: (o: { since?: string; list?: boolean } = {}): Stats => statsOf(ledger, o),
 
     /** `heph run --dry-run`: what a build would do. Reads only; no event, lock or worktree. */
     async dryRun(runId: string): Promise<Preview> {

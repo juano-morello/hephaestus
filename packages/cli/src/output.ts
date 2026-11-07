@@ -288,6 +288,46 @@ export const Overview = z
   .strict();
 export type Overview = z.infer<typeof Overview>;
 
+/** heph stats: how many runs reached merge cleanly (SPEC section 18's kill criterion). */
+export const Stats = z
+  .object({
+    schema: z.literal(1),
+    since: z.string(),
+    counts: z
+      .object({
+        clean: z.int().nonnegative(),
+        assisted: z.int().nonnegative(),
+        did_not_merge: z.int().nonnegative(),
+        open: z.int().nonnegative(),
+      })
+      .strict(),
+    clean_rate: z.number().min(0).max(1).nullable(),
+    below_threshold: z.boolean().nullable(),
+    assisted_totals: z
+      .object({
+        hints: z.int().nonnegative(),
+        replans: z.int().nonnegative(),
+        escalations: z.int().nonnegative(),
+        stalls: z.int().nonnegative(),
+      })
+      .strict(),
+    runs: z
+      .array(
+        z
+          .object({
+            run_id: z.string(),
+            status: z.string(),
+            class: z.enum(["clean", "assisted", "did_not_merge", "open"]),
+            reasons: z.array(z.string()),
+          })
+          .strict(),
+      )
+      .optional(),
+    footer: z.string(),
+  })
+  .strict();
+export type Stats = z.infer<typeof Stats>;
+
 const DiffFile = z
   .object({
     path: z.string(),
@@ -484,4 +524,5 @@ export const OUTPUT = {
   adopt: Adopted,
   "merge status": MergeResult,
   ui: z.object({ url: z.string(), opened: z.boolean() }).strict(),
+  stats: Stats,
 } as const;
