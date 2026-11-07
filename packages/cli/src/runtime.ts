@@ -49,7 +49,7 @@ import {
   type Worker,
 } from "@hephaestus/engine";
 import { type EventDraft, type Ledger, type LedgerEvent, openLedger } from "@hephaestus/ledger";
-import { openSandbox, removeContainers, type SandboxSpec } from "@hephaestus/sandbox";
+import { openSandbox, removeContainers, type Sandbox, type SandboxSpec } from "@hephaestus/sandbox";
 // OMP (and its native addon) loads only when this node plans or builds: status, sync, peer
 // and the daemon's routing work without it.
 import type { PlannerInput, PlannerResult } from "@hephaestus/workers";
@@ -69,6 +69,8 @@ export type Deps = {
   planner?: (input: PlannerInput) => Promise<PlannerResult>;
   worker?: Worker;
   prs?: PullRequests;
+  /** Opens the sandbox the gates run in (default: the configured one). */
+  sandbox?: (spec: SandboxSpec) => Promise<Sandbox>;
   /** The clock and the wait for a rate limit to pass. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -247,6 +249,7 @@ export function openRuntime(opts: {
         }).spawn(input);
       },
     } satisfies Worker);
+  const openGate = deps.sandbox ?? openSandbox;
   const prs = (): PullRequests => deps.prs ?? ghPullRequests();
   const planner =
     deps.planner ?? (async (input: PlannerInput) => (await workers()).runPlanner(input));
@@ -440,8 +443,8 @@ export function openRuntime(opts: {
         }),
       config: engineConfig,
       worktreesDir: join(opts.home, "worktrees"),
-      gateSandbox: (workdir, t) => openSandbox(sandboxFor(runId, t.project, workdir)),
-      integrationSandbox: (dir) => openSandbox(integrationSpec(runId, dir)),
+      gateSandbox: (workdir, t) => openGate(sandboxFor(runId, t.project, workdir)),
+      integrationSandbox: (dir) => openGate(integrationSpec(runId, dir)),
       reapSandboxes: reapSandboxes(runId),
       prs: prs(),
       brief: c.brief,
@@ -641,7 +644,7 @@ export function openRuntime(opts: {
 
     async newRun(
       briefInput: unknown,
-      o: { runId?: string; stackOn?: string } = {},
+      o: { runId?: string; stackOn?: string; eval?: boolean } = {},
     ): Promise<PlanResult> {
       const brief = Brief.parse(briefInput);
       const gate = briefGate(brief, workspace, projectGates);
@@ -650,7 +653,10 @@ export function openRuntime(opts: {
       const runId = o.runId ?? newRunId();
       if (ledger.run(runId)) throw new Error(`run ${runId} already exists`);
       if (stack.stackOn) resolvableStack(runId, stack.stackOn);
-      createRun(meta(runId, brief, opts.workspaceDir, runId, stack.stackOn));
+      createRun({
+        ...meta(runId, brief, opts.workspaceDir, runId, stack.stackOn),
+        ...(o.eval ? { eval: true } : {}),
+      });
       const result = await plan(runId, brief, opts.workspaceDir, runId);
       return stack.note ? { ...result, note: stack.note } : result;
     },

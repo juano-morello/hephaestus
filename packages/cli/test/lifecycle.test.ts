@@ -18,9 +18,10 @@ import {
 import { type Ledger, openLedger } from "@hephaestus/ledger";
 import { type PlannerInput, type PlannerSession, runPlanner } from "@hephaestus/workers";
 import type { z } from "zod";
+import { loadConfig } from "../src/config.ts";
 import { type Io, run } from "../src/main.ts";
 import { OUTPUT } from "../src/output.ts";
-import type { Deps } from "../src/runtime.ts";
+import { type Deps, openRuntime } from "../src/runtime.ts";
 
 let root: string;
 let ws: string;
@@ -968,5 +969,41 @@ describe("heph lifecycle", () => {
       command: "status",
       error: { message: "no run nope on test-node (heph sync?)" },
     });
+  });
+});
+
+describe("newRun eval option", () => {
+  const open = async () => {
+    await initWithTests();
+    const loaded = await loadConfig({ workspaceDir: ws, home, nodeId: "test-node" });
+    return openRuntime({
+      loaded,
+      workspaceDir: ws,
+      home,
+      deps: { planner: planner([PLAN]).fn },
+    });
+  };
+  const brief = () => Bun.YAML.parse(BRIEF);
+
+  test("eval: true writes the flag on run.created", async () => {
+    const rt = await open();
+    await rt.newRun(brief(), { runId: "E1", eval: true });
+    const created = rt.ledger.read({ run_id: "E1", types: ["run.created"] })[0]?.event.data as {
+      eval: boolean;
+    };
+    expect(created.eval).toBe(true);
+    expect(rt.ledger.run("E1")?.eval).toBe(true);
+    rt.close();
+  });
+
+  test("a run without the option stays eval: false", async () => {
+    const rt = await open();
+    await rt.newRun(brief(), { runId: "E2" });
+    const created = rt.ledger.read({ run_id: "E2", types: ["run.created"] })[0]?.event.data as {
+      eval: boolean;
+    };
+    expect(created.eval).toBe(false);
+    expect(rt.ledger.run("E2")?.eval).toBe(false);
+    rt.close();
   });
 });

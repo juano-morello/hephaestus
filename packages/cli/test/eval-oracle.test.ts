@@ -56,9 +56,15 @@ const oracle = (o: Partial<Oracle> = {}): Oracle => ({
 
 type Script = { codes?: Record<string, number>; timedOut?: string[] };
 function scripted(script: Script = {}) {
-  const log: { hostDir: string; command: string; timeoutMs?: number; disposed: boolean }[] = [];
-  const sandboxOf = async (hostDir: string): Promise<Sandbox> => {
-    const entry = { hostDir, command: "", disposed: false } as (typeof log)[number];
+  const log: {
+    hostDir: string;
+    project?: string;
+    command: string;
+    timeoutMs?: number;
+    disposed: boolean;
+  }[] = [];
+  const sandboxOf = async (hostDir: string, project?: string): Promise<Sandbox> => {
+    const entry = { hostDir, project, command: "", disposed: false } as (typeof log)[number];
     log.push(entry);
     return {
       kind: "native",
@@ -106,6 +112,7 @@ describe("checkOracle", () => {
     expect(c.s.log).toHaveLength(1);
     expect(c.s.log[0]).toMatchObject({
       hostDir: join(checkout, "server"),
+      project: "server",
       command: "go test ./...",
       timeoutMs: 1234,
       disposed: true,

@@ -24,7 +24,8 @@ export async function checkOracle(o: {
   checkoutOf: (repo: string) => string;
   /** Repo name to the pinned sha the run started from. */
   base: Record<string, string>;
-  sandboxOf: (hostDir: string) => Promise<Sandbox>;
+  /** Opens the sandbox for a project's directory (the project's own image, in a container). */
+  sandboxOf: (hostDir: string, project: string) => Promise<Sandbox>;
   timeoutMs: number;
 }): Promise<{ solved: boolean; failures: string[] }> {
   const failures: string[] = [];
@@ -58,7 +59,7 @@ export async function checkOracle(o: {
   }
 
   for (const check of o.oracle.must_pass) {
-    const sandbox = await o.sandboxOf(project(check.project).dir);
+    const sandbox = await o.sandboxOf(project(check.project).dir, check.project);
     try {
       const r = await sandbox.exec(check.run, { timeoutMs: o.timeoutMs });
       if (r.timedOut) failures.push(`must_pass ${check.project}: ${check.run} timed out`);
