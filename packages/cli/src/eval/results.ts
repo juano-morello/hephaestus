@@ -129,49 +129,77 @@ export function summarize(results: EvalRunResult[], label = results[0]?.label ??
     runs: results.length,
     errors: results.filter((r) => r.status === "error").length,
     overall: aggregate(results, true),
-    tasks: Object.fromEntries([...byTask].map(([t, rs]) => [t, aggregate(rs, false)])),
+    tasks: Object.fromEntries([...byTask].map(([t, rs]) => [t, aggregate(rs, true)])),
   };
 }
 
+export type CompareRow = {
+  metric: string;
+  a: number | null;
+  b: number | null;
+  delta: number | null;
+  /** The min-to-max spread of A across its runs; null where none is measured (a rate). */
+  spread_a: number | null;
+};
 export type Comparison = {
   a: string;
   b: string;
-  rows: {
-    metric: string;
-    a: number | null;
-    b: number | null;
-    delta: number | null;
-    spread_a: number;
+  rows: CompareRow[];
+  per_task: {
+    task: string;
+    solved_a: number | null;
+    solved_b: number | null;
+    rows: CompareRow[];
   }[];
-  per_task: { task: string; solved_a: number | null; solved_b: number | null }[];
   regressed: boolean;
 };
 
-export function compareLabels(a: Summary, b: Summary): Comparison {
-  const row = (metric: string, x: number | null, y: number | null, spread_a = 0) => ({
-    metric,
-    a: x,
-    b: y,
-    delta: x === null || y === null ? null : y - x,
-    spread_a,
-  });
-  const rates = [
-    "first_pass_valid_rate",
-    "false_escalation_rate",
-    "honest_escalation_rate",
-  ] as const;
-  const rows = [
-    row("solved_rate", a.overall.solved_rate, b.overall.solved_rate, a.overall.solved_spread),
-    ...rates.map((k) => row(k, a.overall[k], b.overall[k])),
+const row = (
+  metric: string,
+  x: number | null,
+  y: number | null,
+  spread_a: number | null = null,
+): CompareRow => ({
+  metric,
+  a: x,
+  b: y,
+  delta: x === null || y === null ? null : y - x,
+  spread_a,
+});
+
+/** The rates and metric means of two aggregates (either may be missing: a task in one label). */
+function rowsOf(a: Agg | undefined, b: Agg | undefined): CompareRow[] {
+  return [
+    row("solved_rate", a?.solved_rate ?? null, b?.solved_rate ?? null, a?.solved_spread ?? null),
+    row(
+      "first_pass_valid_rate",
+      a?.first_pass_valid_rate ?? null,
+      b?.first_pass_valid_rate ?? null,
+    ),
+    row(
+      "false_escalation_rate",
+      a?.false_escalation_rate ?? null,
+      b?.false_escalation_rate ?? null,
+    ),
+    row(
+      "honest_escalation_rate",
+      a?.honest_escalation_rate ?? null,
+      b?.honest_escalation_rate ?? null,
+    ),
     ...METRIC_KEYS.map((k) =>
       row(
         k,
-        a.overall.metrics[k].mean,
-        b.overall.metrics[k].mean,
-        a.overall.metrics[k].max - a.overall.metrics[k].min,
+        a ? a.metrics[k].mean : null,
+        b ? b.metrics[k].mean : null,
+        a ? a.metrics[k].max - a.metrics[k].min : null,
       ),
     ),
   ];
+}
+
+const errorRate = (s: Summary) => (s.runs ? s.errors / s.runs : 0);
+
+export function compareLabels(a: Summary, b: Summary): Comparison {
   const tasks = [...new Set([...Object.keys(a.tasks), ...Object.keys(b.tasks)])].sort();
   const solvedBeyondSpread =
     a.overall.solved_rate !== null &&
@@ -181,16 +209,20 @@ export function compareLabels(a: Summary, b: Summary): Comparison {
     a.overall.first_pass_valid_rate !== null &&
     b.overall.first_pass_valid_rate !== null &&
     b.overall.first_pass_valid_rate < a.overall.first_pass_valid_rate;
+  // Runs that error are left out of every rate, so more of them must count on their own: a label
+  // whose runs all errored has no rate to drop.
+  const moreErrors = errorRate(b) > errorRate(a);
   return {
     a: a.label,
     b: b.label,
-    rows,
+    rows: [...rowsOf(a.overall, b.overall), row("error_rate", errorRate(a), errorRate(b))],
     per_task: tasks.map((task) => ({
       task,
       solved_a: a.tasks[task]?.solved_rate ?? null,
       solved_b: b.tasks[task]?.solved_rate ?? null,
+      rows: rowsOf(a.tasks[task], b.tasks[task]),
     })),
-    regressed: solvedBeyondSpread || validityDropped,
+    regressed: solvedBeyondSpread || validityDropped || moreErrors,
   };
 }
 
@@ -202,8 +234,16 @@ export function renderComparison(c: Comparison): string {
     ...c.rows.map(
       (r) => `${r.metric}  ${num(r.a)}  ${num(r.b)}  ${num(r.delta)}  (spread ${num(r.spread_a)})`,
     ),
-    "per task, solved rate:",
-    ...c.per_task.map((t) => `${t.task}  solved  ${num(t.solved_a)}  ${num(t.solved_b)}`),
+    "per task:",
+    ...c.per_task.flatMap((t) => [
+      `${t.task}  solved  ${num(t.solved_a)}  ${num(t.solved_b)}`,
+      ...t.rows
+        .filter((r) => r.metric !== "solved_rate")
+        .map(
+          (r) =>
+            `  ${r.metric}  ${num(r.a)}  ${num(r.b)}  ${num(r.delta)}  (spread ${num(r.spread_a)})`,
+        ),
+    ]),
     c.regressed ? "REGRESSED" : "no regression",
   ].join("\n")}\n`;
 }

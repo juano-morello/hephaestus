@@ -99,7 +99,9 @@ describe("summarize", () => {
     expect(s.overall.metrics.attempts_per_unit).toEqual({ mean: 2, min: 1, max: 3 });
     expect(s.tasks.t1?.solved_rate).toBe(0.5);
     expect(s.tasks.t2?.solved_rate).toBe(1);
-    expect(s.tasks.t1?.solved_spread).toBe(0);
+    // One run per index: t1 solved at index 1 and not at 2.
+    expect(s.tasks.t1?.solved_spread).toBe(1);
+    expect(s.tasks.t2?.solved_spread).toBe(0);
     expect(s.tasks.t1?.metrics.tokens).toEqual({ mean: 150, min: 100, max: 200 });
     // A task whose only run errored has a row, with null rates.
     expect(s.tasks.t3).toMatchObject({ n: 0, solved_rate: null });
@@ -161,10 +163,14 @@ describe("compareLabels", () => {
     const row = (m: string) => c.rows.find((r) => r.metric === m);
     expect(row("solved_rate")).toMatchObject({ a: 0.75, b: 0.5, delta: -0.25, spread_a: 0.5 });
     expect(row("tokens")).toMatchObject({ a: 100, b: 300, delta: 200, spread_a: 0 });
-    expect(c.per_task).toEqual([
-      { task: "t1", solved_a: 1, solved_b: 1 },
-      { task: "t2", solved_a: 0.5, solved_b: 0 },
+    expect(c.per_task.map((t) => [t.task, t.solved_a, t.solved_b])).toEqual([
+      ["t1", 1, 1],
+      ["t2", 0.5, 0],
     ]);
+    const t2tokens = c.per_task
+      .find((t) => t.task === "t2")
+      ?.rows.find((r) => r.metric === "tokens");
+    expect(t2tokens).toMatchObject({ a: 100, b: 300, delta: 200, spread_a: 0 });
   });
 
   test("a solved-rate drop within the spread is not a regression, beyond it is", () => {
@@ -195,11 +201,9 @@ describe("compareLabels", () => {
 
   test("a task present in only one label shows null on the other side", () => {
     const B = sum("B", [["t9", 1, "solved"]]);
-    expect(compareLabels(A, B).per_task.find((t) => t.task === "t9")).toEqual({
-      task: "t9",
-      solved_a: null,
-      solved_b: 1,
-    });
+    const t9 = compareLabels(A, B).per_task.find((t) => t.task === "t9");
+    expect(t9).toMatchObject({ task: "t9", solved_a: null, solved_b: 1 });
+    expect(t9?.rows.find((r) => r.metric === "tokens")).toMatchObject({ a: null, b: 100 });
   });
 
   test("renderComparison prints a line per row, the per-task rates and the verdict", () => {
@@ -213,5 +217,26 @@ describe("compareLabels", () => {
     expect(text.trimEnd().endsWith("REGRESSED")).toBe(true);
     const ok = renderComparison(compareLabels(A, A));
     expect(ok.trimEnd().endsWith("no regression")).toBe(true);
+  });
+
+  test("a label whose runs all errored regresses against a clean one", () => {
+    const ok = sum("A", [["t1", 1, "solved"]]);
+    const broken = summarize([mk("t1", 1, "error", null, "B")], "B");
+    const c = compareLabels(ok, broken);
+    expect(c.regressed).toBe(true);
+    expect(c.rows.find((r) => r.metric === "error_rate")).toMatchObject({ a: 0, b: 1 });
+  });
+
+  test("more erroring runs than before regresses even when the solved rate holds", () => {
+    const a = summarize([mk("t1", 1, "solved"), mk("t1", 2, "solved")], "A");
+    const b = summarize([mk("t1", 1, "solved"), mk("t1", 2, "error", null, "B")], "B");
+    expect(compareLabels(a, b).regressed).toBe(true);
+    expect(compareLabels(a, a).regressed).toBe(false);
+  });
+
+  test("rows with no measured spread say so instead of printing 0", () => {
+    const c = compareLabels(A, A);
+    expect(c.rows.find((r) => r.metric === "first_pass_valid_rate")?.spread_a).toBeNull();
+    expect(renderComparison(c)).toContain("first_pass_valid_rate  1  1  0  (spread n/a)");
   });
 });

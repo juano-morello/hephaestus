@@ -157,6 +157,15 @@ describe("checkOracle", () => {
     expect(r.failures).toEqual(["must_not_touch server: persistence/db.go"]);
   });
 
+  test("a rename out of a forbidden path is a violation of the old path", async () => {
+    git(checkout, "mv", "server/persistence/db.go", "server/db.go");
+    git(checkout, "commit", "-qm", "moved");
+    const o = oracle({ must_not_touch: [{ project: "server", paths: ["persistence/**"] }] });
+    const r = await check(o).run();
+    expect(r.solved).toBe(false);
+    expect(r.failures).toEqual(["must_not_touch server: persistence/db.go"]);
+  });
+
   test("a file outside the project is not a violation of that project's paths", async () => {
     change({ "README.md": "hello\n" });
     const o = oracle({ must_not_touch: [{ project: "server", paths: ["**"] }] });

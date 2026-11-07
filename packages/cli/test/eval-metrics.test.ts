@@ -81,7 +81,8 @@ describe("extractMetrics", () => {
     ledger.appendMany([created("N")]);
     expect(extractMetrics(ledger, "A", 1).first_pass_valid).toBe(true);
     expect(extractMetrics(ledger, "B", 1).first_pass_valid).toBe(false);
-    expect(extractMetrics(ledger, "C", 1).first_pass_valid).toBe(false);
+    // An honest escalation is not an invalid plan.
+    expect(extractMetrics(ledger, "C", 1).first_pass_valid).toBeNull();
     expect(extractMetrics(ledger, "N", 1).first_pass_valid).toBeNull();
   });
 

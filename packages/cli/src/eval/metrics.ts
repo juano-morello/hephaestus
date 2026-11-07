@@ -15,6 +15,9 @@ export type RunMetrics = {
   wall_ms: number;
 };
 
+const validity = (answer: { outcome?: string } | undefined): boolean | null =>
+  !answer || answer.outcome === "escalated" ? null : answer.outcome === "valid";
+
 export function extractMetrics(ledger: Ledger, runId: string, wallMs: number): RunMetrics {
   const events = ledger.read({ run_id: runId }).map((s) => s.event);
   const count = (type: string) => events.filter((e) => e.type === type).length;
@@ -22,7 +25,8 @@ export function extractMetrics(ledger: Ledger, runId: string, wallMs: number): R
   const units = ledger.units(runId).length;
   const attempts = ledger.attempts(runId);
   return {
-    first_pass_valid: first ? (first.data as { outcome?: string }).outcome === "valid" : null,
+    // An honest escalation is no plan at all, so it says nothing about plan validity.
+    first_pass_valid: validity(first?.data as { outcome?: string } | undefined),
     units,
     attempts: attempts.length,
     attempts_per_unit: units ? attempts.length / units : 0,

@@ -40,7 +40,9 @@ export async function checkOracle(o: {
     const p = project(entry.project);
     const sha = o.base[p.repo];
     if (!sha) throw new Error(`oracle: no pinned commit for repo ${p.repo}`);
-    const changed = (await git(o.checkoutOf(p.repo), "diff", "--name-only", `${sha}..HEAD`))
+    const changed = (
+      await git(o.checkoutOf(p.repo), "diff", "--name-only", "--no-renames", `${sha}..HEAD`)
+    )
       .split("\n")
       .filter(Boolean);
     const prefix = p.path === "." ? "" : `${p.path.replace(/^\.\//, "").replace(/\/+$/, "")}/`;

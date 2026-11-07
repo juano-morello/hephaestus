@@ -255,6 +255,19 @@ describe("runEval", () => {
     expect(r.skipped.map((s) => s.id).sort()).toEqual(["broken.yaml", "todo"].sort());
   });
 
+  test("a task id that is not a safe directory name is skipped, the others still run", async () => {
+    put(
+      join(suiteDir, "evals", "slashed.yaml"),
+      readFileSync(join(suiteDir, "evals", "solve.yaml"), "utf8").replace("id: solve", "id: a/b"),
+    );
+    const r = await evalRun(
+      { taskIds: ["a/b", "solve"] },
+      { planner: planner([PLAN]).fn, worker: worker().w },
+    );
+    expect(r.skipped).toEqual([{ id: "a/b", reason: expect.stringMatching(/^invalid: task id/) }]);
+    expect(r.results.map((x) => x.task)).toEqual(["solve"]);
+  });
+
   test("filters by tag", async () => {
     const r = await evalRun(
       { tags: ["fast"] },

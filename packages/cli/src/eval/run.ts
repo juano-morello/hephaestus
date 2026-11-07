@@ -45,8 +45,9 @@ const defaultSandbox =
     );
 
 /** A label or task id becomes a directory name: nothing that leaves its parent. */
+const SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const segment = (what: string, s: string) => {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s) || s.includes(".."))
+  if (!SAFE.test(s) || s.includes(".."))
     throw new Error(`${what} "${s}" must be letters, digits, '.', '_' or '-'`);
   return s;
 };
@@ -182,7 +183,13 @@ export async function runEval(o: {
   });
   const ready: SuiteTask[] = [];
   for (const t of wanted) {
-    if (t.check.status === "ready") ready.push(t);
+    const id = t.task?.id ?? "";
+    if (t.check.status === "ready" && !SAFE.test(id))
+      skipped.push({
+        id,
+        reason: `invalid: task id "${id}" must be letters, digits, '.', '_' or '-'`,
+      });
+    else if (t.check.status === "ready") ready.push(t);
     else
       skipped.push({
         id: t.check.id,
