@@ -246,8 +246,10 @@ export function openHost(o: HostOptions) {
       .finally(() => {
         job.done = true;
         // A rate limit pauses the build; the daemon is the scheduler, so it goes again (the
-        // build itself waits for retry_after first). SPEC section 13.
-        if (o.daemon && !controller.signal.aborted && rateLimited(runId)) void startJob(runId);
+        // build itself waits for retry_after first). SPEC section 13. Not after a stop or a drain
+        // (a handoff that waits): the run is leaving this node.
+        if (o.daemon && !controller.signal.aborted && !drain.signal.aborted && rateLimited(runId))
+          void startJob(runId);
       });
     jobs.set(runId, job);
     return { run_id: runId, started: true, ...after };

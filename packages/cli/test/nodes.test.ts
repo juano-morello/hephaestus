@@ -391,7 +391,11 @@ describe("handing a run off with --wait", () => {
    * starts: "finish" ignores the abort and completes after a short while, "until-aborted" only
    * returns when its signal aborts.
    */
-  async function handOffWhileBuilding(hold: "finish" | "until-aborted", wait?: number) {
+  async function handOffWhileBuilding(
+    hold: "finish" | "until-aborted" | "rate-limited",
+    wait?: number,
+    slept?: number[],
+  ) {
     await heph(["init", "--force"]);
     put(
       join(ws, ".heph", "config.yaml"),
@@ -411,6 +415,17 @@ describe("handing a run off with --wait", () => {
           await Bun.sleep(200);
           return scripted.spawn(input);
         }
+        if (hold === "rate-limited") {
+          await Bun.sleep(100);
+          return {
+            output: undefined,
+            transcript: "",
+            usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+            exit: "rate_limited",
+            // Short, because the new owner really waits it out before it resumes the run.
+            retry_after: new Date(Date.now() + 300).toISOString(),
+          };
+        }
         while (!input.signal?.aborted) await Bun.sleep(5);
         return {
           output: undefined,
@@ -423,7 +438,12 @@ describe("handing a run off with --wait", () => {
     const mbp = openHost({
       home: homeA,
       config: await loadHomeConfig(homeA),
-      deps: { ...deps, worker, prs },
+      deps: {
+        ...deps,
+        worker,
+        prs,
+        ...(slept ? { sleep: async (ms: number) => void slept.push(ms) } : {}),
+      },
       daemon: true,
       connect: () => localTransport(denver.peerMethods()),
     });
@@ -468,6 +488,16 @@ describe("handing a run off with --wait", () => {
     const handedOff = events.findIndex((e) => e.type === "run.handed_off" && e.node_id === "mbp");
     expect(handedOff).toBeGreaterThan(at("unit.attempt.finished", "mbp"));
     expect(events.some((e) => e.type === "run.resumed" && e.node_id === "denver")).toBe(true);
+  }, 60_000);
+
+  test("a rate limit during the wait does not restart the build on the old node", async () => {
+    const slept: number[] = [];
+    const events = await handOffWhileBuilding("rate-limited", 30, slept);
+    // The drained build ended rate limited; the daemon must not start it again (it would sleep
+    // out the retry_after and then build a run that is no longer its own).
+    expect(slept).toEqual([]);
+    expect(events.some((e) => e.type === "run.handed_off" && e.node_id === "mbp")).toBe(true);
+    expect(events.some((e) => e.type === "run.resumed" && e.node_id === "mbp")).toBe(false);
   }, 60_000);
 
   test("a wait shorter than the attempt interrupts it, and denver redoes it", async () => {

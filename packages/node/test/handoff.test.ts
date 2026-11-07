@@ -215,7 +215,7 @@ describe("handoff", () => {
       n.a.close();
       n.b.close();
     }
-  });
+  }, 30_000);
 
   test("a run handed off mid-build is finished by the new owner without redoing accepted units", async () => {
     const n = await twoNodes();
