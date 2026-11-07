@@ -10,7 +10,7 @@ type El = {
   style: { setProperty(k: string, v: string): void };
   setAttribute(k: string, v: string): void;
 };
-type Doc = { documentElement: El };
+type Doc = { documentElement: El & { scrollWidth?: number; scrollHeight?: number } };
 
 export type ToolResult = {
   content?: { type: string; text?: string }[];
@@ -24,6 +24,8 @@ export type Host = {
   hasServerTools: boolean;
   /** Called with every tool result the host pushes; a result that came earlier is replayed. */
   onToolResult(fn: (r: ToolResult) => void): void;
+  /** Tell the host how big the page is (ui/notifications/size-changed); a no-op when the host fixed the height. */
+  reportSize(): void;
 };
 
 const rec = (v: unknown): Record<string, unknown> | undefined =>
@@ -39,7 +41,11 @@ function applyContext(doc: Doc, ctx: unknown): void {
   if (vars)
     for (const [k, v] of Object.entries(vars))
       if (k.startsWith("--") && typeof v === "string") doc.documentElement.style.setProperty(k, v);
-  if (typeof c.theme === "string") doc.documentElement.setAttribute("data-theme", c.theme);
+  if (typeof c.theme === "string") {
+    doc.documentElement.setAttribute("data-theme", c.theme);
+    if (c.theme === "light" || c.theme === "dark")
+      doc.documentElement.style.setProperty("color-scheme", c.theme);
+  }
 }
 
 export function connectHost(win: Win, doc: Doc, app: { name: string; version: string }): Host {
@@ -47,11 +53,21 @@ export function connectHost(win: Win, doc: Doc, app: { name: string; version: st
   const pending = new Map<number, { ok(r: unknown): void; fail(e: Error): void }>();
   let handler: ((r: ToolResult) => void) | undefined;
   let early: ToolResult | undefined;
+  let fixedHeight = false;
   const send = (msg: unknown) => win.parent.postMessage(msg, "*");
 
   const host: Host = {
     hasServerTools: false,
     ready: Promise.resolve(),
+    reportSize() {
+      if (fixedHeight) return;
+      const e = doc.documentElement;
+      send({
+        jsonrpc: "2.0",
+        method: "ui/notifications/size-changed",
+        params: { width: e.scrollWidth ?? 0, height: e.scrollHeight ?? 0 },
+      });
+    },
     onToolResult(fn) {
       handler = fn;
       if (early) {
@@ -66,7 +82,7 @@ export function connectHost(win: Win, doc: Doc, app: { name: string; version: st
     if (ev.source !== win.parent) return;
     const m = rec(ev.data);
     if (!m) return;
-    const id = typeof m.id === "number" ? m.id : undefined;
+    const id = typeof m.id === "number" || typeof m.id === "string" ? m.id : undefined;
     if (typeof m.method === "string") {
       // A request from the host: answer it, we have nothing to say. A notification: act on it.
       if (id !== undefined) send({ jsonrpc: "2.0", id, result: {} });
@@ -76,9 +92,9 @@ export function connectHost(win: Win, doc: Doc, app: { name: string; version: st
         else early = r;
       } else if (m.method === "ui/notifications/host-context-changed") applyContext(doc, m.params);
     } else if (id !== undefined) {
-      const p = pending.get(id);
+      const p = typeof id === "number" ? pending.get(id) : undefined;
       if (!p) return;
-      pending.delete(id);
+      pending.delete(id as number);
       const err = rec(m.error);
       if (err) p.fail(new Error(typeof err.message === "string" ? err.message : "host error"));
       else p.ok(m.result);
@@ -98,6 +114,7 @@ export function connectHost(win: Win, doc: Doc, app: { name: string; version: st
     const r = rec(result);
     host.hasServerTools = rec(r?.hostCapabilities)?.serverTools !== undefined;
     applyContext(doc, r?.hostContext);
+    fixedHeight = typeof rec(rec(r?.hostContext)?.containerDimensions)?.height === "number";
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
   });
   return host;

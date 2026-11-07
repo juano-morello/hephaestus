@@ -10,6 +10,8 @@ export class FakeEl {
     },
   };
   className = "";
+  scrollWidth = 320;
+  scrollHeight = 480;
   private text = "";
   isText = false;
   constructor(public tag: string) {}
@@ -66,7 +68,7 @@ for (const p of ["innerHTML", "outerHTML"])
 
 export type Sent = {
   jsonrpc: string;
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: unknown;
   result?: unknown;
@@ -76,6 +78,7 @@ export type FakeHostOpts = {
   hostCapabilities?: Record<string, unknown>;
   variables?: Record<string, string>;
   theme?: string;
+  containerDimensions?: Record<string, unknown>;
   /** Do not answer ui/initialize. */
   silent?: boolean;
 };
@@ -101,6 +104,9 @@ export function fakeHost(opts: FakeHostOpts = {}) {
               hostInfo: { name: "fake-host", version: "1" },
               hostContext: {
                 theme: opts.theme ?? "light",
+                ...(opts.containerDimensions
+                  ? { containerDimensions: opts.containerDimensions }
+                  : {}),
                 styles: { variables: opts.variables ?? {} },
               },
             },

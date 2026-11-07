@@ -118,12 +118,34 @@ describe("plan widget", () => {
     expect(f.body.byClass("task")).toHaveLength(1);
   });
 
+  test("reports its size after rendering", async () => {
+    const f = await render(plan());
+    expect(f.sent.some((m) => m.method === "ui/notifications/size-changed")).toBe(true);
+  });
+
+  test("a refused initialize leaves a note", async () => {
+    const f = fakeHost({ silent: true });
+    mountPlan(f.win as never, f.doc as never);
+    await f.tick();
+    f.deliver({ jsonrpc: "2.0", id: f.sent[0]?.id, error: { code: -1, message: "no" } });
+    await f.tick();
+    expect(all(f)).toContain("supports MCP Apps");
+  });
+
+  test("no event-handler attributes or button roles anywhere", async () => {
+    const f = await render(plan());
+    const bad = f.body.find((e) =>
+      Object.keys(e.attrs).some((k) => k.startsWith("on") || k === "role"),
+    );
+    expect(bad).toEqual([]);
+  });
+
   test("applies host colours", async () => {
     const f = await render(plan(), "x", { variables: { "--color-text-primary": "#abc" } });
     expect(f.root.style.props["--color-text-primary"]).toBe("#abc");
   });
 
-  test("shows a waiting message until the result arrives, and a note if the host never speaks", async () => {
+  test("shows a waiting message until the result arrives", async () => {
     const f = fakeHost();
     mountPlan(f.win as never, f.doc as never);
     expect(all(f)).toContain("Waiting");

@@ -41,7 +41,10 @@ describe("the MCP App host helper", () => {
     });
     const host = connectHost(f.win as never, f.doc as never, { name: "t", version: "1" });
     await host.ready;
-    expect(f.root.style.props).toEqual({ "--color-background-primary": "#111" });
+    expect(f.root.style.props).toEqual({
+      "--color-background-primary": "#111",
+      "color-scheme": "dark",
+    });
     expect(f.root.attrs["data-theme"]).toBe("dark");
   });
 
@@ -101,5 +104,38 @@ describe("the MCP App host helper", () => {
     await f.tick();
     f.deliver({ jsonrpc: "2.0", id: f.sent[0]?.id, error: { code: -32601, message: "nope" } });
     await expect(host.ready).rejects.toThrow("nope");
+  });
+
+  test("string ids on host requests are answered too", async () => {
+    const f = fakeHost();
+    const host = connectHost(f.win as never, f.doc as never, { name: "t", version: "1" });
+    await host.ready;
+    f.deliver({ jsonrpc: "2.0", id: "abc", method: "ui/resource-teardown", params: {} });
+    expect(f.sent.at(-1)).toEqual({ jsonrpc: "2.0", id: "abc", result: {} });
+  });
+
+  test("the host's theme sets color-scheme", async () => {
+    const f = fakeHost({ theme: "dark" });
+    const host = connectHost(f.win as never, f.doc as never, { name: "t", version: "1" });
+    await host.ready;
+    expect(f.root.style.props["color-scheme"]).toBe("dark");
+  });
+
+  test("reportSize sends size-changed with the document size, unless the host fixed the height", async () => {
+    const f = fakeHost();
+    const host = connectHost(f.win as never, f.doc as never, { name: "t", version: "1" });
+    await host.ready;
+    host.reportSize();
+    expect(f.sent.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      method: "ui/notifications/size-changed",
+      params: { width: 320, height: 480 },
+    });
+    const g = fakeHost({ containerDimensions: { height: 600 } });
+    const fixed = connectHost(g.win as never, g.doc as never, { name: "t", version: "1" });
+    await fixed.ready;
+    const n = g.sent.length;
+    fixed.reportSize();
+    expect(g.sent.length).toBe(n);
   });
 });

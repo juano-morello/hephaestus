@@ -747,7 +747,7 @@ Sub-project H, first MCP Apps widget. No spec file; SPEC section 16 has the as-b
 
 **Spike (2026-11-07).** A throwaway stdio server with one tool carrying `_meta.ui.resourceUri` and one `ui://` resource, plus a page that did the handshake and logged everything. Findings: the Claude desktop app's Code tab and Codex both render the page from a stdio server (no HTTP transport needed); only Codex supports a page-initiated `tools/call` (`serverTools` in `hostCapabilities`); the Claude desktop app answers it with `-32603 IPC not available for MCP tool call`. The page must answer host requests with an empty result, and render from `tool-result`'s `structuredContent`. The spike is not in the repo.
 
-**Built.** `packages/cli/src/mcp/app/`: `host.ts` (handshake, theme variables, `hasServerTools`, `onToolResult`; messages from any window but the parent are ignored), `plan.ts` (the widget, read-only), `plan.html` (template with the CSS), `plan-main.ts` (entry). `packages/cli/scripts/build-apps.ts` (`bun run build:apps`) bundles with `Bun.build` and inlines into the template, writing `generated.ts`, which `tools.ts` serves as `ui://heph/plan`. The generated page is about 6 KB.
+**Built.** `packages/cli/src/mcp/app/`: `host.ts` (handshake, theme variables and `color-scheme`, `hasServerTools`, `onToolResult`, `reportSize` for `size-changed`; messages from any window but the parent are ignored), `plan.ts` (the widget, read-only), `plan.html` (template with the CSS), `plan-main.ts` (entry). `packages/cli/scripts/build-apps.ts` (`bun run build:apps`) bundles with `Bun.build` and inlines into the template, writing `generated.ts`, which `tools.ts` serves as `ui://heph/plan`. The generated page is about 6 KB.
 
 **Decisions.**
 - *No actions in v1.* The page has no buttons or links, and there is no approve path anywhere (V1.5). `hasServerTools` exists and is tested so the run view can offer Refresh only where the host allows it, but nothing uses it yet.
@@ -757,5 +757,7 @@ Sub-project H, first MCP Apps widget. No spec file; SPEC section 16 has the as-b
 - *Generated file checked in, with a sync test.* `heph mcp` needs no runtime files and the compiled binary needs no asset handling. The test rebuilds and compares, so a bun upgrade (minifier output) or a source edit needs `bun run build:apps`. `generated.ts` is excluded from biome.
 
 **Limits.** Not verified in a real host from the agent sandbox: verified with a real `heph mcp` process and an SDK client (tool `_meta`, resource MIME) and a fake host. How the page looks in Claude desktop or Codex (colours from their variables, iframe height) is the user's check.
+
+**Review (2026-11-07).** A fresh whole-branch review found the page never sent `size-changed` (a flexible-height host could clip it): fixed. Also fixed: string request ids, `color-scheme` follows the host theme, the approve command in a `<code>`. Left: a task with a duplicate id in the plan is shown once; the fake DOM does not model every way to add markup (it throws on the common ones, and tests assert no `on*` attributes or roles).
 
 **Not built.** The run view (with Refresh where `serverTools` exists), the other widgets, approve in any form.

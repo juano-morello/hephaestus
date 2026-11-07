@@ -33,6 +33,11 @@ describe("generated plan page", () => {
       },
     });
     expect(f.body.textContent).toContain("r1");
-    expect(f.sent.map((m) => m.method)).toEqual(["ui/initialize", "ui/notifications/initialized"]);
+    const methods = f.sent.map((m) => m.method);
+    expect(methods.filter((m) => m !== "ui/notifications/size-changed")).toEqual([
+      "ui/initialize",
+      "ui/notifications/initialized",
+    ]);
+    expect(methods).toContain("ui/notifications/size-changed");
   });
 });

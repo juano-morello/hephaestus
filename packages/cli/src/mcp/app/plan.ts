@@ -107,7 +107,11 @@ export function mountPlan(win: Win, doc: Doc): void {
     return ul;
   };
 
-  const show = (...nodes: El[]) => doc.body.replaceChildren(...nodes);
+  let host: ReturnType<typeof connectHost> | undefined;
+  const show = (...nodes: El[]) => {
+    doc.body.replaceChildren(...nodes);
+    host?.reportSize();
+  };
   show(el("p", "muted", "Waiting for the plan…"));
 
   const render = (r: ToolResult) => {
@@ -159,19 +163,21 @@ export function mountPlan(win: Win, doc: Doc): void {
       ),
     );
     if (plan.risks.length) parts.push(section("Risks", list("risks", plan.risks)));
-    parts.push(
-      el(
-        "p",
-        "note",
-        plan.approved
-          ? "This plan is approved. Approval happens outside the chat (heph approve plan)."
-          : `Approval happens outside the chat: run  heph approve plan ${plan.run_id}  in a terminal.`,
-      ),
-    );
+    const note = el("p", "note");
+    if (plan.approved)
+      note.append("This plan is approved. Approval happens outside the chat (heph approve plan).");
+    else
+      note.append(
+        "Approval happens outside the chat: run ",
+        el("code", "cmd", `heph approve plan ${plan.run_id}`),
+        " in a terminal.",
+      );
+    parts.push(note);
     show(...parts);
   };
 
-  const host = connectHost(win, doc, { name: "heph-plan", version: "1" });
-  host.onToolResult(render);
-  host.ready.catch(() => show(el("p", "muted", "This page needs a host that supports MCP Apps.")));
+  const h = connectHost(win, doc, { name: "heph-plan", version: "1" });
+  host = h;
+  h.onToolResult(render);
+  h.ready.catch(() => show(el("p", "muted", "This page needs a host that supports MCP Apps.")));
 }
