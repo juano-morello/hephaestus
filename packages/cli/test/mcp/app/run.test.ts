@@ -401,6 +401,13 @@ describe("run widget: the list", () => {
     expect(f.body.byClass("unit")).toHaveLength(0);
   });
 
+  test("a row with a command also says why", async () => {
+    const { f } = await mount(list(rows));
+    const first = f.body.byClass("run-row")[0];
+    expect(first?.textContent).toContain("plan ready, approve it");
+    expect(first?.textContent).toContain("heph approve plan r2");
+  });
+
   test("an empty list says so", async () => {
     const { f } = await mount(list([]));
     expect(text(f)).toContain("No runs");
@@ -565,6 +572,24 @@ describe("run widget: capability gating", () => {
     );
     expect(f.body.byClass("badge")[0]?.textContent).toBe("finished");
     expect(t.active()).toBe(0);
+  });
+
+  test("a result pushed during a refresh wins even when the refresh then fails", async () => {
+    for (const how of ["isError", "throw"]) {
+      const { f } = await mount(one(), withTools);
+      await f.tick();
+      buttons(f)[0]?.click();
+      f.notify(
+        "ui/notifications/tool-result",
+        result(one({ run: { run_id: "r1", status: "paused" } })),
+      );
+      if (how === "isError")
+        answerNext(f, { isError: true, content: [{ type: "text", text: "boom" }] });
+      else answerNext(f, undefined, "IPC not available");
+      await f.tick();
+      expect(f.body.byClass("error")).toHaveLength(0);
+      expect(f.body.byClass("badge")[0]?.textContent).toBe("paused");
+    }
   });
 
   test("an unchanged poll does not redraw (expanded cards stay open)", async () => {

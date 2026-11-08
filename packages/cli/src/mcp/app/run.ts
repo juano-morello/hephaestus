@@ -484,7 +484,7 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
       status.append(el("span", `badge ${runTone(r.status)}`, r.status));
       const last = el("td", "");
       if (n) {
-        if (n.cmd) last.append(el("code", "cmd", n.cmd));
+        if (n.cmd) last.append(`${n.text} `, el("code", "cmd", n.cmd));
         else last.append(n.text);
       }
       tr.append(el("td", "run-id", r.run_id), status, el("td", "muted", r.updated_at), last);
@@ -559,17 +559,17 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
         );
       });
       const r = await Promise.race([host.callTool("heph_status", args), timeout]);
-      if (r.isError) {
+      if (seq !== mine) {
+        // The host pushed a newer result while we waited: that one stands, whatever this answer was.
+      } else if (r.isError) {
         const msg = (r.content ?? [])
           .map((c) => c.text)
           .filter(Boolean)
           .join(" ");
         fail(`Refresh failed: ${msg || "the tool reported an error"}`);
-      } else if (seq !== mine) {
-        // The host pushed a newer result while we waited: that one stands.
       } else if (!take(r, false)) fail("Refresh failed: unreadable answer from the tool");
     } catch (e) {
-      fail(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (seq === mine) fail(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       if (timer !== undefined) timers.clearTimeout(timer);
       busy = false;
