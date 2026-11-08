@@ -702,3 +702,26 @@ describe("cancelling a run under a daemon", () => {
     }
   }, 60_000);
 });
+
+describe("the daemon's run list", () => {
+  test("marks a planned run as waiting for the user, with the command to go on", async () => {
+    await heph(["init", "--force"]);
+    const mbp = openHost({
+      home: homeA,
+      config: { ...(await loadHomeConfig(homeA)), nodes: {} },
+      deps: { ...deps, prs },
+      daemon: true,
+    });
+    try {
+      await mbp.api.call("newRun", [Bun.YAML.parse(BRIEF), { runId: "R1", on: "local" }], ws);
+      const list = (await mbp.api.call("status", [], ws)) as {
+        runs: { run_id: string; needs_you?: string }[];
+      };
+      expect(list.runs.find((r) => r.run_id === "R1")?.needs_you).toBe(
+        "plan ready, approve it: heph approve plan R1",
+      );
+    } finally {
+      await mbp.close();
+    }
+  }, 30_000);
+});

@@ -506,7 +506,14 @@ export function openHost(o: HostOptions) {
         }
         case "status": {
           const [runId] = args as [string | undefined];
-          if (!runId) return { runs: ledger.runs() };
+          if (!runId) {
+            // The runtime marks the runs that wait on the user (`needs_you`); any config will do to read them.
+            try {
+              return (await runtimeFor(cwd ?? o.home)).rt.status();
+            } catch {
+              return { runs: ledger.runs() };
+            }
+          }
           const fresh = await refresh(runId);
           const { rt } = await runtimeFor(cwd ?? workspaceOfOrHome(runId));
           return {
