@@ -15,6 +15,7 @@ type Doc = { documentElement: El & { scrollWidth?: number; scrollHeight?: number
 export type ToolResult = {
   content?: { type: string; text?: string }[];
   structuredContent?: unknown;
+  isError?: boolean;
 };
 
 export type Host = {
@@ -24,6 +25,8 @@ export type Host = {
   hasServerTools: boolean;
   /** Called with every tool result the host pushes; a result that came earlier is replayed. */
   onToolResult(fn: (r: ToolResult) => void): void;
+  /** Ask the host to call one of this server's tools (tools/call); only meaningful when hasServerTools. Rejects on a host error. */
+  callTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
   /** Tell the host how big the page is (ui/notifications/size-changed); a no-op when the host fixed the height. */
   reportSize(): void;
 };
@@ -59,6 +62,13 @@ export function connectHost(win: Win, doc: Doc, app: { name: string; version: st
   const host: Host = {
     hasServerTools: false,
     ready: Promise.resolve(),
+    callTool(name, args) {
+      return new Promise<unknown>((ok, fail) => {
+        const id = ++n;
+        pending.set(id, { ok, fail });
+        send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      }).then((r) => (rec(r) ?? {}) as ToolResult);
+    },
     reportSize() {
       if (fixedHeight) return;
       const e = doc.documentElement;

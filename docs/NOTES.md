@@ -760,4 +760,22 @@ Sub-project H, first MCP Apps widget. No spec file; SPEC section 16 has the as-b
 
 **Review (2026-11-07).** A fresh whole-branch review found the page never sent `size-changed` (a flexible-height host could clip it): fixed. Also fixed: string request ids, `color-scheme` follows the host theme, the approve command in a `<code>`. Left: a task with a duplicate id in the plan is shown once; the fake DOM does not model every way to add markup (it throws on the common ones, and tests assert no `on*` attributes or roles).
 
-**Not built.** The run view (with Refresh where `serverTools` exists), the other widgets, approve in any form.
+**Not built.** The other widgets, approve in any form. (The run view was built on 2026-11-08, below.)
+
+## MCP Apps run widget (2026-11-08)
+
+Second MCP App, for `heph_status`; SPEC section 16 has the as-built description.
+
+**Built.** `run.ts` (the widget), `run.html`, `run-main.ts` beside the plan page; `build-apps.ts` now writes two constants into the one `generated.ts`. `host.ts` gained `callTool(name, args)` (a `tools/call` request to the host, resolved with the tool result, rejected with the host's error). The MCP guard allows a ninth, read-only method, `dashboard`, with a 10 s bound. `heph_status` for one run runs `status` and `dashboard` in parallel and adds `graph` (`units`, `attempts` with gates, `pauses`) to `structuredContent`; a failed or malformed dashboard read just leaves it out.
+
+**Decisions.**
+- *Additive `graph`, not a new tool.* The widget needs titles and dependencies that StatusOne lacks; the dashboard read already has them, plus gate results. Text and old fields are byte-for-byte as before, so non-widget hosts see no change. The existing tools test that counted daemon calls now filters by method (one run makes two calls).
+- *Layers, not drawn edges.* `graph-layout.ts` is pure and bundles (imported by relative path), so units are placed in its dependency layers, one column each, with an `after <deps>` line on every card. No SVG: the fake DOM has no `createElementNS`, and cards open (native `<details>`) and change height, which a coordinate layout would fight. Opened cards stay open across redraws; unchanged polls do not redraw.
+- *Banner from status, not events.* StatusOne has no `needs_you`. The page derives the command from status, `plan_approved`, `stack_on`, the stuck unit and `graph.pauses` (a last pause reason of `user` is the "waiting for you" of `classifyRun`), mirroring `attentionLine`; a rate-limit pause shows no banner. The list uses a row's `needs_you` when present, else only the unambiguous cases (escalated, staged).
+- *Refresh and polling only with `serverTools`.* Refresh calls `heph_status` for the run (or the list). Polling is every 5 s until `staged`, `finished`, `failed` or `cancelled`, single run only. A refresh that errors, returns `isError`, is unreadable or gets no answer in 20 s keeps the last view and shows an error note; a result the host pushed meanwhile wins over a slower refresh. Timers are injected, so tests drive a manual clock.
+- *No cancel, hint or approve.* Cancel and hint change state, approve is excluded (V1.5). Command text is shown to copy, never run.
+- *PR links.* Rendered as an anchor only for an http(s) URL; anything else is text.
+
+**Found, not fixed.** The daemon's `status` without a run (`host.ts`) answers `{ runs: ledger.runs() }`, so list rows carry no `needs_you`, although the CLI text and the `heph_status` tool description say they do, and `statusText` in `mcp/text.ts` does not print it. The widget works around it for escalated and staged runs; a planned run awaiting approval or a run paused for the user shows as such in the list only once the daemon adds `needs_you` to that answer.
+
+**Limits.** Not verified in a real host from the agent sandbox: verified with a real `heph mcp` process and an SDK client (tool `_meta`, resource, tool error without a daemon) and a fake host. Look and feel in Claude desktop and Codex is the user's check.

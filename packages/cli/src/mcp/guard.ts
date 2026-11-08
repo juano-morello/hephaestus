@@ -1,4 +1,4 @@
-// The MCP server's only way to the daemon: eight methods, checked before anything is sent.
+// The MCP server's only way to the daemon: nine methods, checked before anything is sent.
 import { type DaemonClient, DaemonError, DaemonTimeoutError } from "../daemon.ts";
 
 export const ALLOWED_METHODS = [
@@ -10,6 +10,8 @@ export const ALLOWED_METHODS = [
   "explain",
   "hint",
   "cancel",
+  // Read-only: the run widget's graph (the dashboard the UI listener forwards too).
+  "dashboard",
 ] as const;
 export type AllowedMethod = (typeof ALLOWED_METHODS)[number];
 
@@ -27,6 +29,7 @@ export const METHOD_TIMEOUT_MS: Record<AllowedMethod, number | undefined> = {
   explain: 10_000,
   hint: 10_000,
   cancel: 10_000,
+  dashboard: 10_000,
 };
 
 export class NoDaemonError extends Error {

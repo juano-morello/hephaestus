@@ -4,9 +4,9 @@ import { resolve } from "node:path";
 import { Brief } from "@hephaestus/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Explain, OUTPUT, StatusOne } from "../output.ts";
+import { Dashboard, Explain, OUTPUT, StatusOne } from "../output.ts";
 import type { WatchView } from "../watch.ts";
-import { PLAN_HTML } from "./app/generated.ts";
+import { PLAN_HTML, RUN_HTML } from "./app/generated.ts";
 import type { AllowedMethod } from "./guard.ts";
 import type { McpCtx } from "./server.ts";
 import {
@@ -146,12 +146,23 @@ function daemonView(ctx: McpCtx, signal?: AbortSignal): WatchView {
   };
 }
 
+/** What the run widget draws beyond status: the plan's units with their dependencies, and every attempt's gates. */
+async function runGraph(ctx: McpCtx, run: string) {
+  try {
+    const d = Dashboard.parse(await ctx.client.call("dashboard", [run], ctx.workspace()));
+    return { units: d.plan.units, attempts: d.attempts, pauses: d.pauses };
+  } catch {
+    return undefined;
+  }
+}
+
 const withoutUndefined = <T extends Record<string, unknown>>(o: T): Record<string, unknown> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
 const { $schema: _dialect, ...briefJsonSchema } = z.toJSONSchema(Brief) as Record<string, unknown>;
 // Built from the real schema, so what the model is told cannot drift from what heph_new accepts.
 const PLAN_URI = "ui://heph/plan";
+const RUN_URI = "ui://heph/run";
 const APP_MIME = "text/html;profile=mcp-app";
 
 const BRIEF_DESCRIPTION = `A complete Brief object (strict: no extra keys; every list field is required except known_paths, but the brief gate rejects an empty acceptance, any open_questions left unresolved, duplicate criterion ids, a check gate not configured in any project, known_paths projects not in the workspace, and a criterion whose projects names a project not in the workspace, lists one twice, or also sets check). JSON Schema: ${JSON.stringify(briefJsonSchema)}`;
@@ -162,6 +173,12 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     PLAN_URI,
     { mimeType: APP_MIME, description: "The plan review widget (an MCP App)" },
     async () => ({ contents: [{ uri: PLAN_URI, mimeType: APP_MIME, text: PLAN_HTML }] }),
+  );
+  server.registerResource(
+    "run-widget",
+    RUN_URI,
+    { mimeType: APP_MIME, description: "The run view widget (an MCP App)" },
+    async () => ({ contents: [{ uri: RUN_URI, mimeType: APP_MIME, text: RUN_HTML }] }),
   );
   server.registerTool(
     "heph_plan_show",
@@ -184,13 +201,21 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       inputSchema: {
         run: z.string().min(1).optional().describe("A run id; omit to list every run"),
       },
+      // Hosts that render MCP Apps show the run as a widget; the rest see the text result.
+      _meta: { ui: { resourceUri: RUN_URI }, "ui/resourceUri": RUN_URI },
     },
-    ({ run }) =>
-      toolResult(
-        ctx,
-        { method: "status", args: run === undefined ? [] : [run], command: "status" },
-        statusText,
-      ),
+    async ({ run }) => {
+      if (run === undefined)
+        return toolResult(ctx, { method: "status", args: [], command: "status" }, statusText);
+      // The widget's graph needs unit titles and dependencies, which status does not carry: one
+      // more read-only call, whose failure costs the widget its graph and nothing else.
+      const [result, graph] = await Promise.all([
+        toolResult(ctx, { method: "status", args: [run], command: "status" }, statusText),
+        runGraph(ctx, run),
+      ]);
+      if (result.isError || !graph || !result.structuredContent) return result;
+      return { ...result, structuredContent: { ...result.structuredContent, graph } };
+    },
   );
 
   server.registerTool(

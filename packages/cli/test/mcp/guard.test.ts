@@ -21,7 +21,7 @@ function fake() {
 }
 
 describe("mcp guard", () => {
-  test("allowlist is exactly the eight methods", () => {
+  test("allowlist is exactly the nine methods (dashboard is the one read-only addition)", () => {
     expect([...ALLOWED_METHODS]).toEqual([
       "newRun",
       "planShow",
@@ -31,6 +31,7 @@ describe("mcp guard", () => {
       "explain",
       "hint",
       "cancel",
+      "dashboard",
     ]);
   });
 
@@ -108,6 +109,7 @@ describe("per-method timeouts", () => {
       explain: 10_000,
       hint: 10_000,
       cancel: 10_000,
+      dashboard: 10_000,
     });
   });
 });

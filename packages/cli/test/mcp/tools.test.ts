@@ -86,7 +86,9 @@ describe("read-only tools", () => {
     const client = await connectTestClient({ client: d, workspace: () => undefined });
     const a = await client.callTool({ name: "heph_status", arguments: {} });
     const b = await client.callTool({ name: "heph_status", arguments: { run: "r1" } });
-    expect(calls.map((c) => c.args)).toEqual([[], ["r1"]]);
+    // One run also reads the dashboard (for the widget's graph); the list does not.
+    expect(calls.filter((c) => c.method === "status").map((c) => c.args)).toEqual([[], ["r1"]]);
+    expect(calls.filter((c) => c.method === "dashboard").map((c) => c.args)).toEqual([["r1"]]);
     expect(a.structuredContent).toEqual(list);
     expect(b.structuredContent).toEqual(one);
     expect(textOf(b)).toContain("u1 done (1 attempt)");

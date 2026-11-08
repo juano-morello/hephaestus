@@ -18,6 +18,8 @@ When the `heph_*` MCP tools are available (in Claude Code they are `mcp__heph__*
 
 Plans from `heph_plan_show` render as a widget in the Codex app and the Claude desktop app, and as text everywhere else; either way approval is still the user's action outside the chat (`heph approve plan <run>`), and the widget has no approve button.
 
+Run status from `heph_status` renders as a widget too (the run's units as a graph, or the list of runs) in the Codex app and the Claude desktop app, and as text everywhere else; it has a Refresh button only in Codex, and no cancel, hint or approve buttons.
+
 Every heph command takes `--json` and prints `{ schema, command, ok, data | error }`; use it
 when you need to read a result. `heph help` lists commands; `heph doctor` checks the machine; `heph nodes` shows which peers this node can reach.
 

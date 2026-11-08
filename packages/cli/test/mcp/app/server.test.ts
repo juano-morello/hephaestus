@@ -32,7 +32,12 @@ describe("plan widget wiring", () => {
       ui: { resourceUri: "ui://heph/plan" },
       "ui/resourceUri": "ui://heph/plan",
     });
-    expect(tools.filter((x) => x._meta?.ui).map((x) => x.name)).toEqual(["heph_plan_show"]);
+    expect(
+      tools
+        .filter((x) => x._meta?.ui)
+        .map((x) => x.name)
+        .sort(),
+    ).toEqual(["heph_plan_show", "heph_status"]);
     await client.close();
   });
 

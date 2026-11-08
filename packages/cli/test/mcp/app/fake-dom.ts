@@ -14,6 +14,8 @@ export class FakeEl {
   scrollHeight = 480;
   private text = "";
   isText = false;
+  disabled = false;
+  listeners: Record<string, (() => void)[]> = {};
   constructor(public tag: string) {}
   get textContent(): string {
     return this.isText || this.children.length === 0
@@ -42,6 +44,14 @@ export class FakeEl {
     this.children = [];
     this.text = "";
     this.append(...cs);
+  }
+  addEventListener(type: string, fn: () => void) {
+    this.listeners[type] = [...(this.listeners[type] ?? []), fn];
+  }
+  /** A user click: runs the click listeners unless the element is disabled. */
+  click() {
+    if (this.disabled) return;
+    for (const fn of this.listeners.click ?? []) fn();
   }
   setAttribute(k: string, v: string) {
     this.attrs[k] = v;

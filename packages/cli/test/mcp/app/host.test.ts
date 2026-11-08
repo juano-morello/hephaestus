@@ -138,4 +138,45 @@ describe("the MCP App host helper", () => {
     fixed.reportSize();
     expect(g.sent.length).toBe(n);
   });
+
+  test("callTool sends tools/call and resolves with the host's tool result", async () => {
+    const f = fakeHost({ hostCapabilities: { serverTools: {} } });
+    const host = connectHost(f.win as never, f.doc as never, { name: "t", version: "1" });
+    await host.ready;
+    const p = host.callTool("heph_status", { run: "r1" });
+    const req = f.sent.at(-1);
+    expect(req).toMatchObject({
+      jsonrpc: "2.0",
+      method: "tools/call",
+      params: { name: "heph_status", arguments: { run: "r1" } },
+    });
+    expect(typeof req?.id).toBe("number");
+    f.deliver({
+      jsonrpc: "2.0",
+      id: req?.id,
+      result: {
+        content: [{ type: "text", text: "ok" }],
+        structuredContent: { a: 1 },
+        isError: true,
+      },
+    });
+    expect(await p).toEqual({
+      content: [{ type: "text", text: "ok" }],
+      structuredContent: { a: 1 },
+      isError: true,
+    });
+  });
+
+  test("callTool rejects with the host's error (Claude desktop: IPC not available)", async () => {
+    const f = fakeHost();
+    const host = connectHost(f.win as never, f.doc as never, { name: "t", version: "1" });
+    await host.ready;
+    const p = host.callTool("heph_status", {});
+    f.deliver({
+      jsonrpc: "2.0",
+      id: f.sent.at(-1)?.id,
+      error: { code: -32603, message: "IPC not available" },
+    });
+    await expect(p).rejects.toThrow("IPC not available");
+  });
 });
