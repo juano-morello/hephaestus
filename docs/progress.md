@@ -1,4 +1,6 @@
-# Roadmap (2026-11-06)
+# Progress
+
+Formerly `ROADMAP.md` (history in older specs and plans still says ROADMAP). Read this, `decisions.md` and `known-issues.md` at session start; update them at session end.
 
 SPEC built-vs-pending map, and the decomposition of what comes next. Sources: `SPEC.md`, `NOTES.md`. Items marked (?) come from older notes and were not checked against the code.
 
@@ -50,3 +52,9 @@ Each gets its own spec, plan and build.
 All sub-projects A to G are built or closed (G on 2026-11-08); what is left under E and F is listed as decided not now above.
 
 E's read-only slice and F's measuring tools were built on 2026-11-07. Next: the rest of E and F as chosen.
+
+## Log
+
+One line per session, newest last: date, what changed, what is next.
+
+- 2026-11-09: split the notes into `progress.md` (this file, was ROADMAP), `decisions.md` and `known-issues.md`; added session start/end rules to CLAUDE.md, Brief check discipline to the heph skill, and a `reflect` skill. Next: run `reflect` after the next real heph run and see what it proposes.
