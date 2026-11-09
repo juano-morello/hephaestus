@@ -37,7 +37,7 @@ describe("plan widget wiring", () => {
         .filter((x) => x._meta?.ui)
         .map((x) => x.name)
         .sort(),
-    ).toEqual(["heph_plan_show", "heph_status"]);
+    ).toEqual(["heph_plan_show", "heph_status", "heph_watch"]);
     await client.close();
   });
 

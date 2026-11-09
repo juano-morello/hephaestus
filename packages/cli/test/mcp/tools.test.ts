@@ -655,7 +655,7 @@ describe("heph_watch", () => {
     });
     const client = await connectTestClient({ client: d, workspace: () => "/ws", ...clock });
     const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1", since: "e1" } });
-    expect(r.structuredContent).toEqual({
+    expect(r.structuredContent).toMatchObject({
       run_id: "r1",
       status: "running",
       lines: ["u1/a1 attempt started"],
@@ -756,7 +756,7 @@ describe("heph_watch", () => {
     ]);
     const client = await connectTestClient({ client: d, workspace: () => "/ws", ...fakeClock() });
     const r = await client.callTool({ name: "heph_watch", arguments: { run: "r1", since: "e0" } });
-    expect(r.structuredContent).toEqual({
+    expect(r.structuredContent).toMatchObject({
       run_id: "r1",
       status: "paused",
       lines: ["u1 stalled: tests failed the same way on a1 and a2", "run paused: waiting for you"],
@@ -764,6 +764,12 @@ describe("heph_watch", () => {
       outcome: "waiting_for_you",
     });
     expect(textOf(r)).toContain("next: explain to the user and ask; do not retry");
+    // Every return carries the run's current view, for the run widget.
+    expect(r.structuredContent).toMatchObject({
+      run: { run_id: "r1", status: "paused" },
+      units: [],
+      attempts: [],
+    });
     await client.close();
   });
 

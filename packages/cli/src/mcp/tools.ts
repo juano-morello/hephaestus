@@ -94,6 +94,16 @@ const WatchToolResult = z
     outcome: z.enum(OUTCOMES),
     waiting_for: z.string().min(1).optional(),
     blocked: z.string().min(1).optional(),
+    // The run widget's view (heph_status's answer and its graph), added best effort.
+    run: z.unknown().optional(),
+    plan_approved: z.unknown().optional(),
+    units: z.unknown().optional(),
+    attempts: z.unknown().optional(),
+    usage: z.unknown().optional(),
+    prs: z.unknown().optional(),
+    stack_on: z.unknown().optional(),
+    stale: z.unknown().optional(),
+    graph: z.unknown().optional(),
   })
   .strict();
 /** What the daemon's `run` answers: a build job started on it, or one already going. */
@@ -151,6 +161,21 @@ async function runGraph(ctx: McpCtx, run: string) {
   try {
     const d = Dashboard.parse(await ctx.client.call("dashboard", [run], ctx.workspace()));
     return { units: d.plan.units, attempts: d.attempts, pauses: d.pauses };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The run widget's whole view of one run: status plus graph; undefined when the daemon will not say. */
+async function runView(ctx: McpCtx, run: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const [status, graph] = await Promise.all([
+      ctx.client.call("status", [run], ctx.workspace()),
+      runGraph(ctx, run),
+    ]);
+    const parsed = StatusOne.safeParse(status);
+    if (!parsed.success) return undefined;
+    return { ...parsed.data, ...(graph ? { graph } : {}) };
   } catch {
     return undefined;
   }
@@ -468,6 +493,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           .describe(`Seconds to wait for news, 0 to ${MAX_WAIT_S}; default ${DEFAULT_WAIT_S}`),
       },
       outputSchema: WatchToolResult.shape,
+      // Each return carries the run's current view, so a host that renders MCP Apps redraws the widget.
+      _meta: { ui: { resourceUri: RUN_URI }, "ui/resourceUri": RUN_URI },
     },
     async ({ run, since, wait_s }, extra) => {
       const waitS = Math.min(MAX_WAIT_S, Math.max(0, wait_s ?? DEFAULT_WAIT_S));
@@ -502,9 +529,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
               }),
         });
         await Promise.all(sent);
+        const view = await runView(ctx, run);
         return {
           content: [{ type: "text", text: watchText(w) }],
-          structuredContent: withoutUndefined(w),
+          structuredContent: { ...withoutUndefined(w), ...(view ?? {}) },
         };
       } catch (e) {
         await Promise.all(sent);
