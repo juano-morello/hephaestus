@@ -62,6 +62,12 @@ Rules that keep plans valid:
   `constraints`, or set `check: { gate: <name> }` on the criterion when that gate is
   configured for the project. Define the gate as a command in the repo's `.heph/config.yaml`
   (`gates: { buf: "buf lint" }`); heph runs it on the unit that covers the criterion.
+- **Every criterion names a runnable check before you submit.** It is either a test (behavior
+  a test can assert) or a gate (`check: { gate: <name> }`). That includes `nonfunctional`
+  criteria: "no allocations per tick" or "coverage stays above X" needs a benchmark test or a
+  custom gate, not prose. If a criterion has neither, say so and ask the user how it should be
+  checked, or move it to `constraints` as a note. This is the "done when" of the Brief; heph
+  enforces it when the covering unit is accepted.
 - **Set `projects` on a criterion that needs tests in more than one project** (for example
   `projects: [server, client]`): the plan must then have a covering test task in each.
 - **Say where tests live** when the project's test command doesn't run every test file (for
