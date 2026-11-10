@@ -8,6 +8,7 @@
 //   bun run install:heph                                  this machine
 //   bun run install:heph -- --peer denver --preferred denver
 //   bun run install:heph -- --remote denver               another machine, over ssh
+//   bun run install:heph -- --all                         this machine, then every node under nodes:
 //
 // Options: --node-id <id> (default: from the host name, or the ssh host), --peer <ssh host>
 // (repeatable; adds it under nodes:), --preferred <peer>, --no-service, --no-claude.
@@ -47,6 +48,7 @@ const { values } = parseArgs({
   args: process.argv.slice(2),
   options: {
     remote: { type: "string" },
+    all: { type: "boolean", default: false },
     "node-id": { type: "string" },
     peer: { type: "string", multiple: true, default: [] },
     preferred: { type: "string" },
@@ -309,9 +311,23 @@ async function installRemote(host: string) {
   if (doctor.exitCode !== 0) say(`doctor found something to fix on ${host} (the FAIL lines above)`);
 }
 
+/** The ssh destinations under `nodes:` in this machine's ~/.heph/config.yaml. */
+function peerHosts(): string[] {
+  const file = join(process.env.HEPH_HOME ?? join(homedir(), ".heph"), "config.yaml");
+  if (!existsSync(file)) return [];
+  const cfg = Bun.YAML.parse(readFileSync(file, "utf8")) as {
+    nodes?: Record<string, { ssh?: string }>;
+  } | null;
+  return Object.values(cfg?.nodes ?? {}).flatMap((n) => (n?.ssh ? [n.ssh] : []));
+}
+
 try {
   if (values.remote) await installRemote(values.remote);
-  else await installHere();
+  else {
+    await installHere();
+    // Nodes refuse to hand runs to a peer on another build, so a new build goes to all of them.
+    if (values.all) for (const host of peerHosts()) await installRemote(host);
+  }
 } catch (e) {
   console.error(`heph install: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);

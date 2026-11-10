@@ -8,3 +8,4 @@
 - **Session end:** add a dated line to the log in `docs/progress.md`; append new decisions (date, decision, why) to `decisions.md`; add new gotchas to `known-issues.md` and delete ones you fixed. Long-form reasoning still goes in `docs/NOTES.md`.
 - **Briefs for heph:** every acceptance criterion names a runnable check (a test, or a gate via `check`). If one has neither, ask the user before `heph new`.
 - **After a heph run or at session end:** run the `reflect` skill; it proposes edits and waits for approval.
+- **After changing code that ships (anything under `packages/`, `integrations/`, or prompts):** commit, then run `bun run install:heph -- --all` (the Claude sandbox must be off for it) so this machine and every node under `nodes:` run the same build. Peers on different builds refuse handoffs and cannot sync events.
