@@ -16,6 +16,7 @@ Gotchas, limits and things left unbuilt on purpose. Each: what, why it is like t
 - Cancel across processes without a daemon, Ctrl-C in `heph run`, and aborting a gate command on cancel are not built or not verified. [NOTES "Handoff wait"]
 - An MCP call that times out (10 s, or 30 s for `heph_run`) may still have started the build; calling `heph_run` again answers `already_running`. [NOTES "MCP server: follow-ups"]
 - The CLI's `heph watch` retries every daemon error and its daemon calls have no timeout, on purpose. [same]
+- Handoff refuses a peer whose reported build (`git describe`) differs; `heph sync` and doctor only warn. A node run from source reports `<describe>, from source`, so it never matches a compiled one. Reopen: false refusals between source and compiled builds of one commit.
 - Stacking: a run always starts from its target; building on another run's branch needs the earlier one merged. [NOTES "Stacking"]
 
 ## Measurement

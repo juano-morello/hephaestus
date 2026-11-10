@@ -217,6 +217,34 @@ describe("handoff", () => {
     }
   }, 30_000);
 
+  test("a peer on a different build is refused before anything changes", async () => {
+    const n = await twoNodes();
+    const { handoff } = await buildingOnA(n);
+    const stopped: boolean[] = [];
+    await expect(
+      handOff({
+        ...handoff,
+        build: "abc123",
+        transport: localTransport(syncMethods(n.b, { build: "def456" })),
+        stopBuild: async () => {
+          stopped.push(true);
+          await handoff.stopBuild();
+        },
+      }),
+    ).rejects.toThrow(/abc123.*def456|def456.*abc123/);
+    expect(stopped).toEqual([]);
+    expect(n.a.run("R1")?.owner_node).toBe("mbp");
+    // A peer that does not report a build is not blocked.
+    const out = await handOff({
+      ...handoff,
+      build: "abc123",
+      transport: n.toB(),
+    });
+    expect(out.taken.fetched).toEqual(["proto", "server"]);
+    n.a.close();
+    n.b.close();
+  }, 30_000);
+
   test("a run handed off mid-build is finished by the new owner without redoing accepted units", async () => {
     const n = await twoNodes();
     const { handoff } = await buildingOnA(n);

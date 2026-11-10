@@ -335,7 +335,7 @@ export function openHost(o: HostOptions) {
 
   /** Everything this node answers for its peers (`heph peer`). */
   const peerMethods = (): Methods => ({
-    ...syncMethods(ledger, { version: hephVersion().version }),
+    ...syncMethods(ledger, { version: hephVersion().version, build: hephVersion().build }),
     "workspace.ensure": (p: { workspace: WorkspaceDescription }) => prepare(p.workspace),
     "workspace.files": (p: { workspace: WorkspaceDescription }) =>
       ensureWorkspace(p.workspace, { home: o.home, workspaces: o.config.workspaces }),
@@ -585,6 +585,7 @@ export function openHost(o: HostOptions) {
               description: await describeWorkspace(dir, workspace),
               ...(waitMs > 0 ? { waitMs } : {}),
               stopBuild: (ms) => stopJob(runId, "handoff", ms),
+              build: hephVersion().build,
             });
             return { run_id: runId, to, pushed: out.pushed, dir: out.taken.dir };
           }).finally(() => handingOff.delete(runId));

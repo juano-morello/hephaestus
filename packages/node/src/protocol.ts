@@ -22,7 +22,23 @@ export type Hello = {
   cursor: number;
   /** The peer's heph version, when it says (0.1.0 on). */
   version?: string;
+  /**
+   * The commit the peer was built from. `version` stays 0.1.0 across builds, so this is what
+   * tells two nodes apart; a peer on an older build can't parse newer event fields (the Return's
+   * `diff_stat` was rejected by a stale denver).
+   */
+  build?: string;
 };
+
+/**
+ * Why two nodes must not hand a run between them: both say their build and the builds differ.
+ * A node that does not say, or whose build is "unknown", is not blocked.
+ */
+export function buildSkew(local: string | undefined, peer: string | undefined): string | undefined {
+  if (!local || !peer || local === "unknown" || peer === "unknown" || local === peer)
+    return undefined;
+  return `the peer runs build ${peer}, this node runs ${local}; install the same build on both (bun run install:heph -- --remote <host>)`;
+}
 
 export type Batch = { seq: number; events: Envelope[]; blobs: WireBlobs; more: boolean };
 
@@ -52,7 +68,7 @@ export class PeerError extends Error {
 /** The methods every node serves for sync. More (workspace, rpc) are added by the node. */
 export function syncMethods(
   ledger: Ledger,
-  opts: { pageSize?: number; version?: string } = {},
+  opts: { pageSize?: number; version?: string; build?: string } = {},
 ): Methods {
   const page = opts.pageSize ?? 500;
   return {
@@ -66,6 +82,7 @@ export function syncMethods(
         protocol: PROTOCOL_VERSION,
         cursor: ledger.cursor(p.from),
         ...(opts.version ? { version: opts.version } : {}),
+        ...(opts.build ? { build: opts.build } : {}),
       };
     },
     "events.since": (p: { seq: number }): Batch => {

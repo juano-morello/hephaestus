@@ -12,7 +12,7 @@ import {
   touchedRepos,
 } from "@hephaestus/engine";
 import type { Ledger } from "@hephaestus/ledger";
-import type { Methods } from "./protocol.ts";
+import { buildSkew, type Methods } from "./protocol.ts";
 import { hello, type SyncResult, syncWith } from "./sync.ts";
 import type { Transport } from "./transport.ts";
 import { ensureWorkspace, fetchRunBranches, type WorkspaceDescription } from "./workspace.ts";
@@ -49,6 +49,8 @@ export type HandoffOptions = {
    * `waitMs` it lets attempts in flight finish for up to that long before interrupting them.
    */
   stopBuild?: (waitMs?: number) => Promise<void>;
+  /** This node's build; a peer reporting a different one is refused before anything changes. */
+  build?: string;
   /** How long a build may keep finishing its attempts in flight before they are interrupted. */
   waitMs?: number;
   chaos?: Chaos;
@@ -68,6 +70,8 @@ export async function handOff(
   if (!run) throw new Error(`no run ${o.runId}`);
   const peer = await hello(o.ledger, o.transport);
   if (peer.node !== o.to) throw new Error(`that peer is ${peer.node}, not ${o.to}`);
+  const skew = buildSkew(o.build, peer.build);
+  if (skew) throw new Error(`can't hand off ${o.runId}: ${skew}`);
   // Already handed to `to` by this node: a handoff that stopped after run.handed_off. Finish it.
   const last = o.ledger.read({ run_id: o.runId, types: ["run.handed_off"] }).at(-1)?.event;
   if (run.owner_node === o.to && last?.node_id === me && (last.data as { to: string }).to === o.to)
