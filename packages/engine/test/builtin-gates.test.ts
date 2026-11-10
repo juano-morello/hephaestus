@@ -216,6 +216,24 @@ describe("tests", () => {
     });
   });
 
+  test("a test unit marked expect green must leave the suite passing", async () => {
+    const commands = { test: "sh t.sh" };
+    const t = task({ kind: "test", expect: "green" });
+    expect(await testsGate.run(await withSandbox(pass, { commands, task: t }))).toMatchObject({
+      verdict: "pass",
+    });
+    expect(await testsGate.run(await withSandbox(fail, { commands, task: t }))).toMatchObject({
+      verdict: "fail",
+      reason: "tests must pass here",
+    });
+    // An explicit red is the default.
+    const red = task({ kind: "test", expect: "red" });
+    expect(await testsGate.run(await withSandbox(pass, { commands, task: red }))).toMatchObject({
+      verdict: "fail",
+      reason: "tests must fail after a test unit (red before green)",
+    });
+  });
+
   test("fails without a test command or a sandbox", async () => {
     expect(await testsGate.run(await withSandbox(pass, {}))).toMatchObject({
       verdict: "fail",

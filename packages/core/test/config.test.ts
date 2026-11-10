@@ -82,6 +82,12 @@ describe("attempt limits", () => {
     expect(Limits.safeParse(limits({ attempt_timeout_ms_by_tier: { complex: 0 } })).success).toBe(
       false,
     );
+    const gates = Limits.safeParse(limits({ gate_timeout_ms_by_tier: { complex: 1_800_000 } }));
+    expect(gates.success).toBe(true);
+    expect(Limits.safeParse(limits({ gate_timeout_ms_by_tier: { huge: 1 } })).success).toBe(false);
+    expect(Limits.safeParse(limits({ gate_timeout_ms_by_tier: { complex: 0 } })).success).toBe(
+      false,
+    );
     expect(Limits.safeParse(limits({ transport_retries: 0 })).success).toBe(true);
     expect(Limits.safeParse(limits({ transport_retries: -1 })).success).toBe(false);
   });

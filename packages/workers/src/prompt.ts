@@ -25,14 +25,19 @@ const bullets = (items: string[], empty = "None.") =>
   items.length ? items.map((i) => `- ${i}`).join("\n") : empty;
 
 /** The user message for one attempt, built by code from the UnitBrief only. */
-export function renderUnitPrompt(brief: UnitBrief): string {
+export function renderUnitPrompt(brief: UnitBrief, workdir?: string): string {
   const { task, context } = brief;
   const commands = Object.entries(context.project.commands)
     .filter(([, cmd]) => cmd)
     .map(([name, cmd]) => `${name}: \`${cmd}\``);
   const sections = [
     `# Task ${task.id}: ${task.title}`,
-    `Kind: ${task.kind}. Project: ${context.project.name} (${context.project.stack}). Lane: ${task.lane}. Tier: ${brief.tier}.`,
+    `Kind: ${task.kind}. Project: ${context.project.name} (${context.project.stack}). Lane: ${task.lane}. Tier: ${brief.tier}.${task.kind === "test" ? ` Expect: the suite ${task.expect === "green" ? "passes (these tests pin existing behavior)" : "fails (the behavior is missing)"} after your change.` : ""}`,
+    ...(workdir
+      ? [
+          `## Where you work\n\nYour working directory is \`${workdir}\`, a git worktree of this run's branch, not the main checkout. Read, run and judge only what is under it; the code in other checkouts or on \`main\` is not the code you are changing.`,
+        ]
+      : []),
     `## What to do\n\n${task.spec}`,
     `## Scope\n\nChange only files matching these globs (relative to the project root, your working directory):\n\n${bullets(task.scope)}`,
     `## Locked files (never modify)\n\n${bullets(brief.locked_paths)}`,

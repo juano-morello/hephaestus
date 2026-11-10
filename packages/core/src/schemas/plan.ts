@@ -36,6 +36,12 @@ export const Task = z
       .strict()
       .optional(),
     spec: z.string().min(1),
+    /**
+     * What a `test` task leaves the suite as: "red" (the default) for tests of behavior that does
+     * not exist yet, "green" for characterization tests and tests that pin a refactor, which
+     * already pass.
+     */
+    expect: z.enum(["red", "green"]).optional(),
   })
   .strict();
 export type Task = z.infer<typeof Task>;

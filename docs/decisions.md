@@ -12,6 +12,7 @@ Settled decisions, one line each: date, decision, why. Do not reopen one without
 - 2026-11-03: attempt branches are `heph-attempt/<run>/<unit>/a<n>`, the changeset branch stays `heph/<run>`. Why: git cannot hold both a branch and a directory of branches at one ref. [NOTES "Engine"]
 - 2026-11-05: a unit stalls (pauses for the user) when its last two red attempts fail the same way, threshold fixed at 2. Why: more attempts cannot fix a structural failure. [NOTES "Following a run"]
 - 2026-11-07: custom gates are commands run in the sandbox, not TS files. Why: repo TS would run in the engine process, which holds git push and secrets. [NOTES "Custom command gates"]
+- 2026-11-10: a `test` task may set `expect: "green"` (default red) for characterization tests and refactor pins; the tests gate then requires a pass. Why: red-before-green rejected pure refactors. The planner and test-author prompts say when.
 
 ## Runtime and limits
 
@@ -20,6 +21,8 @@ Settled decisions, one line each: date, decision, why. Do not reopen one without
 - 2026-11-05: no multi-parent stacking and no cross-node runners until a real need appears (diamond-shaped runs, one machine's CPU as the bottleneck). [same]
 - 2026-11-06: leases and heartbeats, v1.5 approvals and the npm scope are out of scope for now. [progress.md]
 - 2026-11-09: the attempt timeout (`limits.attempt_timeout_ms`, 20 min) and gate timeout (10 min) are the only time limits; both are config, not per run. A run has no wall-clock cap.
+- 2026-11-10: `limits.gate_timeout_ms_by_tier` overrides the gate timeout by the task's complexity; still config, no per-run override. Why: parallel runs share the CPU and a heavy suite outgrew 10 minutes; the 2026-11-09 decision stands.
+- 2026-11-10: handoff refuses a peer whose reported build differs when both are known; `version` stays 0.1.0 so the build (`git describe`) is what is compared. Why: a stale denver rejected newer event fields.
 
 ## Surfaces
 

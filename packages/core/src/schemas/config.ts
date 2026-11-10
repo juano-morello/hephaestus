@@ -46,6 +46,18 @@ export const Limits = z
       })
       .strict()
       .optional(),
+    /**
+     * Overrides gate_timeout_ms per complexity tier: parallel runs share the CPU, so a heavy
+     * test suite needs more than the default on the harder tiers.
+     */
+    gate_timeout_ms_by_tier: z
+      .object({
+        trivial: z.int().positive().optional(),
+        standard: z.int().positive().optional(),
+        complex: z.int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     parallel: z.int().positive(),
   })
   .strict();

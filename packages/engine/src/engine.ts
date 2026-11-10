@@ -494,6 +494,7 @@ async function build(input: RunPlanOptions): Promise<RunOutcome> {
         worktreesDir: opts.worktreesDir,
         tools: opts.config.tools,
         gateTimeoutMs: opts.config.gateTimeoutMs,
+        gateTimeoutByTier: opts.config.gateTimeoutByTier,
         attemptTimeoutMs: opts.config.attemptTimeoutMs,
         attemptTimeoutByTier: opts.config.attemptTimeoutByTier,
         idleTimeoutMs: opts.config.idleTimeoutMs,

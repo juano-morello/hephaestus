@@ -5,6 +5,7 @@ import { briefHash } from "@hephaestus/core";
 import { openLedger } from "@hephaestus/ledger";
 import type { EngineConfig } from "../src/config.ts";
 import { runPlan } from "../src/engine.ts";
+import type { UnitGate } from "../src/gates.ts";
 import type { SpawnInput, SpawnOutput, Worker } from "../src/worker.ts";
 import { initRepo, tempDir } from "./helpers.ts";
 
@@ -63,7 +64,11 @@ const ok = (...args: [] | [unknown]): SpawnOutput => ({
   exit: "ok",
 });
 
-async function run(steps: SpawnOutput[], extra: Partial<EngineConfig> = {}) {
+async function run(
+  steps: SpawnOutput[],
+  extra: Partial<EngineConfig> = {},
+  gates: UnitGate[] = [],
+) {
   const repoDir = await initRepo(dir(), { "server/go.mod": "module game\n" });
   const ledger = openLedger(join(dir(), "node"), { nodeId: "n" });
   const calls: SpawnInput[] = [];
@@ -84,7 +89,7 @@ async function run(steps: SpawnOutput[], extra: Partial<EngineConfig> = {}) {
     runId: "R1",
     changesetId: "C1",
     worker,
-    gates: [],
+    gates,
     config: { ...config, ...extra },
     worktreesDir: join(dir(), "worktrees"),
   });
@@ -190,5 +195,20 @@ describe("transport failures", () => {
       attemptTimeoutByTier: { complex: 9 },
     });
     expect(other.calls[0]?.timeoutMs).toBe(1000);
+  });
+
+  test("the gate timeout reaches the gates, by the task's complexity", async () => {
+    const seen: number[] = [];
+    const probe: UnitGate = {
+      name: "probe",
+      run: (ctx) => {
+        seen.push(ctx.timeoutMs);
+        return { gate: "probe", verdict: "pass", reason: "ok", evidence: [] };
+      },
+    };
+    // The test task is "standard".
+    await run([ok()], { gateTimeoutMs: 1000, gateTimeoutByTier: { standard: 7000 } }, [probe]);
+    await run([ok()], { gateTimeoutMs: 1000, gateTimeoutByTier: { complex: 9 } }, [probe]);
+    expect(seen).toEqual([7000, 1000]);
   });
 });

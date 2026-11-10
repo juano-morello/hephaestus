@@ -303,7 +303,7 @@ export function createOmpWorker(opts: OmpWorkerOptions): Worker {
         else input.signal?.addEventListener("abort", onAbort, { once: true });
         let threw: unknown;
         try {
-          const prompting = s.prompt(renderUnitPrompt(input.brief));
+          const prompting = s.prompt(renderUnitPrompt(input.brief, input.workdir));
           // A late rejection after we stopped waiting must not become an unhandled one.
           prompting.catch(() => {});
           await Promise.race([prompting, released]);

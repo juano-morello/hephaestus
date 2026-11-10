@@ -41,6 +41,24 @@ const brief = (overrides: Partial<UnitBrief> = {}): UnitBrief => ({
 });
 
 describe("renderUnitPrompt", () => {
+  test("names the worktree and tells the worker not to look at main", () => {
+    const text = renderUnitPrompt(brief(), "/home/u/.heph/worktrees/R1/server");
+    expect(text).toContain("/home/u/.heph/worktrees/R1/server");
+    expect(text).toContain("not the main checkout");
+    expect(renderUnitPrompt(brief())).not.toContain("not the main checkout");
+  });
+
+  test("a test task says whether the suite should fail or pass afterwards", () => {
+    const task = (expect?: "red" | "green") => ({
+      ...brief().task,
+      kind: "test" as const,
+      ...(expect ? { expect } : {}),
+    });
+    expect(renderUnitPrompt(brief({ task: task() }))).toContain("the suite fails");
+    expect(renderUnitPrompt(brief({ task: task("green") }))).toContain("the suite passes");
+    expect(renderUnitPrompt(brief())).not.toContain("Expect: the suite");
+  });
+
   test("carries the task, scope, locks, files, commands and how to finish", () => {
     const text = renderUnitPrompt(brief());
     for (const part of [

@@ -12,6 +12,7 @@ Gotchas, limits and things left unbuilt on purpose. Each: what, why it is like t
 
 ## Runs and nodes
 
+- Wrong tree: workers inspected `main` instead of their worktree. Cause unconfirmed; the native sandbox confines tool `cwd` but reads the whole filesystem, so the worker prompt now names the worktree and says not to look at `main`. Reopen: it happens again (then confine reads or give workers a checkout with no path to the main one).
 - Remaining-budget tracking per provider and fallback on provider outages are not built (needs worker failure classes). [NOTES "Routing"]
 - Cancel across processes without a daemon, Ctrl-C in `heph run`, and aborting a gate command on cancel are not built or not verified. [NOTES "Handoff wait"]
 - An MCP call that times out (10 s, or 30 s for `heph_run`) may still have started the build; calling `heph_run` again answers `already_running`. [NOTES "MCP server: follow-ups"]
@@ -26,4 +27,6 @@ Gotchas, limits and things left unbuilt on purpose. Each: what, why it is like t
 
 ## Environment
 
+- Run the test suites with the Claude sandbox off (`dangerouslyDisableSandbox`): `sandbox-exec` cannot nest, and `packages/cli` shows about 60 false failures otherwise.
+- The `the agent guidance` test (Codex AGENTS.md vs the heph skill) fails on `main` since `fe1fab4`; fix it as a task.
 - macOS with Colima only mounts `$HOME`, so container-mode worktrees must live under it. [NOTES "OMP worker in a sandbox"]

@@ -19,6 +19,12 @@ import { createGit, type Diff } from "./git.ts";
 import type { SpawnOutput, Worker, WorkerFailure } from "./worker.ts";
 
 const DEFAULT_GATE_TIMEOUT_MS = 10 * 60_000;
+
+/** One gate command's limit: the override for the task's complexity, else the general one. */
+const gateTimeoutFor = (
+  o: Pick<LocalRunnerOptions, "gateTimeoutMs" | "gateTimeoutByTier">,
+  complexity: Complexity,
+): number => o.gateTimeoutByTier?.[complexity] ?? o.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
 const DEFAULT_TRANSPORT_RETRIES = 2;
 
 const addUsage = (a: Usage, b: Usage): Usage => ({
@@ -154,6 +160,7 @@ export type LocalRunnerOptions = {
   worktreesDir: string;
   tools: string[];
   gateTimeoutMs?: number | undefined;
+  gateTimeoutByTier?: Partial<Record<Complexity, number>> | undefined;
   /** Wall-clock limit per worker run, with an override per tier. The worker enforces it. */
   attemptTimeoutMs?: number | undefined;
   attemptTimeoutByTier?: Partial<Record<Complexity, number>> | undefined;
@@ -289,6 +296,7 @@ export function localRunner(o: LocalRunnerOptions): Runner {
         } else {
           // Gates run in a fresh sandbox over the attempt (SPEC section 11), opened only if needed.
           const attemptGates = [...o.gates, ...(o.extraGates?.(t) ?? [])];
+          const gateTimeout = gateTimeoutFor(o, t.complexity);
           const sandbox =
             o.gateSandbox && attemptGates.some((g) => g.needsSandbox)
               ? await o.gateSandbox(workdir, t)
@@ -307,7 +315,7 @@ export function localRunner(o: LocalRunnerOptions): Runner {
                     lockedPaths: req.locked,
                     worker: parsed.data,
                     commands: req.project.commands,
-                    timeoutMs: o.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
+                    timeoutMs: gateTimeout,
                     ...(sandbox ? { sandbox } : {}),
                   }),
                 );
@@ -370,6 +378,7 @@ export function localRunner(o: LocalRunnerOptions): Runner {
         const workdir = join(worktree, req.projectPath === "." ? "" : req.projectPath);
         const diff = await git.diff(req.tip, picked.sha);
         const regates = o.gates.filter((g) => REGATES.has(g.name));
+        const gateTimeout = gateTimeoutFor(o, t.complexity);
         const stopped = () => req.signal?.aborted === true;
         const gates: GateResult[] = [];
         const sandbox =
@@ -391,7 +400,7 @@ export function localRunner(o: LocalRunnerOptions): Runner {
                   lockedPaths: req.locked,
                   worker: req.worker,
                   commands: req.project.commands,
-                  timeoutMs: o.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
+                  timeoutMs: gateTimeout,
                   ...(sandbox ? { sandbox } : {}),
                 }),
               );

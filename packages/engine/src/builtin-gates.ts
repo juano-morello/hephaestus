@@ -122,6 +122,9 @@ function commandGate(name: "tests" | "typecheck" | "lint", key: CommandKey): Uni
     needsSandbox: true,
     async run(ctx) {
       const isTestUnit = ctx.task.kind === "test";
+      // A test unit normally leaves the suite red (SPEC section 8); `expect: green` marks
+      // characterization tests and refactor pins, which pass from the start.
+      const expectsRed = isTestUnit && ctx.task.expect !== "green";
       let command = ctx.commands[key];
       const usesFiles = name !== "tests" && (command?.includes("{files}") ?? false);
       // New tests may reference code that doesn't exist yet, so a whole-project typecheck or lint
@@ -155,7 +158,7 @@ function commandGate(name: "tests" | "typecheck" | "lint", key: CommandKey): Uni
         );
 
       // Red before green (SPEC section 8): a test unit must leave the suite failing.
-      if (isTestUnit) {
+      if (expectsRed) {
         return r.code !== 0
           ? result(name, true, "tests fail, as a test unit requires (red before green)")
           : result(name, false, "tests must fail after a test unit (red before green)", evidence);

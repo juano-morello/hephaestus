@@ -25,6 +25,8 @@ export type EngineConfig = {
   customGates?: Record<string, Record<string, ProjectGate>>;
   /** Per command gate run. Default 10 minutes. */
   gateTimeoutMs?: number;
+  /** Overrides gateTimeoutMs per complexity tier. */
+  gateTimeoutByTier?: Partial<Record<Complexity, number>>;
   /** Wall-clock limit per worker attempt, and per tier. Default 20 minutes. */
   attemptTimeoutMs?: number;
   attemptTimeoutByTier?: Partial<Record<Complexity, number>>;

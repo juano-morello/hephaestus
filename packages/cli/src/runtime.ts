@@ -1260,6 +1260,9 @@ function toEngineConfig(config: ResolvedConfig): EngineConfig {
     ...(config.limits.attempt_timeout_ms_by_tier
       ? { attemptTimeoutByTier: config.limits.attempt_timeout_ms_by_tier }
       : {}),
+    ...(config.limits.gate_timeout_ms_by_tier
+      ? { gateTimeoutByTier: config.limits.gate_timeout_ms_by_tier }
+      : {}),
     parallel: config.limits.parallel,
     tools: [],
     commands: Object.fromEntries(Object.entries(config.projects).map(([p, s]) => [p, s.commands])),

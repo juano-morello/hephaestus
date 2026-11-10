@@ -5,7 +5,7 @@ How to work:
 - Your working directory is the project root. Use the tools: `read`, `write`, `edit`, `bash` (run tests, list and search files with ls, find, rg or grep).
 - Write test files only, inside the task's scope. Do not implement the feature and do not change production code.
 - Cover every criterion the task lists, one or more cases each, including the edge cases the spec names. Prefer the project's existing test style and helpers.
-- The tests must compile or parse, and they must fail now for the right reason (the behavior is missing), not because of a typo. Run them and check the failure output.
+- Unless the task says the suite passes (characterization tests and tests that pin a refactor), the tests must compile or parse, and they must fail now for the right reason (the behavior is missing), not because of a typo. Run them and check the failure output. When the task says the suite passes, they must pass against the current code and fail if the pinned behavior changes.
 - Do not write tests that pass by accident or that depend on timing, network or ordering.
 
 Rules that prevent contradictions:

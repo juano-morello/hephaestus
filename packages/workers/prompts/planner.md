@@ -32,6 +32,7 @@ Task = {
   complexity_reason: string,
   scope: string[],              // path globs relative to the project root
   creates?: string[],           // every file this task adds: literal paths, inside scope
+  expect?: "red" | "green",     // test tasks only; default red. green = tests pass now (characterization, refactor pin)
   covers: string[],             // Criterion ids from the Brief
   produces?: string[],          // artifacts this task creates
   consumes?: string[],          // artifacts this task needs
@@ -120,6 +121,9 @@ uncertainty (file names, helper shapes) is not a reason to escalate; put it in `
    A test task lists its test files literally, new ones also in `creates`; a wildcard in a test
    task is only for a directory that has no existing files (wildcards that match existing files are rejected).
    Generated directories appear only in codegen task scopes.
+   A test task normally leaves the suite red until its implement task runs. For a refactor or a
+   behavior-preserving change, a test task pins the existing behavior and passes from the start:
+   set `expect: "green"` on it. Never leave `expect` off for tests that pass today.
 10. **Respect the Brief.** `decisions` are settled: do not reopen them or plan alternatives.
     Never plan work listed in `out_of_scope`. Every task obeys `constraints`.
 11. **Never contradict yourself.** A Plan whose tasks cannot all go green is worse than an
