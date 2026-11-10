@@ -28,5 +28,4 @@ Gotchas, limits and things left unbuilt on purpose. Each: what, why it is like t
 ## Environment
 
 - Run the test suites with the Claude sandbox off (`dangerouslyDisableSandbox`): `sandbox-exec` cannot nest, and `packages/cli` shows about 60 false failures otherwise.
-- The `the agent guidance` test (Codex AGENTS.md vs the heph skill) fails on `main` since `fe1fab4`; fix it as a task.
 - macOS with Colima only mounts `$HOME`, so container-mode worktrees must live under it. [NOTES "OMP worker in a sandbox"]
