@@ -7,6 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { openSandbox } from "../src/sandbox.ts";
 import { tempDir } from "./helpers.ts";
@@ -61,6 +62,15 @@ describe("native sandbox", () => {
       await sb.dispose();
     },
   );
+
+  test("bun installs offline from the host's package cache, which stays read-only", async () => {
+    const { sb } = await native();
+    const hostCache =
+      process.env.BUN_INSTALL_CACHE_DIR ?? join(homedir(), ".bun", "install", "cache");
+    const r = await sb.exec('echo "$BUN_INSTALL_CACHE_DIR"');
+    expect(r.stdout.trim()).toBe(existsSync(hostCache) ? hostCache : "");
+    await sb.dispose();
+  });
 
   test("a command past its timeout is killed", async () => {
     const { sb } = await native();

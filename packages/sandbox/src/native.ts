@@ -109,6 +109,12 @@ function hostGoModCache(): string | undefined {
   return goModCache;
 }
 
+/** The host's bun package cache, when it exists: a sandbox HOME is scratch, so bun can't find it. */
+function hostBunCache(): string | undefined {
+  const dir = process.env.BUN_INSTALL_CACHE_DIR ?? join(homedir(), ".bun", "install", "cache");
+  return existsSync(dir) ? dir : undefined;
+}
+
 /**
  * Toolchain settings that let a confined command build offline. Go reads the host's module
  * cache (readable, never written: writes outside the project and temp are denied) with the
@@ -116,14 +122,18 @@ function hostGoModCache(): string | undefined {
  * cache lives in temp, shared by attempts.
  */
 function toolchainEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  const bunCache = hostBunCache();
+  if (bunCache) env.BUN_INSTALL_CACHE_DIR = bunCache;
   const modcache = hostGoModCache();
-  if (!modcache) return {};
-  return {
-    GOMODCACHE: modcache,
-    GOPROXY: "off",
-    GOTOOLCHAIN: "local",
-    GOCACHE: join(tmpdir(), "heph-go-build"),
-  };
+  if (modcache)
+    Object.assign(env, {
+      GOMODCACHE: modcache,
+      GOPROXY: "off",
+      GOTOOLCHAIN: "local",
+      GOCACHE: join(tmpdir(), "heph-go-build"),
+    });
+  return env;
 }
 
 export function openNative(spec: NativeSpec): Sandbox {
