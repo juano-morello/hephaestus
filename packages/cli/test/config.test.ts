@@ -90,6 +90,14 @@ describe("loadConfig", () => {
     expect(sources["node.id"]).toBe(file);
   });
 
+  test("a directory named like ~/.heph (leading dot) still gets a valid implied workspace name", async () => {
+    const dot = join(ws, ".heph");
+    await mkdir(dot, { recursive: true });
+    const { config } = await loadConfig({ workspaceDir: dot, home });
+    expect(config.workspace.name).toBe("heph");
+    expect(Object.keys(config.workspace.repos)).toEqual(["heph"]);
+  });
+
   test("nodes, workspaces and sync come from the home layer; the workspace is named after its dir", async () => {
     const empty = await loadConfig({ workspaceDir: ws, home });
     expect(empty.config.nodes).toEqual({});

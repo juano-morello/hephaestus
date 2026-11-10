@@ -216,8 +216,14 @@ async function readLayer<S extends z.ZodType>(
   return { file, text, data: parsed.data };
 }
 
+/** A directory's name as a workspace name: valid characters only, starting with a letter or digit. */
+const nameFromDir = (dir: string): string =>
+  basename(resolve(dir))
+    .replace(/[^A-Za-z0-9._-]/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "") || "workspace";
+
 function impliedWorkspace(workspaceDir: string): WorkspaceConfig {
-  const name = basename(resolve(workspaceDir)) || "workspace";
+  const name = nameFromDir(workspaceDir);
   return {
     repos: { [name]: "." },
     projects: { [name]: { repo: name, path: ".", stack: "unknown" } },
@@ -238,9 +244,7 @@ export async function loadConfig(opts: LoadOptions): Promise<LoadedConfig> {
   const workspace = wsLayer?.data ?? impliedWorkspace(opts.workspaceDir);
   apply(merged, { workspace }, wsLayer?.file ?? "default", sources);
   if (!workspace.name) {
-    const name =
-      basename(resolve(opts.workspaceDir)).replace(/[^A-Za-z0-9._-]/g, "-") || "workspace";
-    apply(merged, { workspace: { name } }, "default", sources);
+    apply(merged, { workspace: { name: nameFromDir(opts.workspaceDir) } }, "default", sources);
   }
 
   const projects: Obj = {};
