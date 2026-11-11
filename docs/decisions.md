@@ -30,6 +30,7 @@ Settled decisions, one line each: date, decision, why. Do not reopen one without
 - 2026-11-07: retro, the constraint store and learned routing wait for a few dozen closed runs in `heph stats`; until then, use the `reflect` skill. [SPEC §15, NOTES "Eval runner and stats"]
 
 - 2026-11-10: the widgets read the daemon's read-only dashboard themselves, polling every 2 s (direct polling, not SSE); the MCP result's `_meta.heph.live` gives origin and token (loopback only, never in the text the model reads) and the widget resource declares it in `connectDomains`. The dashboard answers CORS for `/api/*` only; the token still gates every call. Why: Claude desktop lets no widget call tools, and a server cannot push into a widget. This changes the 2026-11-07 "no CORS" stance for /api and keeps SSE not built.
+- 2026-11-10: Claude desktop stays on model-driven widget redraws; live views are Codex (host polling) and `heph ui`. No remote Streamable HTTP connector for now. Why: Claude honors only https/wss connect domains and does not serve views from local servers, so the loopback dashboard read is blocked; a connector needs auth and a reachable URL. [Claude MCP Apps docs: design-guidelines, app-tools]
 
 ## Process
 
