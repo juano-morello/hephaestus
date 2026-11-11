@@ -29,6 +29,8 @@ Settled decisions, one line each: date, decision, why. Do not reopen one without
 - 2026-11-07: dashboard and widgets are read-only; approve, hint and cancel buttons wait for a write-surface design. Approve never goes through the chat or MCP. [NOTES "Dashboard views", "MCP Apps run widget"]
 - 2026-11-07: retro, the constraint store and learned routing wait for a few dozen closed runs in `heph stats`; until then, use the `reflect` skill. [SPEC §15, NOTES "Eval runner and stats"]
 
+- 2026-11-10: the widgets read the daemon's read-only dashboard themselves, polling every 2 s (direct polling, not SSE); the MCP result's `_meta.heph.live` gives origin and token (loopback only, never in the text the model reads) and the widget resource declares it in `connectDomains`. The dashboard answers CORS for `/api/*` only; the token still gates every call. Why: Claude desktop lets no widget call tools, and a server cannot push into a widget. This changes the 2026-11-07 "no CORS" stance for /api and keeps SSE not built.
+
 ## Process
 
 - 2026-11-09: no attribution (Co-Authored-By, "Generated with") in commits or PRs. [CLAUDE.md]

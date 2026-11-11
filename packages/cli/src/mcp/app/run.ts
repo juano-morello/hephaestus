@@ -1,8 +1,11 @@
 // The run view widget: renders heph_status's structuredContent, one run (units as a dependency
-// graph, attempts, usage, pull requests) or the list of runs. Read-only by design: the only control
-// is Refresh, and only where the host can call this server's tools back (Codex; not Claude desktop);
-// there are no cancel, hint or approve buttons. Everything model- or user-written goes in through
-// textContent; nothing here builds markup from a string.
+// graph, attempts, usage, pull requests) or the list of runs. Read-only by design: the controls are
+// Refresh (only where the host can call this server's tools back: Codex, not Claude desktop) and
+// choosing a run from the list and going back; there are no cancel, hint or approve buttons.
+// When the tool result's `_meta.heph.live` names the daemon's dashboard (loopback only), the page
+// polls its read-only status and dashboard methods every 2 s itself, so it is live in any host; if
+// that fails it keeps the last view, says so, and leaves the host's path (Refresh) to take over.
+// Everything model- or user-written goes in through textContent; nothing builds markup from a string.
 import { layoutGraph } from "../../../../ui/src/graph-layout.ts";
 import { connectHost, type ToolResult } from "./host.ts";
 
@@ -35,6 +38,11 @@ export type Timers = {
 };
 
 const POLL_MS = 5_000;
+/** How often the page reads the dashboard itself, and how long it waits for one answer. */
+const LIVE_POLL_MS = 2_000;
+const LIVE_TIMEOUT_MS = 5_000;
+/** The only origins the token may be sent to: the daemon's dashboard, on this machine. */
+const LOOPBACK = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
 /** A host that never answers a tools/call must not wedge Refresh. */
 const CALL_TIMEOUT_MS = 20_000;
 /** Run statuses after which nothing changes by itself: no more polling. */
@@ -87,7 +95,18 @@ type One = {
   stale?: string;
   graph?: Graph;
 };
-type Row = { run_id: string; status: string; updated_at: string; needs_you?: string };
+type Row = {
+  run_id: string;
+  status: string;
+  updated_at: string;
+  needs_you?: string;
+  owner_node?: string;
+};
+export type Fetch = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+type Live = { origin: string; token: string };
 type Listing = { kind: "list"; runs: Row[] };
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter(str) : []);
@@ -149,6 +168,7 @@ function asView(v: unknown): One | Listing | undefined {
         status: r.status as string,
         updated_at: r.updated_at === undefined ? "" : String(r.updated_at),
         ...(str(r.needs_you) && r.needs_you ? { needs_you: r.needs_you } : {}),
+        ...(str(r.owner_node) && r.owner_node ? { owner_node: r.owner_node } : {}),
       })),
     };
   }
@@ -255,7 +275,7 @@ const unitTone = (s: string) =>
         : "";
 const gateTone = (v: string) => (v === "pass" ? "ok" : v === "fail" ? "bad" : "");
 
-export function mountRun(win: Win, doc: Doc, timers: Timers): void {
+export function mountRun(win: Win, doc: Doc, timers: Timers, deps: { fetch?: Fetch } = {}): void {
   const el = (tag: string, cls: string, text?: string): El => {
     const e = doc.createElement(tag);
     e.className = cls;
@@ -277,6 +297,17 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
   let busy = false;
   let seq = 0;
   let poll: unknown;
+  let pollKind: "direct" | "host" | undefined;
+  /** Where the page may read the dashboard, from the last pushed result's _meta. */
+  let live: Live | undefined;
+  /** A direct read failed: the host's path (if any) serves until a new pushed result says live again. */
+  let directBroken = false;
+  let directBusy = false;
+  /** A run chosen from the list, and the list to go back to. */
+  let selected: string | undefined;
+  let back: Listing | undefined;
+  const fetchLike: Fetch =
+    deps.fetch ?? ((url, init) => (globalThis as unknown as { fetch: Fetch }).fetch(url, init));
   /** Units the user opened; a redraw keeps them open. */
   const opened = new Set<string>();
 
@@ -325,6 +356,11 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
 
   const renderOne = (o: One): El[] => {
     const head = el("header", "head");
+    if (back) {
+      const b = el("button", "back", "Back to runs");
+      b.addEventListener("click", goBack);
+      head.append(b);
+    }
     head.append(
       el("span", "ids", `run ${o.run_id}`),
       el("span", `badge ${runTone(o.status)}`, o.status),
@@ -476,7 +512,7 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
     rows.sort((a, b) => Number(Boolean(b.need)) - Number(Boolean(a.need)));
     const t = el("table", "runs");
     const hr = el("tr", "");
-    for (const h of ["run", "status", "updated", "needs you"]) hr.append(el("th", "", h));
+    for (const h of ["run", "node", "status", "updated", "needs you"]) hr.append(el("th", "", h));
     t.append(hr);
     for (const { r, need: n } of rows) {
       const tr = el("tr", "run-row");
@@ -487,7 +523,19 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
         if (n.cmd) last.append(`${n.text} `, el("code", "cmd", n.cmd));
         else last.append(n.text);
       }
-      tr.append(el("td", "run-id", r.run_id), status, el("td", "muted", r.updated_at), last);
+      const id = el("td", "run-id");
+      if (canSelect()) {
+        const b = el("button", "link", r.run_id);
+        b.addEventListener("click", () => select(r.run_id));
+        id.append(b);
+      } else id.textContent = r.run_id;
+      tr.append(
+        id,
+        el("td", "", r.owner_node ?? ""),
+        status,
+        el("td", "muted", r.updated_at),
+        last,
+      );
       t.append(tr);
     }
     parts.push(t);
@@ -502,17 +550,136 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
     show(...(view.kind === "one" ? renderOne(view) : renderList(view)));
   };
 
-  const syncPolling = () => {
-    const want = host?.hasServerTools === true && view?.kind === "one" && !FINAL.has(view.status);
-    if (want && poll === undefined) poll = timers.setInterval(() => void refresh(false), POLL_MS);
-    else if (!want && poll !== undefined) {
-      timers.clearInterval(poll);
-      poll = undefined;
-    }
+  /** What the live poll reads: the list, or one run; nothing once a run is final. */
+  const target = (): { run?: string } | undefined => {
+    if (view?.kind === "one") return FINAL.has(view.status) ? undefined : { run: view.run_id };
+    if (selected !== undefined) return { run: selected };
+    return view?.kind === "list" ? {} : undefined;
   };
+
+  const liveOn = () => live !== undefined && !directBroken;
+  const canSelect = () => liveOn() || host?.hasServerTools === true;
+
+  const syncPolling = () => {
+    const direct = liveOn() && target() !== undefined;
+    const viaHost =
+      !direct && host?.hasServerTools === true && view?.kind === "one" && !FINAL.has(view.status);
+    const kind = direct ? "direct" : viaHost ? "host" : undefined;
+    if (kind === pollKind) return;
+    if (poll !== undefined) timers.clearInterval(poll);
+    poll = undefined;
+    pollKind = kind;
+    if (kind === "direct") poll = timers.setInterval(() => void directPoll(), LIVE_POLL_MS);
+    else if (kind === "host") poll = timers.setInterval(() => void refresh(false), POLL_MS);
+  };
+
+  /** One read-only dashboard method, answered with the daemon's data or an error. */
+  async function api(method: string, args: unknown[]): Promise<unknown> {
+    if (!live) throw new Error("no dashboard to read");
+    const r = await fetchLike(`${live.origin}/api/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${live.token}` },
+      body: JSON.stringify({ args }),
+    });
+    if (!r.ok) throw new Error(`the dashboard answered ${r.status}`);
+    const j = rec(await r.json());
+    if (!j || j.ok !== true)
+      throw new Error(
+        str(rec(j?.error)?.message) ? String(rec(j?.error)?.message) : "the dashboard refused",
+      );
+    return j.data;
+  }
+
+  /** The same view heph_status gives the widget: status, plus the dashboard's graph for one run. */
+  async function readView(run: string | undefined): Promise<unknown> {
+    if (run === undefined) return api("status", []);
+    const [status, dash] = await Promise.all([
+      api("status", [run]),
+      api("dashboard", [run]).catch(() => undefined),
+    ]);
+    const d = rec(dash);
+    const units = recs(rec(d?.plan)?.units);
+    const g =
+      d && units
+        ? {
+            units,
+            attempts: Array.isArray(d.attempts) ? d.attempts : [],
+            pauses: strings(d.pauses),
+          }
+        : undefined;
+    return { ...rec(status), ...(g ? { graph: g } : {}) };
+  }
+
+  async function directPoll(): Promise<void> {
+    const tgt = target();
+    if (directBusy || !liveOn() || !tgt) return;
+    directBusy = true;
+    const mine = seq;
+    let timer: unknown;
+    try {
+      const timeout = new Promise<never>((_, no) => {
+        timer = timers.setTimeout(
+          () => no(new Error("the dashboard did not answer in time")),
+          LIVE_TIMEOUT_MS,
+        );
+      });
+      const data = await Promise.race([readView(tgt.run), timeout]);
+      // The host pushed something newer, or the user chose another run, while we waited.
+      if (seq !== mine) return;
+      if (!take({ structuredContent: data }, false)) throw new Error("unreadable answer");
+    } catch (e) {
+      // Keep the last view; the host's path (Refresh, polling) serves if it has one.
+      directBroken = true;
+      fail(`Live updates stopped: ${e instanceof Error ? e.message : String(e)}`);
+      syncPolling();
+    } finally {
+      if (timer !== undefined) timers.clearTimeout(timer);
+      directBusy = false;
+    }
+  }
+
+  /** Reads now, by whichever path works, instead of waiting for the next tick. */
+  const kick = () => {
+    if (liveOn()) void directPoll();
+    else if (host?.hasServerTools) void refresh(false);
+  };
+
+  function select(run: string): void {
+    if (view?.kind === "list") back = view;
+    selected = run;
+    view = undefined;
+    lastKey = "";
+    error = undefined;
+    seq++;
+    show(el("p", "muted", `Loading ${run}…`));
+    syncPolling();
+    kick();
+  }
+
+  function goBack(): void {
+    if (!back) return;
+    view = back;
+    back = undefined;
+    selected = undefined;
+    lastKey = "";
+    seq++;
+    draw();
+    syncPolling();
+    kick();
+  }
 
   /** Takes a result as the new state; a result with no readable shape keeps the view. */
   const take = (r: ToolResult, pushed: boolean): boolean => {
+    if (pushed) {
+      // The host's own answer decides where the page may read from; a new one resets a failure.
+      const l = rec(rec(rec(r._meta)?.heph)?.live);
+      live =
+        l && str(l.origin) && str(l.token) && LOOPBACK.test(l.origin)
+          ? { origin: l.origin, token: l.token }
+          : undefined;
+      directBroken = false;
+      selected = undefined;
+    }
     const v = asView(r.structuredContent);
     if (!v) {
       if (pushed) {
@@ -531,6 +698,7 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
     seq++;
     const key = JSON.stringify(r.structuredContent);
     const same = key === lastKey && error === undefined;
+    if (pushed && v.kind === "list") back = undefined;
     view = v;
     lastKey = key;
     error = undefined;
@@ -551,7 +719,8 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
     if (manual && view) draw();
     let timer: unknown;
     try {
-      const args = view?.kind === "one" ? { run: view.run_id } : {};
+      const run = view?.kind === "one" ? view.run_id : selected;
+      const args = run === undefined ? {} : { run };
       const timeout = new Promise<never>((_, no) => {
         timer = timers.setTimeout(
           () => no(new Error("the host did not answer the refresh in time")),
@@ -588,6 +757,7 @@ export function mountRun(win: Win, doc: Doc, timers: Timers): void {
       // The refresh control and polling depend on what the host said at initialize.
       if (view) draw();
       syncPolling();
+      if (selected !== undefined) kick();
     },
     () => show(el("p", "muted", "This page needs a host that supports MCP Apps.")),
   );

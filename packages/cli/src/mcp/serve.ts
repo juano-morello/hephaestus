@@ -28,6 +28,7 @@ export async function serveStdio(
   const ctx: McpCtx = {
     client: buildClient(o.home, deps.connect),
     workspace: o.workspace,
+    home: o.home,
     cwd: process.cwd(),
   };
   const server = createMcpServer(ctx);

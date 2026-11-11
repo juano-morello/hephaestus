@@ -95,17 +95,25 @@ const sameToken = (given: string, token: string) => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
-export async function startUiServer(o: {
-  home: string;
-  call: (method: string, args: unknown[]) => Promise<unknown>;
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type",
+};
+
+/**
+ * The listener's request handler, apart from the socket so it can be tested as a function.
+ * Static assets carry no CORS headers; the read-only /api/* methods do, because the MCP widgets
+ * call them from another origin with the bearer token.
+ */
+export function uiHandler(o: {
+  token: string;
+  port: () => number;
   assets: UiAssets;
-  port?: number;
-  log?: (line: string) => void;
-}): Promise<{ port: number; token: string; stop(): Promise<void> } | undefined> {
-  // The token outlives the daemon so an open dashboard tab keeps working across restarts.
-  const token = trustedToken(o.home) ?? randomBytes(32).toString("base64url");
-  let port = 0;
-  const fetch = async (req: Request): Promise<Response> => {
+  call: (method: string, args: unknown[]) => Promise<unknown>;
+}): (req: Request) => Promise<Response> {
+  return async (req: Request): Promise<Response> => {
+    const port = o.port();
     const host = req.headers.get("host");
     if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`)
       return new Response("forbidden", { status: 403 });
@@ -114,17 +122,25 @@ export async function startUiServer(o: {
     if (path === "/challenge" && (req.method === "GET" || req.method === "HEAD")) {
       const nonce = url.searchParams.get("nonce") ?? "";
       if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return new Response("bad nonce", { status: 400 });
-      return Response.json({ hmac: challengeAnswer(token, nonce) });
+      return Response.json({ hmac: challengeAnswer(o.token, nonce) });
     }
     if (!path.startsWith("/api/")) {
       const a = req.method === "GET" || req.method === "HEAD" ? o.assets[path] : undefined;
       if (!a) return new Response("not found", { status: 404 });
       return new Response(a.body, { headers: staticHeaders(a.type) });
     }
+    // The widgets (MCP Apps) read from here cross-origin: the browser preflights the bearer header.
+    // Only /api/* answers it, and every real call still needs the token.
+    if (req.method === "OPTIONS") {
+      const headers: Record<string, string> = { ...CORS, "access-control-max-age": "600" };
+      if (req.headers.get("access-control-request-private-network") === "true")
+        headers["access-control-allow-private-network"] = "true";
+      return new Response(null, { status: 204, headers });
+    }
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
     const bearer = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "");
-    if (!bearer?.[1] || !sameToken(bearer[1], token))
-      return new Response("unauthorized", { status: 401 });
+    if (!bearer?.[1] || !sameToken(bearer[1], o.token))
+      return new Response("unauthorized", { status: 401, headers: CORS });
     const method = path.slice("/api/".length);
     if (!UI_METHODS.some((m) => m === method)) return new Response("not found", { status: 404 });
     const length = Number(req.headers.get("content-length") ?? 0);
@@ -141,14 +157,27 @@ export async function startUiServer(o: {
       return new Response("bad request", { status: 400 });
     }
     try {
-      return Response.json({ ok: true, data: await o.call(method, args) });
+      return Response.json({ ok: true, data: await o.call(method, args) }, { headers: CORS });
     } catch (e) {
-      return Response.json({
-        ok: false,
-        error: { message: e instanceof Error ? e.message : String(e) },
-      });
+      return Response.json(
+        { ok: false, error: { message: e instanceof Error ? e.message : String(e) } },
+        { headers: CORS },
+      );
     }
   };
+}
+
+export async function startUiServer(o: {
+  home: string;
+  call: (method: string, args: unknown[]) => Promise<unknown>;
+  assets: UiAssets;
+  port?: number;
+  log?: (line: string) => void;
+}): Promise<{ port: number; token: string; stop(): Promise<void> } | undefined> {
+  // The token outlives the daemon so an open dashboard tab keeps working across restarts.
+  const token = trustedToken(o.home) ?? randomBytes(32).toString("base64url");
+  let port = 0;
+  const fetch = uiHandler({ token, port: () => port, assets: o.assets, call: o.call });
   const bind = (p: number) =>
     // Bun's own cap sits above ours so an oversized body reaches the handler and gets a 400.
     Bun.serve({ hostname: "127.0.0.1", port: p, maxRequestBodySize: 4 * MAX_BODY, fetch });

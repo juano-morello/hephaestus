@@ -15,6 +15,8 @@ type Doc = { documentElement: El & { scrollWidth?: number; scrollHeight?: number
 export type ToolResult = {
   content?: { type: string; text?: string }[];
   structuredContent?: unknown;
+  /** For the page only: heph puts the dashboard origin and token here (`_meta.heph.live`). */
+  _meta?: unknown;
   isError?: boolean;
 };
 

@@ -284,7 +284,10 @@ describe("mutating tools", () => {
     });
     await client.callTool({ name: "heph_new", arguments: { brief, workspace: "." } });
     await client.callTool({ name: "heph_new", arguments: { brief, workspace: "../other" } });
-    expect(calls.map((c) => c.cwd)).toEqual(["/srv/proj", "/srv/other"]);
+    expect(calls.filter((c) => c.method === "newRun").map((c) => c.cwd)).toEqual([
+      "/srv/proj",
+      "/srv/other",
+    ]);
     await client.close();
   });
 
@@ -445,13 +448,15 @@ describe("heph_run", () => {
     const runs = calls.filter((c) => c.method === "run");
     expect(runs).toHaveLength(1);
     expect(runs[0]).toEqual({ method: "run", args: ["r1", {}], cwd: "/ws" });
-    expect(r.structuredContent).toEqual({
+    // Besides its own fields it carries the run's view, for the run widget.
+    expect(r.structuredContent).toMatchObject({
       run_id: "r1",
       state: "started",
       status: "running",
       lines: ["u1/a1 attempt started"],
       cursor: "e2",
       outcome: "running",
+      run: { run_id: "r1", status: "running" },
     });
     expect(clock.elapsed()).toBe(0);
     expect(textOf(r)).toContain("u1/a1 attempt started");

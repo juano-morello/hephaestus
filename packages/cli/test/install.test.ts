@@ -110,6 +110,12 @@ describe("the agent guidance", () => {
     expect(front.description).toContain("Never approves anything");
   });
 
+  test("both guides say to open the live run list right after dispatching a run", () => {
+    const agents = readFileSync(join(root, "codex", "AGENTS.md"), "utf8");
+    for (const text of [skill, agents])
+      expect(text).toContain("Right after dispatching a run, call `heph_status` with no run");
+  });
+
   test("Codex's AGENTS.md says the same as the skill", () => {
     const agents = readFileSync(join(root, "codex", "AGENTS.md"), "utf8");
     const body = skill.split("\n---\n")[1]?.trimStart();

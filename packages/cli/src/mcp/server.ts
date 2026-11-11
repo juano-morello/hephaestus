@@ -8,6 +8,8 @@ export type McpCtx = {
   client: McpClient;
   /** The workspace the host started heph in, if it is one. */
   workspace: () => string | undefined;
+  /** heph's home: where ui.json names the dashboard the widgets read from (none: no live widgets). */
+  home?: string;
   /** Where the server runs: a relative heph_new workspace resolves against it (process.cwd() if unset). */
   cwd?: string;
   now?: () => number;

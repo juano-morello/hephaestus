@@ -5,6 +5,7 @@ import { Brief } from "@hephaestus/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Dashboard, Explain, OUTPUT, StatusOne } from "../output.ts";
+import { readTrustedUiFile } from "../ui-server.ts";
 import type { WatchView } from "../watch.ts";
 import { PLAN_HTML, RUN_HTML } from "./app/generated.ts";
 import type { AllowedMethod } from "./guard.ts";
@@ -24,8 +25,25 @@ import { abortError, boundedBy, type Outcome, StepDeadlineError, watchStep } fro
 export type ToolResult = {
   content: { type: "text"; text: string }[];
   structuredContent?: Record<string, unknown>;
+  /** For the widget only: hosts do not show it to the model. */
+  _meta?: Record<string, unknown>;
   isError?: true;
 };
+
+/** Where the widgets may read the daemon's read-only dashboard, when one is running. */
+function dashboardOrigin(ctx: McpCtx): { origin: string; token: string } | undefined {
+  const ui = ctx.home === undefined ? undefined : readTrustedUiFile(ctx.home);
+  return ui ? { origin: `http://127.0.0.1:${ui.port}`, token: ui.token } : undefined;
+}
+
+/**
+ * Adds the dashboard origin and token to a result's `_meta`, which only the widget sees, so the
+ * widget can poll the dashboard itself. Never in the text or structuredContent the model reads.
+ */
+function withLive(ctx: McpCtx, r: ToolResult): ToolResult {
+  const live = r.isError ? undefined : dashboardOrigin(ctx);
+  return live ? { ...r, _meta: { ...r._meta, heph: { live } } } : r;
+}
 
 const failure = (text: string): ToolResult => ({
   isError: true,
@@ -83,6 +101,16 @@ const RunToolResult = z
     outcome: z.enum(OUTCOMES).optional(),
     waiting_for: z.string().min(1).optional(),
     blocked: z.string().min(1).optional(),
+    // The run widget's view (heph_status's answer and its graph), added best effort.
+    run: z.unknown().optional(),
+    plan_approved: z.unknown().optional(),
+    units: z.unknown().optional(),
+    attempts: z.unknown().optional(),
+    usage: z.unknown().optional(),
+    prs: z.unknown().optional(),
+    stack_on: z.unknown().optional(),
+    stale: z.unknown().optional(),
+    graph: z.unknown().optional(),
   })
   .strict();
 const WatchToolResult = z
@@ -203,7 +231,21 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     "run-widget",
     RUN_URI,
     { mimeType: APP_MIME, description: "The run view widget (an MCP App)" },
-    async () => ({ contents: [{ uri: RUN_URI, mimeType: APP_MIME, text: RUN_HTML }] }),
+    async () => {
+      // The widget may connect to the dashboard and nowhere else; the origin is read at each
+      // read because the daemon may have picked another port since the server started.
+      const live = dashboardOrigin(ctx);
+      return {
+        contents: [
+          {
+            uri: RUN_URI,
+            mimeType: APP_MIME,
+            text: RUN_HTML,
+            ...(live ? { _meta: { ui: { csp: { connectDomains: [live.origin] } } } } : {}),
+          },
+        ],
+      };
+    },
   );
   server.registerTool(
     "heph_plan_show",
@@ -231,15 +273,21 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     },
     async ({ run }) => {
       if (run === undefined)
-        return toolResult(ctx, { method: "status", args: [], command: "status" }, statusText);
+        return withLive(
+          ctx,
+          await toolResult(ctx, { method: "status", args: [], command: "status" }, statusText),
+        );
       // The widget's graph needs unit titles and dependencies, which status does not carry: one
       // more read-only call, whose failure costs the widget its graph and nothing else.
       const [result, graph] = await Promise.all([
         toolResult(ctx, { method: "status", args: [run], command: "status" }, statusText),
         runGraph(ctx, run),
       ]);
-      if (result.isError || !graph || !result.structuredContent) return result;
-      return { ...result, structuredContent: { ...result.structuredContent, graph } };
+      if (result.isError || !graph || !result.structuredContent) return withLive(ctx, result);
+      return withLive(ctx, {
+        ...result,
+        structuredContent: { ...result.structuredContent, graph },
+      });
     },
   );
 
@@ -276,6 +324,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           ),
         on: z.string().min(1).optional().describe('Node to run on; "local" keeps the run here'),
       },
+      // The run widget shows the new run from the first moment.
+      _meta: { ui: { resourceUri: RUN_URI }, "ui/resourceUri": RUN_URI },
     },
     async ({ brief, workspace, on }) => {
       if (typeof brief !== "object" || brief === null || Array.isArray(brief))
@@ -293,7 +343,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         return failure(
           `no heph workspace directory: none found from ${serverCwd}, where the server was started, so pass the workspace argument (the directory that holds .heph/)`,
         );
-      return toolResult(
+      const made = await toolResult(
         ctx,
         {
           method: "newRun",
@@ -302,6 +352,14 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
           cwd,
         },
         planResultText,
+      );
+      const id = made.structuredContent?.run_id;
+      const view = !made.isError && typeof id === "string" ? await runView(ctx, id) : undefined;
+      return withLive(
+        ctx,
+        view && made.structuredContent
+          ? { ...made, structuredContent: { ...made.structuredContent, ...view } }
+          : made,
       );
     },
   );
@@ -373,6 +431,8 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         "Start building a run whose plan the user has approved, and return its first progress lines. If the plan is not approved it does not start; ask the user to approve it themselves. A staged, finished, failed or escalated run, or one with no plan yet, is not started (state not_runnable); do what next says. Follow a started build with heph_watch.",
       inputSchema: { run: z.string().min(1).describe("The run id, e.g. r1") },
       outputSchema: RunToolResult.shape,
+      // Dispatching a run opens the run widget, which then follows it.
+      _meta: { ui: { resourceUri: RUN_URI }, "ui/resourceUri": RUN_URI },
     },
     async ({ run }, extra) => {
       // One budget for the whole call: a hung daemon is an error before the host gives up.
@@ -385,7 +445,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
       if (extra.signal.aborted) onCancel();
       else extra.signal.addEventListener("abort", onCancel, { once: true });
       try {
-        return await runTool(run, ac.signal, () => Math.max(0, budget - (now() - t0)));
+        return withLive(
+          ctx,
+          await runTool(run, ac.signal, () => Math.max(0, budget - (now() - t0))),
+        );
       } finally {
         clearTimeout(timer);
         extra.signal.removeEventListener("abort", onCancel);
@@ -425,10 +488,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         graceMs: remaining(),
         onDeadline: RUN_DEADLINE_HINT,
       });
-    const answer = (
+    const answer = async (
       state: "started" | "already_running" | "not_runnable",
       w: Awaited<ReturnType<typeof watchStep>>,
-    ): ToolResult => {
+    ): Promise<ToolResult> => {
       const r = {
         run_id: run,
         state,
@@ -439,9 +502,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         waiting_for: w.waiting_for,
         blocked: w.blocked,
       };
+      const view = await runView(ctx, run);
       return {
         content: [{ type: "text", text: runText(r) }],
-        structuredContent: withoutUndefined(r),
+        structuredContent: { ...withoutUndefined(r), ...(view ?? {}) },
       };
     };
     // `run` answers `started` before the build rejects these, so they are refused here. Only a
@@ -449,7 +513,7 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     if (NOT_RUNNABLE.has(s.run.status) || !(s.plan_approved || s.run.status === "running")) {
       // The daemon would answer `started` and only then fail the build: say where it stands.
       try {
-        return answer("not_runnable", await step(undefined));
+        return await answer("not_runnable", await step(undefined));
       } catch (e) {
         return failure(errorText(e));
       }
@@ -470,7 +534,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
     if (!started.started && !started.running)
       return failure(`the daemon did not start ${run} and it is not running`);
     try {
-      return answer(started.started ? "started" : "already_running", await step(started.after));
+      return await answer(
+        started.started ? "started" : "already_running",
+        await step(started.after),
+      );
     } catch (e) {
       return failure(errorText(e));
     }
@@ -530,10 +597,10 @@ export function registerTools(server: McpServer, ctx: McpCtx): void {
         });
         await Promise.all(sent);
         const view = await runView(ctx, run);
-        return {
+        return withLive(ctx, {
           content: [{ type: "text", text: watchText(w) }],
           structuredContent: { ...withoutUndefined(w), ...(view ?? {}) },
-        };
+        });
       } catch (e) {
         await Promise.all(sent);
         return failure(errorText(e));

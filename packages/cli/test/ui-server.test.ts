@@ -144,18 +144,20 @@ describe("ui server", () => {
     expect(r.status).toBe(405);
   });
 
-  test("no CORS headers on any response", async () => {
+  test("only the token-gated /api answers are cross-origin readable; pages and unknown paths carry no CORS headers", async () => {
     const ui = await start();
-    const rs = [
+    const plain = [
       await fetch(`http://127.0.0.1:${ui.port}/`),
-      await fetch(`http://127.0.0.1:${ui.port}/api/status`),
-      await fetch(`http://127.0.0.1:${ui.port}/api/status`, { method: "OPTIONS" }),
-      await api(ui, "status", { args: [] }),
       await fetch(`http://127.0.0.1:${ui.port}/nope`),
     ];
-    for (const r of rs)
+    for (const r of plain)
       for (const [k] of r.headers)
         expect(k.toLowerCase().startsWith("access-control-")).toBe(false);
+    // The widgets read /api from another origin; the bearer token still gates every call.
+    expect((await api(ui, "status", { args: [] })).headers.get("access-control-allow-origin")).toBe(
+      "*",
+    );
+    expect((await fetch(`http://127.0.0.1:${ui.port}/api/status`)).status).toBe(405);
   });
 
   test("ui.json is written with mode 0600 and the real port", async () => {

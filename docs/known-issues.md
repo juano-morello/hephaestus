@@ -27,5 +27,7 @@ Gotchas, limits and things left unbuilt on purpose. Each: what, why it is like t
 
 ## Environment
 
+- The live widgets need the host to let the page reach `http://127.0.0.1:<port>` (`_meta.ui.csp.connectDomains`). Unverified in Claude desktop and Codex; if it is blocked the widget keeps the last view and falls back to Refresh (Codex) or the model's `heph_watch` redraws. The dashboard port is read from ui.json at each result, so a daemon restart on another port shows up on the next tool call, not in an open widget.
+- heph cannot build this repo yet: its gate runs `bun run test` in heph's own sandbox, where 63 tests fail (nested sandbox-exec, daemon ports) and the suite takes about 8 minutes. Reopen: a container sandbox for this repo, or a test command that skips them.
 - Run the test suites with the Claude sandbox off (`dangerouslyDisableSandbox`): `sandbox-exec` cannot nest, and `packages/cli` shows about 60 false failures otherwise.
 - macOS with Colima only mounts `$HOME`, so container-mode worktrees must live under it. [NOTES "OMP worker in a sandbox"]
