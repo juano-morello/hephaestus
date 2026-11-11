@@ -175,6 +175,30 @@ describe("run widget: when the direct poll fails", () => {
     });
   }
 
+  test("a blocked fetch says which security policy the host applied", async () => {
+    const net = fakeFetch(() => new Error("Failed to fetch"));
+    const { f, t } = await mount(one("running"), net);
+    f.fire("securitypolicyviolation", {
+      blockedURI: ORIGIN,
+      violatedDirective: "connect-src",
+      effectiveDirective: "connect-src",
+    });
+    await t.advance(2000);
+    const note = f.body.byClass("error")[0]?.textContent ?? "";
+    expect(note).toContain("Failed to fetch");
+    expect(note).toContain("connect-src");
+    expect(note).toContain(ORIGIN);
+  });
+
+  test("a failure with no policy violation names the dashboard it tried", async () => {
+    const net = fakeFetch(() => new Error("Failed to fetch"));
+    const { f, t } = await mount(one("running"), net);
+    await t.advance(2000);
+    const note = f.body.byClass("error")[0]?.textContent ?? "";
+    expect(note).toContain(ORIGIN);
+    expect(note).not.toContain("connect-src");
+  });
+
   test("with serverTools the host path takes over, at its own pace", async () => {
     const net = fakeFetch(() => new Error("blocked by the host"));
     const { f, t } = await mount(one("running"), net, { serverTools: true });

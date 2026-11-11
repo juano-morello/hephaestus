@@ -129,9 +129,13 @@ export function fakeHost(opts: FakeHostOpts = {}) {
     addEventListener: (_: string, fn: (ev: { data: unknown; source: unknown }) => void) =>
       listeners.push(fn),
   };
+  const docListeners: Record<string, ((ev: unknown) => void)[]> = {};
   const doc = {
     documentElement: root,
     body,
+    addEventListener: (type: string, fn: (ev: unknown) => void) => {
+      docListeners[type] = [...(docListeners[type] ?? []), fn];
+    },
     createElement: (t: string) => new FakeEl(t),
     createTextNode: (t: string) => {
       const e = new FakeEl("#text");
@@ -145,5 +149,9 @@ export function fakeHost(opts: FakeHostOpts = {}) {
   };
   const notify = (method: string, params: unknown) => deliver({ jsonrpc: "2.0", method, params });
   const tick = () => new Promise((r) => setTimeout(r, 5));
-  return { win, doc, root, body, sent, deliver, notify, tick, parent };
+  /** Fires a document event, e.g. a securitypolicyviolation. */
+  const fire = (type: string, ev: unknown) => {
+    for (const fn of docListeners[type] ?? []) fn(ev);
+  };
+  return { win, doc, root, body, sent, deliver, notify, tick, parent, fire };
 }

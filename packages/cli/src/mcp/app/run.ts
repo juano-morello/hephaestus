@@ -26,6 +26,7 @@ type Doc = {
   };
   body: El;
   createElement(tag: string): El;
+  addEventListener?(type: string, fn: (ev: unknown) => void): void;
 };
 type Win = Parameters<typeof connectHost>[0];
 
@@ -303,6 +304,8 @@ export function mountRun(win: Win, doc: Doc, timers: Timers, deps: { fetch?: Fet
   /** A direct read failed: the host's path (if any) serves until a new pushed result says live again. */
   let directBroken = false;
   let directBusy = false;
+  /** The last content-security-policy block the page saw: why a fetch failed, for the error note. */
+  let blocked: string | undefined;
   /** A run chosen from the list, and the list to go back to. */
   let selected: string | undefined;
   let back: Listing | undefined;
@@ -630,7 +633,11 @@ export function mountRun(win: Win, doc: Doc, timers: Timers, deps: { fetch?: Fet
     } catch (e) {
       // Keep the last view; the host's path (Refresh, polling) serves if it has one.
       directBroken = true;
-      fail(`Live updates stopped: ${e instanceof Error ? e.message : String(e)}`);
+      const why = e instanceof Error ? e.message : String(e);
+      const where = live ? ` (reading ${live.origin})` : "";
+      fail(
+        `Live updates stopped: ${why}${where}${blocked ? `; the host blocked it: ${blocked}` : ""}`,
+      );
       syncPolling();
     } finally {
       if (timer !== undefined) timers.clearTimeout(timer);
@@ -745,6 +752,13 @@ export function mountRun(win: Win, doc: Doc, timers: Timers, deps: { fetch?: Fet
       if (manual && view) draw();
     }
   }
+
+  // A host that confines the page says so through this event; it names the directive and the URL.
+  doc.addEventListener?.("securitypolicyviolation", (ev) => {
+    const v = rec(ev);
+    if (v)
+      blocked = `${str(v.effectiveDirective) ? v.effectiveDirective : "policy"} refused ${str(v.blockedURI) ? v.blockedURI : "a request"}`;
+  });
 
   show(el("p", "muted", "Waiting for the run…"));
   const h = connectHost(win, doc, { name: "heph-run", version: "1" });
